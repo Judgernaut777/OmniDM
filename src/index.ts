@@ -1,0 +1,57 @@
+/**
+ * Entrypoint. Wires a platform adapter to the bot core and starts it.
+ *
+ *   npm run cli       → terminal adapter (zero setup, great for testing)
+ *   npm run discord   → Discord adapter (needs DISCORD_TOKEN)
+ *
+ * Adding a platform = writing one PlatformAdapter and adding a case below.
+ */
+import { loadConfig } from './config.js';
+import { createProvider } from './providers/index.js';
+import { Bot } from './core/bot.js';
+import { CliAdapter } from './adapters/cli.js';
+import { DiscordAdapter } from './adapters/discord.js';
+import type { PlatformAdapter } from './core/types.js';
+
+function pickAdapter(name: string, config: ReturnType<typeof loadConfig>): PlatformAdapter {
+  switch (name) {
+    case 'discord':
+      return new DiscordAdapter(config.discord.token);
+    case 'cli':
+    default:
+      return new CliAdapter();
+  }
+}
+
+async function main() {
+  const config = loadConfig();
+  const adapterArg = process.argv.includes('--adapter')
+    ? process.argv[process.argv.indexOf('--adapter') + 1]
+    : 'cli';
+
+  if (!config.llm.apiKey && config.llm.baseUrl.includes('openrouter')) {
+    console.warn(
+      '⚠️  No LLM_API_KEY set. Get a free OpenRouter key at https://openrouter.ai/keys and put it in .env\n' +
+        '   (Local backends like Ollama/LM Studio do not need a key — just change LLM_BASE_URL.)\n',
+    );
+  }
+
+  const provider = createProvider(config);
+  const bot = new Bot(config, provider);
+  const adapter = pickAdapter(adapterArg, config);
+
+  adapter.onMessage((msg) => bot.handle(msg, (out) => adapter.send(out)));
+
+  process.on('SIGINT', async () => {
+    await adapter.stop();
+    process.exit(0);
+  });
+
+  console.log(`Starting OmniDM with the "${adapter.name}" adapter…`);
+  await adapter.start();
+}
+
+main().catch((err) => {
+  console.error('Fatal:', err);
+  process.exit(1);
+});

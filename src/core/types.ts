@@ -1,0 +1,110 @@
+/**
+ * Canonical domain types shared across every layer.
+ *
+ * The whole design hinges on these being platform- and provider-neutral:
+ * adapters translate Discord/CLI/etc. into `IncomingMessage`, the engine works
+ * only in these terms, and providers translate `ChatMessage[]` to whatever the
+ * model API wants. Nothing below the adapter layer knows what "Discord" is.
+ */
+
+// ─── Messaging (platform-neutral) ────────────────────────────────────────────
+
+/** A normalized inbound message from any chat platform. */
+export interface IncomingMessage {
+  platform: string;       // "discord" | "cli" | ...
+  channelId: string;      // platform room/channel — maps 1:1 to a game session
+  userId: string;         // stable per-platform user id
+  userName: string;       // display name
+  text: string;           // raw text the user typed
+  raw?: unknown;          // original platform payload, if an adapter needs it
+}
+
+/** A normalized outbound message. Adapters render this for their platform. */
+export interface OutgoingMessage {
+  channelId: string;
+  text: string;
+  /** Optional speaker label, e.g. "Dungeon Master" or an NPC name. */
+  speaker?: string;
+}
+
+/**
+ * The contract every chat platform implements. This interface IS the moat:
+ * add a platform by writing one of these; the engine never changes.
+ */
+export interface PlatformAdapter {
+  readonly name: string;
+  start(): Promise<void>;
+  stop(): Promise<void>;
+  send(msg: OutgoingMessage): Promise<void>;
+  /** Register the single handler the bot core uses to receive messages. */
+  onMessage(handler: (msg: IncomingMessage) => void | Promise<void>): void;
+}
+
+// ─── LLM provider (model-neutral) ────────────────────────────────────────────
+
+export interface ChatMessage {
+  role: 'system' | 'user' | 'assistant';
+  content: string;
+}
+
+export interface ModelInfo {
+  id: string;
+  name?: string;
+  /** True if the model is free to call (e.g. OpenRouter ":free" models). */
+  free?: boolean;
+}
+
+export interface CompletionRequest {
+  model: string;
+  messages: ChatMessage[];
+  temperature?: number;
+  maxTokens?: number;
+}
+
+/** The contract every model backend implements (OpenAI-compatible, Anthropic, …). */
+export interface LLMProvider {
+  readonly id: string;
+  /** Powers the in-app model dropdown. May return [] if the backend can't list. */
+  listModels(): Promise<ModelInfo[]>;
+  complete(req: CompletionRequest): Promise<string>;
+}
+
+// ─── Game domain ─────────────────────────────────────────────────────────────
+
+export interface Player {
+  userId: string;
+  userName: string;
+  characterName?: string;
+  hp?: number;
+  maxHp?: number;
+}
+
+export interface RollResult {
+  by: string;          // character or player name
+  notation: string;    // "d20+5"
+  rolls: number[];
+  total: number;
+  note?: string;       // "CRITICAL HIT (nat 20)" etc.
+}
+
+export interface TurnRecord {
+  /** What the players did this turn. */
+  actions: { name: string; text: string }[];
+  /** Dice resolved deterministically BEFORE narration. */
+  rolls: RollResult[];
+  /** The DM's narration of the resolved outcome. */
+  narration: string;
+  ts: number;
+}
+
+export interface GameSession {
+  id: string;
+  platform: string;
+  channelId: string;
+  systemId: string;                  // rules module, e.g. "dnd5e"
+  model: string;                     // selected model id (overrides default)
+  players: Record<string, Player>;   // keyed by userId
+  history: TurnRecord[];             // recent verbatim turns
+  summary: string;                   // rolling "living summary" of older history
+  createdAt: number;
+}
