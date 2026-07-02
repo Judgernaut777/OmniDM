@@ -76,6 +76,7 @@ for their own usage. Local models are free.
 /dm mode <m>            turn mode: immediate (default) or round-robin
 /dm turn                show whose turn it is (round-robin)
 /dm pass                skip your turn (round-robin)
+/dm import <src>        import a Character Card V2/V3 (JSON or PNG, path or URL)
 /dm models [filter]     list usable models (🆓 = free)
 /dm model <id>          pick the model for this game
 /dm roll <notation>     roll dice (d20+5, 2d6, d20 adv, 4d6kh3)
@@ -83,6 +84,10 @@ for their own usage. Local models are free.
 ```
 
 Anything that isn't a command is treated as your character's action.
+
+`/dm import` accepts the Character Card V2/V3 format (raw JSON or a card PNG
+with the embedded `chara`/`ccv3` chunk). If you've already joined, the card
+becomes **your persona**; otherwise it becomes an **NPC** the DM portrays.
 
 ## Architecture
 
@@ -93,6 +98,8 @@ adapters/        ← PlatformAdapter implementations (cli, discord, …)  [the m
 core/
   bot.ts         ← platform-agnostic router (commands + turns)
   types.ts       ← canonical Message / Session / Provider contracts
+  cards/
+    card.ts      ← Character Card V2/V3 import (JSON or PNG-embedded)
   engine/
     dice.ts      ← deterministic roller (seedable)
     turn-pipeline.ts  ← the sandwich: lock → resolve → persist → narrate
@@ -118,7 +125,6 @@ message-converter would live.
 ## Roadmap / not done yet
 
 - Initiative-rolled turn order (round-robin by join order is in: `/dm mode round-robin`)
-- Character-card import (Character Card V2/V3 spec) for personas & NPCs
 - Lorebook / world-info injection (keyword-triggered context)
 - Vector memory (RAG) alongside the living summary
 - More adapters: Matrix, Slack, Mattermost, Signal (via signal-cli)

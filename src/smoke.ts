@@ -1,7 +1,7 @@
 /**
  * Smoke test — drives the full bot pipeline with a mock provider (no network,
  * no API key). Proves: command routing, multiplayer join, deterministic dice,
- * turn pipeline, narration wiring, and disk persistence.
+ * turn pipeline, narration wiring, character-card import, and disk persistence.
  *
  * Run:  npx tsx src/smoke.ts
  */
@@ -12,6 +12,7 @@ import type { CompletionRequest, IncomingMessage, LLMProvider, ModelInfo, Outgoi
 import { Bot } from './core/bot.js';
 import { roll, extractRolls } from './core/engine/dice.js';
 import { SessionStore } from './core/session/store.js';
+import { renderCard } from './core/cards/card.js';
 
 let failures = 0;
 function check(label: string, cond: boolean) {
@@ -119,14 +120,76 @@ async function main() {
   await bot.handle(from('u1', 'Alice', '/dm turn'), send);
   check('turn: pointer persisted as Thorin', out.at(-1)!.text.includes('Thorin'));
 
-  // ── Backward compatibility: session saved before turnMode existed ──
+  // ── Character Card import (V2 JSON → player persona) ──
+  await bot.handle(from('u1', 'Alice', '/dm mode immediate'), send);
+  const v2Path = path.join(dataDir, 'zara.card.json');
+  await fs.writeFile(v2Path, JSON.stringify({
+    spec: 'chara_card_v2',
+    spec_version: '2.0',
+    data: { name: 'Zara', description: 'A cunning tiefling rogue with silver eyes.', personality: 'Sly, loyal, quick-witted', scenario: 'Fresh off a botched heist', first_mes: 'Well, well.', mes_example: '', system_prompt: '' },
+  }), 'utf8');
+  out.length = 0;
+  await bot.handle(from('u1', 'Alice', `/dm import ${v2Path}`), send);
+  check('import: joined player gets the card as persona', out.at(-1)!.text.includes('Zara') && out.at(-1)!.text.includes('persona'));
+  await bot.handle(from('u1', 'Alice', 'I wink at the barkeep'), send);
+  check('import: persona card fields reach the prompt',
+    provider.lastPrompt.includes('Imported characters') && provider.lastPrompt.includes('cunning tiefling rogue') && provider.lastPrompt.includes('Sly, loyal'));
+  await bot.handle(from('u1', 'Alice', '/dm join Zara the Second'), send);
+  const store = new SessionStore(dataDir);
+  check('import: re-joining keeps the imported persona', (await store.load('cli:chan1'))?.players.u1?.card?.name === 'Zara');
+
+  // ── Character Card import (V3 JSON from a spectator → NPC) ──
+  const v3Path = path.join(dataDir, 'grim.card.json');
+  await fs.writeFile(v3Path, JSON.stringify({
+    spec: 'chara_card_v3',
+    spec_version: '3.0',
+    data: { name: 'Grimble', description: 'A grumpy gnome shopkeeper.', personality: 'Irascible but fair', scenario: '', first_mes: '', mes_example: '', system_prompt: '', character_book: { entries: [{ content: 'Grimble secretly funds the thieves guild.' }] } },
+  }), 'utf8');
+  out.length = 0;
+  await bot.handle(from('u3', 'Carol', `/dm import ${v3Path}`), send);
+  check('import: non-player card becomes an NPC', out.at(-1)!.text.includes('Grimble') && out.at(-1)!.text.includes('NPC'));
+  await bot.handle(from('u1', 'Alice', 'I browse the shop'), send);
+  check('import: NPC card + lorebook entry reach the prompt',
+    provider.lastPrompt.includes('grumpy gnome shopkeeper') && provider.lastPrompt.includes('thieves guild'));
+
+  // ── Character Card import (PNG with embedded tEXt 'chara' chunk) ──
+  const pngChunk = (type: string, data: Buffer) => {
+    const b = Buffer.alloc(12 + data.length);
+    b.writeUInt32BE(data.length, 0);
+    b.write(type, 4, 'latin1');
+    data.copy(b, 8);
+    return b; // CRC left zeroed — the extractor doesn't verify it
+  };
+  const embedded = Buffer.from(JSON.stringify({ spec_version: '2.0', data: { name: 'Vex', description: 'A PNG-borne spectre.' } })).toString('base64');
+  const pngPath = path.join(dataDir, 'vex.card.png');
+  await fs.writeFile(pngPath, Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk('IHDR', Buffer.alloc(13)),
+    pngChunk('tEXt', Buffer.from(`chara\0${embedded}`, 'latin1')),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]));
+  out.length = 0;
+  await bot.handle(from('u4', 'Dave', `/dm import ${pngPath}`), send);
+  check('import: PNG-embedded card extracted as NPC', out.at(-1)!.text.includes('Vex'));
+
+  // ── Card injection stays bounded ──
+  check('import: very long card fields are clipped in the prompt',
+    renderCard({ specVersion: '2.0', name: 'Blob', description: 'x'.repeat(5000) }, 'NPC').length < 1000);
+
+  // ── Cards persist in the session JSON ──
+  const savedSession = JSON.parse(await fs.readFile(path.join(dataDir, sessionFile!), 'utf8'));
+  check('persistence: persona card saved on the player', savedSession.players.u1?.card?.name === 'Zara');
+  check('persistence: NPC cards saved on the session', savedSession.npcs?.length === 2 && savedSession.npcs[0].name === 'Grimble');
+
+  // ── Backward compatibility: session saved before turnMode/npcs existed ──
   await fs.writeFile(
     path.join(dataDir, 'session_cli_legacy.json'),
     JSON.stringify({ id: 'old1', platform: 'cli', channelId: 'legacy', systemId: 'dnd5e', model: 'mock/free-model', players: {}, history: [], summary: '', createdAt: 1 }),
     'utf8',
   );
-  const legacy = await new SessionStore(dataDir).load('cli:legacy');
+  const legacy = await store.load('cli:legacy');
   check('legacy: pre-feature session loads with mode immediate', legacy?.turnMode === 'immediate' && legacy?.turnIndex === 0);
+  check('legacy: pre-card session defaults to no NPCs', Array.isArray(legacy?.npcs) && legacy!.npcs.length === 0);
 
   await fs.rm(dataDir, { recursive: true, force: true });
   console.log(`\n${failures === 0 ? '🎉 all checks passed' : `💥 ${failures} check(s) failed`}`);

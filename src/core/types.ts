@@ -7,6 +7,8 @@
  * model API wants. Nothing below the adapter layer knows what "Discord" is.
  */
 
+import type { CharacterCard } from './cards/card.js';
+
 // ─── Messaging (platform-neutral) ────────────────────────────────────────────
 
 /** A normalized inbound message from any chat platform. */
@@ -77,6 +79,8 @@ export interface Player {
   characterName?: string;
   hp?: number;
   maxHp?: number;
+  /** Imported Character Card persona (`/dm import`), if any. */
+  card?: CharacterCard;
 }
 
 export interface RollResult {
@@ -110,6 +114,7 @@ export interface GameSession {
   systemId: string;                  // rules module, e.g. "dnd5e"
   model: string;                     // selected model id (overrides default)
   players: Record<string, Player>;   // keyed by userId; insertion order = join order
+  npcs: CharacterCard[];             // imported NPC cards, played by the DM
   history: TurnRecord[];             // recent verbatim turns
   summary: string;                   // rolling "living summary" of older history
   turnMode: TurnMode;                // defaulted to 'immediate' for pre-existing saves

@@ -11,6 +11,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import type { ChatMessage, GameSession, LLMProvider, RollResult } from '../types.js';
+import { renderCard } from '../cards/card.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -37,10 +38,19 @@ export class Narrator {
       .map((p) => `- ${p.characterName || p.userName} (HP ${p.hp}/${p.maxHp})`)
       .join('\n') || '- (no characters yet)';
 
+    // Imported Character Cards: player personas + session NPCs, bounded blocks.
+    const cards = [
+      ...Object.values(session.players)
+        .filter((p) => p.card)
+        .map((p) => renderCard(p.card!, `player character (played by ${p.userName})`)),
+      ...(session.npcs ?? []).map((c) => renderCard(c, 'NPC (portrayed by you, the DM)')),
+    ];
+
     const system = [
       BASE_DM_PROMPT,
       loadSystemModule(session.systemId),
       `## The party\n${roster}`,
+      cards.length ? `## Imported characters (portray each consistently with their card)\n${cards.join('\n\n')}` : '',
       session.summary ? `## Story so far\n${session.summary}` : '',
     ]
       .filter(Boolean)

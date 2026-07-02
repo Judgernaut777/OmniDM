@@ -30,6 +30,7 @@ export class SessionManager {
       systemId,
       model: this.defaultModel,
       players: {},
+      npcs: [],
       history: [],
       summary: '',
       turnMode: 'immediate',
@@ -53,6 +54,7 @@ export class SessionManager {
       characterName: characterName ?? existing?.characterName,
       hp: existing?.hp ?? 10,
       maxHp: existing?.maxHp ?? 10,
+      card: existing?.card,
     };
     session.players[msg.userId] = player;
     await this.save(session);

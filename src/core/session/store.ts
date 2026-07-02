@@ -29,6 +29,7 @@ export class SessionStore {
       // Fields added after v1 — default them so pre-existing files still load.
       session.turnMode ??= 'immediate';
       session.turnIndex ??= 0;
+      session.npcs ??= [];
       this.cache.set(key, session);
       return session;
     } catch {

@@ -10,6 +10,7 @@ import type { GameSession, IncomingMessage, LLMProvider, OutgoingMessage, Player
 import { SessionManager } from './session/session-manager.js';
 import { SessionStore } from './session/store.js';
 import { Narrator } from './narrator/narrator.js';
+import { loadCard } from './cards/card.js';
 import { TurnPipeline } from './engine/turn-pipeline.js';
 
 type Send = (msg: OutgoingMessage) => Promise<void>;
@@ -110,6 +111,28 @@ export class Bot {
         return reply(`**The party:**\n${list || '(empty)'}`);
       }
 
+      case 'import': {
+        const session = await this.sessions.get(msg);
+        if (!session) return reply('No game here yet — `/dm new` first.');
+        if (!rest) return reply('Usage: `/dm import <file-path-or-URL>` — a Character Card V2/V3 JSON or card PNG.');
+        let card;
+        try {
+          card = await loadCard(rest);
+        } catch (err) {
+          return reply(`⚠️ Could not import that card: ${(err as Error).message}`);
+        }
+        if (this.sessions.isPlayer(session, msg.userId)) {
+          const player = session.players[msg.userId];
+          player.card = card;
+          player.characterName = card.name;
+          await this.sessions.save(session);
+          return reply(`🎭 ${msg.userName} now plays **${card.name}** — imported card persona.`);
+        }
+        session.npcs.push(card);
+        await this.sessions.save(session);
+        return reply(`🧙 **${card.name}** enters the world as an NPC, portrayed by the DM.`);
+      }
+
       case 'models': {
         const models = await this.provider.listModels();
         if (!models.length) return reply('Could not list models (check LLM_BASE_URL / LLM_API_KEY). You can still set one with `/dm model <id>`.');
@@ -190,6 +213,7 @@ const HELP = `**OmniDM — commands**
 \`/dm mode <immediate|round-robin>\` — how turns are taken
 \`/dm turn\` — show whose turn it is (round-robin)
 \`/dm pass\` — skip your turn (round-robin)
+\`/dm import <file-or-URL>\` — import a Character Card V2/V3 (JSON or PNG): your persona if joined, an NPC otherwise
 \`/dm models [filter]\` — list models you can use (🆓 = free)
 \`/dm model <id>\` — pick the model for this game
 \`/dm roll <notation>\` — roll dice (e.g. \`d20+5\`, \`2d6\`, \`d20 adv\`)
