@@ -97,14 +97,22 @@ export interface TurnRecord {
   ts: number;
 }
 
+/**
+ * How player actions are sequenced. 'immediate': every message is a turn.
+ * 'round-robin': players act one at a time, in join order, wrapping around.
+ */
+export type TurnMode = 'immediate' | 'round-robin';
+
 export interface GameSession {
   id: string;
   platform: string;
   channelId: string;
   systemId: string;                  // rules module, e.g. "dnd5e"
   model: string;                     // selected model id (overrides default)
-  players: Record<string, Player>;   // keyed by userId
+  players: Record<string, Player>;   // keyed by userId; insertion order = join order
   history: TurnRecord[];             // recent verbatim turns
   summary: string;                   // rolling "living summary" of older history
+  turnMode: TurnMode;                // defaulted to 'immediate' for pre-existing saves
+  turnIndex: number;                 // round-robin pointer into join order
   createdAt: number;
 }

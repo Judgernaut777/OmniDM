@@ -7,9 +7,10 @@
  * outcomes it didn't choose. A per-channel lock serializes concurrent turns,
  * which is what makes multiplayer safe (daicer/Agnai both do this).
  *
- * v1 uses "immediate" turn mode: each player message is a turn. Because the
- * session history is shared, it's genuinely multiplayer. Round-robin/initiative
- * ordering is a future `turnMode`.
+ * The default "immediate" turn mode treats each player message as a turn.
+ * Because the session history is shared, it's genuinely multiplayer. Turn
+ * sequencing (`session.turnMode`, e.g. round-robin) is enforced by the bot
+ * router before actions reach this pipeline.
  */
 import type { GameSession, LLMProvider, RollResult, TurnRecord } from '../types.js';
 import { Narrator } from '../narrator/narrator.js';

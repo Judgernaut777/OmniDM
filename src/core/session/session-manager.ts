@@ -32,6 +32,8 @@ export class SessionManager {
       players: {},
       history: [],
       summary: '',
+      turnMode: 'immediate',
+      turnIndex: 0,
       createdAt: Date.now(),
     };
     await this.store.save(this.key(msg), session);
@@ -59,5 +61,24 @@ export class SessionManager {
 
   isPlayer(session: GameSession, userId: string): boolean {
     return Boolean(session.players[userId]);
+  }
+
+  /** Party in join order (object insertion order — late joiners land at the end). */
+  turnOrder(session: GameSession): Player[] {
+    return Object.values(session.players);
+  }
+
+  /** Whose turn it is under round-robin; null if the party is empty. */
+  currentPlayer(session: GameSession): Player | null {
+    const order = this.turnOrder(session);
+    return order.length ? order[session.turnIndex % order.length] : null;
+  }
+
+  /** Advance the round-robin pointer to the next party member, wrapping around. */
+  async advanceTurn(session: GameSession): Promise<Player | null> {
+    const order = this.turnOrder(session);
+    if (order.length) session.turnIndex = (session.turnIndex % order.length) + 1;
+    await this.save(session);
+    return this.currentPlayer(session);
   }
 }

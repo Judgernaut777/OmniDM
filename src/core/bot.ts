@@ -6,7 +6,7 @@
  * plain text from joined players into the turn pipeline.
  */
 import type { Config } from '../config.js';
-import type { IncomingMessage, LLMProvider, OutgoingMessage } from './types.js';
+import type { GameSession, IncomingMessage, LLMProvider, OutgoingMessage, Player } from './types.js';
 import { SessionManager } from './session/session-manager.js';
 import { SessionStore } from './session/store.js';
 import { Narrator } from './narrator/narrator.js';
@@ -46,12 +46,7 @@ export class Bot {
         return await send({ channelId: msg.channelId, text: `👀 You're spectating. Type \`/dm join <character name>\` to play.` });
       }
 
-      const player = session.players[msg.userId];
-      const record = await this.pipeline.processTurn(session, {
-        actorName: player.characterName || player.userName,
-        text,
-      });
-      await send({ channelId: msg.channelId, text: record.narration, speaker: 'Dungeon Master' });
+      await this.playAction(session, msg, text, send);
     } catch (err) {
       const detail = (err as Error)?.message || String(err);
       console.error('[bot] handle failed:', detail);
@@ -59,6 +54,23 @@ export class Bot {
         channelId: msg.channelId,
         text: `⚠️ The DM stumbled (model/call error): ${detail}\nCheck your LLM_API_KEY / model id, or try \`/dm models\`.`,
       });
+    }
+  }
+
+  /** A player takes an action: enforce round-robin order, run the turn, advance. */
+  private async playAction(session: GameSession, msg: IncomingMessage, text: string, send: Send): Promise<void> {
+    if (session.turnMode === 'round-robin') {
+      const current = this.sessions.currentPlayer(session);
+      if (current && current.userId !== msg.userId) {
+        return await send({ channelId: msg.channelId, text: `⏳ It's ${name(current)}'s turn — yours is coming up.` });
+      }
+    }
+    const player = session.players[msg.userId];
+    const record = await this.pipeline.processTurn(session, { actorName: name(player), text });
+    await send({ channelId: msg.channelId, text: record.narration, speaker: 'Dungeon Master' });
+    if (session.turnMode === 'round-robin') {
+      const next = await this.sessions.advanceTurn(session);
+      if (next) await send({ channelId: msg.channelId, text: `➡️ Next up: ${name(next)}.` });
     }
   }
 
@@ -122,12 +134,38 @@ export class Bot {
         const session = await this.sessions.get(msg);
         if (!session || !this.sessions.isPlayer(session, msg.userId))
           return reply('Join a game first with `/dm new` or `/dm join <name>`.');
-        const player = session.players[msg.userId];
-        const record = await this.pipeline.processTurn(session, {
-          actorName: player.characterName || player.userName,
-          text: rest || 'd20',
-        });
-        return reply(record.narration);
+        return await this.playAction(session, msg, rest || 'd20', send);
+      }
+
+      case 'mode': {
+        const session = await this.sessions.get(msg);
+        if (!session) return reply('No game here yet — `/dm new` first.');
+        if (!rest) return reply(`Turn mode: \`${session.turnMode}\`. Change with \`/dm mode <immediate|round-robin>\`.`);
+        if (rest !== 'immediate' && rest !== 'round-robin') return reply('Turn mode must be `immediate` or `round-robin`.');
+        session.turnMode = rest;
+        await this.sessions.save(session);
+        if (rest === 'immediate') return reply('⚡ Immediate mode — every message is a turn.');
+        const current = this.sessions.currentPlayer(session);
+        return reply(`🔄 Round-robin mode — players act in join order.${current ? ` It's ${name(current)}'s turn.` : ''}`);
+      }
+
+      case 'turn': {
+        const session = await this.sessions.get(msg);
+        if (!session) return reply('No game here yet.');
+        if (session.turnMode !== 'round-robin') return reply('Turn mode is `immediate` — anyone can act anytime.');
+        const current = this.sessions.currentPlayer(session);
+        return reply(current ? `🎯 It's ${name(current)}'s turn.` : 'The party is empty — `/dm join <name>` first.');
+      }
+
+      case 'pass': {
+        const session = await this.sessions.get(msg);
+        if (!session || !this.sessions.isPlayer(session, msg.userId))
+          return reply('Join a game first with `/dm new` or `/dm join <name>`.');
+        if (session.turnMode !== 'round-robin') return reply('Nothing to pass — turn mode is `immediate`.');
+        const current = this.sessions.currentPlayer(session);
+        if (current && current.userId !== msg.userId) return reply(`⏳ It's ${name(current)}'s turn, not yours.`);
+        const next = await this.sessions.advanceTurn(session);
+        return reply(`⏭️ ${name(session.players[msg.userId])} passes.${next ? ` Next up: ${name(next)}.` : ''}`);
       }
 
       case 'end': {
@@ -143,10 +181,15 @@ export class Bot {
   }
 }
 
+const name = (p: Player) => p.characterName || p.userName;
+
 const HELP = `**OmniDM — commands**
 \`/dm new\` — start a campaign in this channel
 \`/dm join <name>\` — join with a character name
 \`/dm who\` — show the party
+\`/dm mode <immediate|round-robin>\` — how turns are taken
+\`/dm turn\` — show whose turn it is (round-robin)
+\`/dm pass\` — skip your turn (round-robin)
 \`/dm models [filter]\` — list models you can use (🆓 = free)
 \`/dm model <id>\` — pick the model for this game
 \`/dm roll <notation>\` — roll dice (e.g. \`d20+5\`, \`2d6\`, \`d20 adv\`)

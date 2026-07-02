@@ -11,6 +11,7 @@ import type { Config } from './config.js';
 import type { CompletionRequest, IncomingMessage, LLMProvider, ModelInfo, OutgoingMessage } from './core/types.js';
 import { Bot } from './core/bot.js';
 import { roll, extractRolls } from './core/engine/dice.js';
+import { SessionStore } from './core/session/store.js';
 
 let failures = 0;
 function check(label: string, cond: boolean) {
@@ -94,6 +95,38 @@ async function main() {
     check('persistence: history has the played turn', saved.history.length === 1);
     check('persistence: roll persisted with the turn', saved.history[0].rolls[0]?.notation === 'd20+5');
   }
+
+  // ── Round-robin turn mode ──
+  out.length = 0;
+  await bot.handle(from('u1', 'Alice', '/dm mode round-robin'), send);
+  check('mode: switch to round-robin', out.at(-1)!.text.includes('Round-robin'));
+  await bot.handle(from('u2', 'Bob', '/dm turn'), send);
+  check('turn: first joiner (Thorin) is up', out.at(-1)!.text.includes('Thorin'));
+
+  out.length = 0;
+  await bot.handle(from('u2', 'Bob', 'I loose an arrow'), send);
+  check('round-robin: out-of-turn player is gated with whose-turn notice',
+    out.length === 1 && out[0].speaker !== 'Dungeon Master' && out[0].text.includes('Thorin'));
+  await bot.handle(from('u2', 'Bob', '/dm who'), send);
+  check('round-robin: commands still work out of turn', out.at(-1)!.text.includes('Elaria'));
+
+  out.length = 0;
+  await bot.handle(from('u1', 'Alice', 'I charge with my d20 axe'), send);
+  check('round-robin: in-turn action resolves to narration', out.some((m) => m.speaker === 'Dungeon Master'));
+  check('round-robin: turn advances to Elaria', out.at(-1)!.text.includes('Elaria'));
+  await bot.handle(from('u2', 'Bob', '/dm pass'), send);
+  check('pass: advances (wraps) back to Thorin', out.at(-1)!.text.includes('passes') && out.at(-1)!.text.includes('Thorin'));
+  await bot.handle(from('u1', 'Alice', '/dm turn'), send);
+  check('turn: pointer persisted as Thorin', out.at(-1)!.text.includes('Thorin'));
+
+  // ── Backward compatibility: session saved before turnMode existed ──
+  await fs.writeFile(
+    path.join(dataDir, 'session_cli_legacy.json'),
+    JSON.stringify({ id: 'old1', platform: 'cli', channelId: 'legacy', systemId: 'dnd5e', model: 'mock/free-model', players: {}, history: [], summary: '', createdAt: 1 }),
+    'utf8',
+  );
+  const legacy = await new SessionStore(dataDir).load('cli:legacy');
+  check('legacy: pre-feature session loads with mode immediate', legacy?.turnMode === 'immediate' && legacy?.turnIndex === 0);
 
   await fs.rm(dataDir, { recursive: true, force: true });
   console.log(`\n${failures === 0 ? '🎉 all checks passed' : `💥 ${failures} check(s) failed`}`);

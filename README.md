@@ -73,6 +73,9 @@ for their own usage. Local models are free.
 /dm new                 start a campaign in this channel
 /dm join <name>         join with a character name
 /dm who                 show the party
+/dm mode <m>            turn mode: immediate (default) or round-robin
+/dm turn                show whose turn it is (round-robin)
+/dm pass                skip your turn (round-robin)
 /dm models [filter]     list usable models (🆓 = free)
 /dm model <id>          pick the model for this game
 /dm roll <notation>     roll dice (d20+5, 2d6, d20 adv, 4d6kh3)
@@ -114,7 +117,7 @@ message-converter would live.
 
 ## Roadmap / not done yet
 
-- Round-robin / initiative turn modes (v1 is "immediate": each message is a turn)
+- Initiative-rolled turn order (round-robin by join order is in: `/dm mode round-robin`)
 - Character-card import (Character Card V2/V3 spec) for personas & NPCs
 - Lorebook / world-info injection (keyword-triggered context)
 - Vector memory (RAG) alongside the living summary

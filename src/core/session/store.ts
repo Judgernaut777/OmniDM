@@ -26,6 +26,9 @@ export class SessionStore {
     try {
       const raw = await fs.readFile(this.file(key), 'utf8');
       const session = JSON.parse(raw) as GameSession;
+      // Fields added after v1 — default them so pre-existing files still load.
+      session.turnMode ??= 'immediate';
+      session.turnIndex ??= 0;
       this.cache.set(key, session);
       return session;
     } catch {
