@@ -15,6 +15,7 @@ import { roll, extractRolls } from './core/engine/dice.js';
 import { SessionStore } from './core/session/store.js';
 import { renderCard } from './core/cards/card.js';
 import { buildWorldInfo, makeEntry } from './core/lore/lorebook.js';
+import { AnthropicProvider, convertToAnthropic } from './providers/anthropic.js';
 
 let failures = 0;
 function check(label: string, cond: boolean) {
@@ -42,7 +43,7 @@ async function main() {
   await fs.rm(dataDir, { recursive: true, force: true });
 
   const config: Config = {
-    llm: { baseUrl: 'http://mock', apiKey: 'x', model: 'mock/free-model' },
+    llm: { provider: '', baseUrl: 'http://mock', apiKey: 'x', model: 'mock/free-model' },
     discord: { token: '' },
     dataDir,
   };
@@ -63,6 +64,46 @@ async function main() {
   check('dice: d20+5 in range 6..25', (() => { const r = roll('d20+5'); return r.total >= 6 && r.total <= 25; })());
   check('dice: seeded rolls are reproducible', roll('2d6+1', 'x', 99).total === roll('2d6+1', 'x', 99).total);
   check('dice: extractRolls finds notation in prose', extractRolls('I cast 8d6 fireball and swing d20+7').length === 2);
+
+  // ── Anthropic message conversion (pure / no network) ──
+  {
+    const conv = convertToAnthropic([
+      { role: 'system', content: 'You are the DM.' },
+      { role: 'system', content: 'Rules: d20.' },
+      { role: 'user', content: 'I open the door.' },
+    ]);
+    check('anthropic: system messages concatenate into the system param',
+      conv.system === 'You are the DM.\n\nRules: d20.' && conv.messages.length === 1 && conv.messages[0].role === 'user');
+
+    const merged = convertToAnthropic([
+      { role: 'user', content: 'Alice: I attack.' },
+      { role: 'user', content: 'Bob: I hide.' },
+      { role: 'assistant', content: 'The goblin reels.' },
+      { role: 'assistant', content: 'Bob slips into shadow.' },
+      { role: 'user', content: 'We press on.' },
+    ]);
+    check('anthropic: consecutive same-role turns merge into alternation',
+      merged.messages.length === 3 &&
+      merged.messages[0].content === 'Alice: I attack.\n\nBob: I hide.' &&
+      merged.messages[1].role === 'assistant' && merged.messages[1].content.includes('shadow') &&
+      merged.messages[2].role === 'user');
+
+    const leading = convertToAnthropic([
+      { role: 'system', content: 'sys' },
+      { role: 'assistant', content: 'Welcome, adventurer.' },
+      { role: 'user', content: 'Hello.' },
+    ]);
+    check('anthropic: leading assistant turn gets a placeholder user turn',
+      leading.messages.length === 3 && leading.messages[0].role === 'user' &&
+      leading.messages[1].role === 'assistant' && leading.messages[1].content === 'Welcome, adventurer.');
+    check('anthropic: no-system conversation yields an empty system param', merged.system === '');
+
+    const anthropicModels = await new AnthropicProvider({ apiKey: 'x' }).listModels();
+    check('anthropic: static model list, none free',
+      anthropicModels.length === 3 &&
+      anthropicModels.some((m) => m.id === 'claude-opus-4-8') &&
+      anthropicModels.every((m) => !m.free));
+  }
 
   // ── Command routing + multiplayer ──
   await bot.handle(from('u1', 'Alice', '/dm new'), send);

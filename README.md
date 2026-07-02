@@ -62,6 +62,7 @@ editing **one line** in `.env`:
 | OpenAI | `https://api.openai.com/v1` | Your OpenAI key |
 | Ollama (local) | `http://localhost:11434/v1` | No key needed, runs offline |
 | LM Studio (local) | `http://localhost:1234/v1` | No key needed |
+| Anthropic (native) | — set `LLM_PROVIDER=anthropic` | Native Messages API; key via `LLM_API_KEY` or `ANTHROPIC_API_KEY` |
 
 **Who pays?** Only whoever runs the bot, and only for the model *they* point it at.
 Free OpenRouter models = $0. A user supplying their own Claude/OpenAI key pays only
@@ -129,6 +130,7 @@ core/
     session-manager.ts / store.ts  ← channel → game session, party, JSON persistence
 providers/
   openai-compatible.ts  ← OpenRouter/OpenAI/Ollama/LM Studio (one adapter)
+  anthropic.ts          ← native Anthropic Messages API (system param + role converter)
 rules/
   dnd5e/system.md       ← swappable rules module
 ```
@@ -137,8 +139,8 @@ rules/
 add a case in `index.ts`. The engine doesn't change.
 
 **Add a model backend:** implement `LLMProvider` (`listModels` + `complete`) in
-`providers/`. For Anthropic-native billing, that's where SillyTavern's Claude
-message-converter would live.
+`providers/`. `anthropic.ts` is the worked example: SillyTavern's Claude
+message-converter pattern as a pure function plus a thin fetch wrapper.
 
 **Add a game system:** drop a `rules/<system>/system.md`. Set it per session.
 
@@ -147,7 +149,7 @@ message-converter would live.
 - Initiative-rolled turn order (round-robin by join order is in: `/dm mode round-robin`)
 - Vector memory (RAG) alongside the living summary (keyword lorebook is in: `/dm lore`)
 - More adapters: Matrix, Slack, Mattermost, Signal (via signal-cli)
-- Native Anthropic provider with the full Claude converter
+- More native providers beyond Anthropic (Anthropic is in: `LLM_PROVIDER=anthropic`)
 
 ## Prior art studied
 
