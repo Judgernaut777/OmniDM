@@ -63,6 +63,14 @@ same dropdown includes Claude, GPT, Gemini, and local models.
    `npm run slack` and in that channel: `/dm new`. Fog-of-war whispers arrive
    as ephemeral messages only the target player can see.
 
+### Run on Matrix
+
+1. Create a bot account on any homeserver and grab an access token (Element →
+   Settings → Help & About → Advanced, or the `/login` API).
+2. Put `MATRIX_HOMESERVER_URL` and `MATRIX_ACCESS_TOKEN` in `.env`.
+3. `npm run matrix`, invite the bot to a room (it auto-joins), then in that
+   room: `/dm new`. Fog-of-war whispers arrive as direct messages.
+
 ## Using whatever model you want
 
 Everything goes through one OpenAI-compatible endpoint, so you change backends by
@@ -119,15 +127,16 @@ block. Entries with no keywords are always injected.
 remainder is broadcast to the channel; each private section is delivered only
 to that character's player (the CLI prints a whisper; Discord sends a DM,
 falling back to a spoiler-tagged channel message if DMs are closed; Slack
-posts an ephemeral message).
+posts an ephemeral message; Matrix uses a direct room with that player).
 
 ## Architecture
 
 ```
-adapters/        ← PlatformAdapter implementations (cli, discord, slack, …)  [the moat]
+adapters/        ← PlatformAdapter implementations (cli, discord, slack, matrix, …)  [the moat]
   cli.ts
   discord.ts
   slack.ts
+  matrix.ts
 core/
   bot.ts         ← platform-agnostic router (commands + turns)
   types.ts       ← canonical Message / Session / Provider contracts
@@ -168,8 +177,9 @@ lexical matching by default (offline, zero config), or embeddings + cosine
 similarity when `EMBEDDINGS_MODEL` is set. Still to do:
 
 - Initiative-rolled turn order (round-robin by join order is in: `/dm mode round-robin`)
-- More adapters: Matrix, Mattermost, Signal (via signal-cli) — Slack is in
-  (`npm run slack`, Socket Mode via @slack/bolt)
+- More adapters: Mattermost, Signal (via signal-cli) — Slack is in
+  (`npm run slack`, Socket Mode via @slack/bolt) and so is Matrix
+  (`npm run matrix`, via matrix-bot-sdk)
 - More native providers beyond Anthropic (Anthropic is in: `LLM_PROVIDER=anthropic`)
 
 ## Prior art studied

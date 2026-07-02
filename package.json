@@ -10,6 +10,7 @@
     "cli": "tsx src/index.ts --adapter cli",
     "discord": "tsx src/index.ts --adapter discord",
     "slack": "tsx src/index.ts --adapter slack",
+    "matrix": "tsx src/index.ts --adapter matrix",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "smoke": "tsx src/smoke.ts",
@@ -19,6 +20,7 @@
     "@slack/bolt": "^4.7.3",
     "discord.js": "^14.16.3",
     "dotenv": "^16.4.5",
+    "matrix-bot-sdk": "^0.8.0",
     "nanoid": "^5.0.7",
     "openai": "^4.67.3"
   },

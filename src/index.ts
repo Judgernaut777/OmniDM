@@ -4,6 +4,7 @@
  *   npm run cli       → terminal adapter (zero setup, great for testing)
  *   npm run discord   → Discord adapter (needs DISCORD_TOKEN)
  *   npm run slack     → Slack adapter (needs SLACK_BOT_TOKEN + SLACK_APP_TOKEN)
+ *   npm run matrix    → Matrix adapter (needs MATRIX_HOMESERVER_URL + MATRIX_ACCESS_TOKEN)
  *
  * Adding a platform = writing one PlatformAdapter and adding a case below.
  */
@@ -13,6 +14,7 @@ import { Bot } from './core/bot.js';
 import { CliAdapter } from './adapters/cli.js';
 import { DiscordAdapter } from './adapters/discord.js';
 import { SlackAdapter } from './adapters/slack.js';
+import { MatrixAdapter } from './adapters/matrix.js';
 import type { PlatformAdapter } from './core/types.js';
 
 function pickAdapter(name: string, config: ReturnType<typeof loadConfig>): PlatformAdapter {
@@ -21,6 +23,8 @@ function pickAdapter(name: string, config: ReturnType<typeof loadConfig>): Platf
       return new DiscordAdapter(config.discord.token);
     case 'slack':
       return new SlackAdapter(config.slack.botToken, config.slack.appToken);
+    case 'matrix':
+      return new MatrixAdapter(config.matrix.homeserverUrl, config.matrix.accessToken, config.dataDir);
     case 'cli':
     default:
       return new CliAdapter();

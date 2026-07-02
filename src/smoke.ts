@@ -3,7 +3,7 @@
  * no API key). Proves: command routing, multiplayer join, deterministic dice,
  * turn pipeline, narration wiring, character-card import, lorebook injection,
  * fog-of-war private narration, vector-memory recall, disk persistence, and
- * the Slack adapter's offline surface (module load + token guard).
+ * the Slack and Matrix adapters' offline surface (module load + config guard).
  *
  * Run:  npx tsx src/smoke.ts
  */
@@ -20,6 +20,7 @@ import { cosine, MemoryRetriever } from './core/memory/retrieval.js';
 import { AnthropicProvider, convertToAnthropic } from './providers/anthropic.js';
 import { OpenAICompatibleProvider } from './providers/openai-compatible.js';
 import { SlackAdapter } from './adapters/slack.js';
+import { MatrixAdapter } from './adapters/matrix.js';
 
 let failures = 0;
 function check(label: string, cond: boolean) {
@@ -50,6 +51,7 @@ async function main() {
     llm: { provider: '', baseUrl: 'http://mock', apiKey: 'x', model: 'mock/free-model', embeddingsModel: '' },
     discord: { token: '' },
     slack: { botToken: '', appToken: '' },
+    matrix: { homeserverUrl: '', accessToken: '' },
     dataDir,
   };
   const provider = new MockProvider();
@@ -374,6 +376,18 @@ async function main() {
     check('slack: adapter exposes the PlatformAdapter surface', slack.name === 'slack' &&
       typeof slack.start === 'function' && typeof slack.stop === 'function' &&
       typeof slack.send === 'function' && typeof slack.onMessage === 'function');
+  }
+
+  // ── Matrix adapter: module loads offline; missing config fails fast ──
+  check('matrix: constructing without config throws a clear error', (() => {
+    try { new MatrixAdapter('', ''); return false; }
+    catch (e) { return e instanceof Error && e.message.includes('MATRIX_HOMESERVER_URL') && e.message.includes('MATRIX_ACCESS_TOKEN'); }
+  })());
+  {
+    const matrix = new MatrixAdapter('https://matrix.example.org', 'syt-test', dataDir); // constructs offline; no connection until start()
+    check('matrix: adapter exposes the PlatformAdapter surface', matrix.name === 'matrix' &&
+      typeof matrix.start === 'function' && typeof matrix.stop === 'function' &&
+      typeof matrix.send === 'function' && typeof matrix.onMessage === 'function');
   }
 
   // ── Backward compatibility: session saved before turnMode/npcs existed ──

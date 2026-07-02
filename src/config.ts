@@ -18,6 +18,10 @@ export interface Config {
     botToken: string;
     appToken: string;
   };
+  matrix: {
+    homeserverUrl: string;
+    accessToken: string;
+  };
   dataDir: string;
 }
 
@@ -37,6 +41,10 @@ export function loadConfig(): Config {
     slack: {
       botToken: process.env.SLACK_BOT_TOKEN || '',
       appToken: process.env.SLACK_APP_TOKEN || '',
+    },
+    matrix: {
+      homeserverUrl: process.env.MATRIX_HOMESERVER_URL || '',
+      accessToken: process.env.MATRIX_ACCESS_TOKEN || '',
     },
     dataDir: process.env.DATA_DIR || './data',
   };
