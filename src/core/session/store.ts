@@ -30,6 +30,7 @@ export class SessionStore {
       session.turnMode ??= 'immediate';
       session.turnIndex ??= 0;
       session.npcs ??= [];
+      session.lorebook ??= [];
       this.cache.set(key, session);
       return session;
     } catch {

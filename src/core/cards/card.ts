@@ -18,8 +18,18 @@ export interface CharacterCard {
   firstMes?: string;
   mesExample?: string;
   systemPrompt?: string;
-  /** Flattened `character_book` entry contents (lorebook lite). */
+  /** Legacy flattened lore (cards saved pre-lorebook) — still rendered inline. */
   bookEntries?: string[];
+  /** Structured `character_book` entries — imported into the session lorebook. */
+  book?: CardBookEntry[];
+}
+
+/** One `character_book` entry, normalized. Shape matches the lorebook's needs. */
+export interface CardBookEntry {
+  name: string;
+  keywords: string[];
+  content: string;
+  enabled: boolean;
 }
 
 const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
@@ -40,8 +50,14 @@ export function parseCardJson(json: unknown): CharacterCard {
     firstMes: str(data.first_mes),
     mesExample: str(data.mes_example),
     systemPrompt: str(data.system_prompt),
-    bookEntries: Array.isArray(entries)
-      ? entries.map((e) => str((e as { content?: unknown })?.content)).filter(Boolean)
+    book: Array.isArray(entries)
+      ? entries.flatMap((raw): CardBookEntry[] => {
+          const e = (raw ?? {}) as Record<string, unknown>;
+          const content = str(e.content);
+          if (!content || e.enabled === false) return [];
+          const keys = Array.isArray(e.keys) ? e.keys.map(str).filter(Boolean) : [];
+          return [{ name: str(e.name) || str(e.comment), keywords: keys, content, enabled: true }];
+        })
       : [],
   };
 }

@@ -31,6 +31,7 @@ export class SessionManager {
       model: this.defaultModel,
       players: {},
       npcs: [],
+      lorebook: [],
       history: [],
       summary: '',
       turnMode: 'immediate',

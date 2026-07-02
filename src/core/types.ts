@@ -8,6 +8,7 @@
  */
 
 import type { CharacterCard } from './cards/card.js';
+import type { LoreEntry } from './lore/lorebook.js';
 
 // ─── Messaging (platform-neutral) ────────────────────────────────────────────
 
@@ -115,6 +116,7 @@ export interface GameSession {
   model: string;                     // selected model id (overrides default)
   players: Record<string, Player>;   // keyed by userId; insertion order = join order
   npcs: CharacterCard[];             // imported NPC cards, played by the DM
+  lorebook: LoreEntry[];             // keyword-triggered world info (`/dm lore …`)
   history: TurnRecord[];             // recent verbatim turns
   summary: string;                   // rolling "living summary" of older history
   turnMode: TurnMode;                // defaulted to 'immediate' for pre-existing saves

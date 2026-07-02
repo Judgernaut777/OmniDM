@@ -11,6 +11,7 @@ import { SessionManager } from './session/session-manager.js';
 import { SessionStore } from './session/store.js';
 import { Narrator } from './narrator/narrator.js';
 import { loadCard } from './cards/card.js';
+import { findEntry, importCardBook, makeEntry } from './lore/lorebook.js';
 import { TurnPipeline } from './engine/turn-pipeline.js';
 
 type Send = (msg: OutgoingMessage) => Promise<void>;
@@ -121,16 +122,54 @@ export class Bot {
         } catch (err) {
           return reply(`⚠️ Could not import that card: ${(err as Error).message}`);
         }
+        const lore = importCardBook(session.lorebook, card.book ?? [], card.name);
+        const loreNote = lore ? ` Imported ${lore} lorebook entr${lore === 1 ? 'y' : 'ies'} (see \`/dm lore list\`).` : '';
         if (this.sessions.isPlayer(session, msg.userId)) {
           const player = session.players[msg.userId];
           player.card = card;
           player.characterName = card.name;
           await this.sessions.save(session);
-          return reply(`🎭 ${msg.userName} now plays **${card.name}** — imported card persona.`);
+          return reply(`🎭 ${msg.userName} now plays **${card.name}** — imported card persona.${loreNote}`);
         }
         session.npcs.push(card);
         await this.sessions.save(session);
-        return reply(`🧙 **${card.name}** enters the world as an NPC, portrayed by the DM.`);
+        return reply(`🧙 **${card.name}** enters the world as an NPC, portrayed by the DM.${loreNote}`);
+      }
+
+      case 'lore': {
+        const session = await this.sessions.get(msg);
+        if (!session) return reply('No game here yet — `/dm new` first.');
+        const sub = (parts.shift() || 'list').toLowerCase();
+        const arg = parts.join(' ');
+        switch (sub) {
+          case 'add': {
+            const segs = arg.split('|');
+            const entryName = segs[0]?.trim();
+            const content = segs.slice(2).join('|').trim();
+            if (segs.length < 3 || !entryName || !content)
+              return reply('Usage: `/dm lore add <name> | <comma,separated,keywords> | <content>` (empty keywords = always injected).');
+            const keywords = segs[1].split(',').map((k) => k.trim()).filter(Boolean);
+            const entry = makeEntry(entryName, keywords, content);
+            session.lorebook.push(entry);
+            await this.sessions.save(session);
+            return reply(`📖 Lore **${entry.name}** added (\`${entry.id}\`) — triggers on: ${keywords.join(', ') || '(always)'}.`);
+          }
+          case 'list': {
+            const list = session.lorebook
+              .map((e) => `• \`${e.id}\` **${e.name}** — ${e.keywords.join(', ') || '(always)'}${e.enabled ? '' : ' [disabled]'}`)
+              .join('\n');
+            return reply(`**Lorebook:**\n${list || '(empty — add with `/dm lore add <name> | <keywords> | <content>`)'}`);
+          }
+          case 'remove': {
+            const entry = arg ? findEntry(session.lorebook, arg) : undefined;
+            if (!entry) return reply(`No lore entry matches \`${arg || '(nothing)'}\` — see \`/dm lore list\`.`);
+            session.lorebook.splice(session.lorebook.indexOf(entry), 1);
+            await this.sessions.save(session);
+            return reply(`🗑️ Lore **${entry.name}** removed.`);
+          }
+          default:
+            return reply('Lore commands: `/dm lore add <name> | <keywords> | <content>`, `/dm lore list`, `/dm lore remove <id-or-name>`.');
+        }
       }
 
       case 'models': {
@@ -214,6 +253,7 @@ const HELP = `**OmniDM — commands**
 \`/dm turn\` — show whose turn it is (round-robin)
 \`/dm pass\` — skip your turn (round-robin)
 \`/dm import <file-or-URL>\` — import a Character Card V2/V3 (JSON or PNG): your persona if joined, an NPC otherwise
+\`/dm lore add <name> | <keywords> | <content>\` — world info, injected when a keyword comes up (also \`list\`, \`remove <id-or-name>\`)
 \`/dm models [filter]\` — list models you can use (🆓 = free)
 \`/dm model <id>\` — pick the model for this game
 \`/dm roll <notation>\` — roll dice (e.g. \`d20+5\`, \`2d6\`, \`d20 adv\`)

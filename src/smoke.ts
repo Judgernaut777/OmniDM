@@ -1,7 +1,8 @@
 /**
  * Smoke test — drives the full bot pipeline with a mock provider (no network,
  * no API key). Proves: command routing, multiplayer join, deterministic dice,
- * turn pipeline, narration wiring, character-card import, and disk persistence.
+ * turn pipeline, narration wiring, character-card import, lorebook injection,
+ * and disk persistence.
  *
  * Run:  npx tsx src/smoke.ts
  */
@@ -13,6 +14,7 @@ import { Bot } from './core/bot.js';
 import { roll, extractRolls } from './core/engine/dice.js';
 import { SessionStore } from './core/session/store.js';
 import { renderCard } from './core/cards/card.js';
+import { buildWorldInfo, makeEntry } from './core/lore/lorebook.js';
 
 let failures = 0;
 function check(label: string, cond: boolean) {
@@ -181,6 +183,39 @@ async function main() {
   check('persistence: persona card saved on the player', savedSession.players.u1?.card?.name === 'Zara');
   check('persistence: NPC cards saved on the session', savedSession.npcs?.length === 2 && savedSession.npcs[0].name === 'Grimble');
 
+  // ── Lorebook / world info ──
+  out.length = 0;
+  await bot.handle(from('u3', 'Carol', '/dm lore list'), send);
+  check('lore: card character_book auto-imported into the session lorebook', out.at(-1)!.text.includes('Grimble'));
+
+  await bot.handle(from('u1', 'Alice', '/dm lore add Icemaw | dragonfang, wyrm | A white wyrm named Icemaw nests atop Dragonfang Pass.'), send);
+  check('lore: entry added with keywords', out.at(-1)!.text.includes('Icemaw') && out.at(-1)!.text.includes('dragonfang'));
+
+  await bot.handle(from('u1', 'Alice', 'I polish my daggers by the fire'), send);
+  check('lore: action without keywords does not inject the entry', !provider.lastPrompt.includes('Icemaw'));
+  check('lore: keyword-less (constant) card entry is always injected',
+    provider.lastPrompt.includes('WORLD INFO') && provider.lastPrompt.includes('thieves guild'));
+
+  await bot.handle(from('u1', 'Alice', 'I set out for the DRAGONFANG pass at dawn'), send);
+  check('lore: keyword in the action injects the entry under WORLD INFO',
+    provider.lastPrompt.includes('WORLD INFO') && provider.lastPrompt.includes('white wyrm named Icemaw'));
+
+  await bot.handle(from('u1', 'Alice', 'I make camp for the night'), send);
+  check('lore: keyword in recent history still triggers', provider.lastPrompt.includes('white wyrm named Icemaw'));
+
+  out.length = 0;
+  await bot.handle(from('u1', 'Alice', '/dm lore remove Icemaw'), send);
+  check('lore: remove by name', out.at(-1)!.text.includes('removed'));
+  await bot.handle(from('u1', 'Alice', 'I march on toward the Dragonfang'), send);
+  check('lore: removed entry no longer injected', !provider.lastPrompt.includes('Icemaw'));
+
+  const bigLore = buildWorldInfo([makeEntry('Big', [], 'y'.repeat(5000))], ['anything']);
+  check('lore: injected block is bounded', bigLore.length > 0 && bigLore.length < 600);
+
+  const savedLore = JSON.parse(await fs.readFile(path.join(dataDir, sessionFile!), 'utf8'));
+  check('persistence: lorebook saved with the session',
+    Array.isArray(savedLore.lorebook) && savedLore.lorebook.some((e: { name: string }) => e.name === 'Grimble'));
+
   // ── Backward compatibility: session saved before turnMode/npcs existed ──
   await fs.writeFile(
     path.join(dataDir, 'session_cli_legacy.json'),
@@ -190,6 +225,7 @@ async function main() {
   const legacy = await store.load('cli:legacy');
   check('legacy: pre-feature session loads with mode immediate', legacy?.turnMode === 'immediate' && legacy?.turnIndex === 0);
   check('legacy: pre-card session defaults to no NPCs', Array.isArray(legacy?.npcs) && legacy!.npcs.length === 0);
+  check('legacy: pre-lorebook session defaults to an empty lorebook', Array.isArray(legacy?.lorebook) && legacy!.lorebook.length === 0);
 
   await fs.rm(dataDir, { recursive: true, force: true });
   console.log(`\n${failures === 0 ? '🎉 all checks passed' : `💥 ${failures} check(s) failed`}`);

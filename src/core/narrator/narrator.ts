@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import type { ChatMessage, GameSession, LLMProvider, RollResult } from '../types.js';
 import { renderCard } from '../cards/card.js';
+import { buildWorldInfo } from '../lore/lorebook.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -73,7 +74,19 @@ export class Narrator {
 
     const actionText = actions.map((a) => `${a.name}: ${a.text}`).join('\n');
 
+    // Lorebook: scan this turn's actions plus recent turns (newest first) for
+    // entry keywords; matched world info is injected, bounded, freshest first.
+    const scanTexts = [
+      actions.map((a) => a.text).join('\n'),
+      ...session.history
+        .slice(-6)
+        .reverse()
+        .map((t) => [...t.actions.map((a) => a.text), t.narration].join('\n')),
+    ];
+    const worldInfo = buildWorldInfo(session.lorebook ?? [], scanTexts);
+
     const user = [
+      worldInfo ? `WORLD INFO (established lore — keep your narration consistent with it):\n${worldInfo}` : '',
       historyText ? `RECENT HISTORY:\n${historyText}` : '',
       `RESOLVED ROLLS (narrate these exact outcomes; do not change them):\n${rollText}`,
       `THE PLAYERS' ACTIONS THIS TURN:\n${actionText}`,

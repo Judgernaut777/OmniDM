@@ -77,6 +77,10 @@ for their own usage. Local models are free.
 /dm turn                show whose turn it is (round-robin)
 /dm pass                skip your turn (round-robin)
 /dm import <src>        import a Character Card V2/V3 (JSON or PNG, path or URL)
+/dm lore add <name> | <keywords> | <content>
+                        add world info, injected when a keyword comes up
+/dm lore list           show the lorebook (ids, names, trigger keywords)
+/dm lore remove <id>    remove a lore entry (by id or name)
 /dm models [filter]     list usable models (🆓 = free)
 /dm model <id>          pick the model for this game
 /dm roll <notation>     roll dice (d20+5, 2d6, d20 adv, 4d6kh3)
@@ -88,6 +92,12 @@ Anything that isn't a command is treated as your character's action.
 `/dm import` accepts the Character Card V2/V3 format (raw JSON or a card PNG
 with the embedded `chara`/`ccv3` chunk). If you've already joined, the card
 becomes **your persona**; otherwise it becomes an **NPC** the DM portrays.
+A card's `character_book` is imported into the session lorebook automatically.
+
+`/dm lore` entries are keyword-triggered world info (SillyTavern's World Info
+pattern): when an entry's keyword appears in the current action or recent
+turns, its content is injected into the DM prompt as a bounded `WORLD INFO`
+block. Entries with no keywords are always injected.
 
 ## Architecture
 
@@ -100,6 +110,8 @@ core/
   types.ts       ← canonical Message / Session / Provider contracts
   cards/
     card.ts      ← Character Card V2/V3 import (JSON or PNG-embedded)
+  lore/
+    lorebook.ts  ← keyword-triggered world info (/dm lore, card character_books)
   engine/
     dice.ts      ← deterministic roller (seedable)
     turn-pipeline.ts  ← the sandwich: lock → resolve → persist → narrate
@@ -125,8 +137,7 @@ message-converter would live.
 ## Roadmap / not done yet
 
 - Initiative-rolled turn order (round-robin by join order is in: `/dm mode round-robin`)
-- Lorebook / world-info injection (keyword-triggered context)
-- Vector memory (RAG) alongside the living summary
+- Vector memory (RAG) alongside the living summary (keyword lorebook is in: `/dm lore`)
 - More adapters: Matrix, Slack, Mattermost, Signal (via signal-cli)
 - Native Anthropic provider with the full Claude converter
 - Per-player fog-of-war narration (daicer's `player_perspectives`)
