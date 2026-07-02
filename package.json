@@ -11,6 +11,7 @@
     "discord": "tsx src/index.ts --adapter discord",
     "slack": "tsx src/index.ts --adapter slack",
     "matrix": "tsx src/index.ts --adapter matrix",
+    "mattermost": "tsx src/index.ts --adapter mattermost",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "smoke": "tsx src/smoke.ts",

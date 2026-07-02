@@ -3,7 +3,8 @@
  * no API key). Proves: command routing, multiplayer join, deterministic dice,
  * turn pipeline, narration wiring, character-card import, lorebook injection,
  * fog-of-war private narration, vector-memory recall, disk persistence, and
- * the Slack and Matrix adapters' offline surface (module load + config guard).
+ * the Slack, Matrix and Mattermost adapters' offline surface (module load +
+ * config guard).
  *
  * Run:  npx tsx src/smoke.ts
  */
@@ -21,6 +22,7 @@ import { AnthropicProvider, convertToAnthropic } from './providers/anthropic.js'
 import { OpenAICompatibleProvider } from './providers/openai-compatible.js';
 import { SlackAdapter } from './adapters/slack.js';
 import { MatrixAdapter } from './adapters/matrix.js';
+import { MattermostAdapter } from './adapters/mattermost.js';
 
 let failures = 0;
 function check(label: string, cond: boolean) {
@@ -52,6 +54,7 @@ async function main() {
     discord: { token: '' },
     slack: { botToken: '', appToken: '' },
     matrix: { homeserverUrl: '', accessToken: '' },
+    mattermost: { url: '', token: '' },
     dataDir,
   };
   const provider = new MockProvider();
@@ -388,6 +391,18 @@ async function main() {
     check('matrix: adapter exposes the PlatformAdapter surface', matrix.name === 'matrix' &&
       typeof matrix.start === 'function' && typeof matrix.stop === 'function' &&
       typeof matrix.send === 'function' && typeof matrix.onMessage === 'function');
+  }
+
+  // ── Mattermost adapter: module loads offline; missing config fails fast ──
+  check('mattermost: constructing without config throws a clear error', (() => {
+    try { new MattermostAdapter('', ''); return false; }
+    catch (e) { return e instanceof Error && e.message.includes('MATTERMOST_URL') && e.message.includes('MATTERMOST_TOKEN'); }
+  })());
+  {
+    const mm = new MattermostAdapter('https://chat.example.com/', 'mm-test'); // constructs offline; no connection until start()
+    check('mattermost: adapter exposes the PlatformAdapter surface', mm.name === 'mattermost' &&
+      typeof mm.start === 'function' && typeof mm.stop === 'function' &&
+      typeof mm.send === 'function' && typeof mm.onMessage === 'function');
   }
 
   // ── Backward compatibility: session saved before turnMode/npcs existed ──

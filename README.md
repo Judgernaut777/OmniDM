@@ -71,6 +71,16 @@ same dropdown includes Claude, GPT, Gemini, and local models.
 3. `npm run matrix`, invite the bot to a room (it auto-joins), then in that
    room: `/dm new`. Fog-of-war whispers arrive as direct messages.
 
+### Run on Mattermost
+
+1. Create a bot account (System Console → **Integrations → Bot Accounts**) or
+   a personal access token.
+2. Put the server URL in `.env` as `MATTERMOST_URL` (e.g.
+   `https://chat.example.com`) and the token as `MATTERMOST_TOKEN`.
+3. `npm run mattermost`, add the bot to a channel, then in that channel:
+   `/dm new`. Fog-of-war whispers arrive as direct messages. No SDK needed —
+   the adapter speaks REST API v4 and the events WebSocket directly.
+
 ## Using whatever model you want
 
 Everything goes through one OpenAI-compatible endpoint, so you change backends by
@@ -127,7 +137,8 @@ block. Entries with no keywords are always injected.
 remainder is broadcast to the channel; each private section is delivered only
 to that character's player (the CLI prints a whisper; Discord sends a DM,
 falling back to a spoiler-tagged channel message if DMs are closed; Slack
-posts an ephemeral message; Matrix uses a direct room with that player).
+posts an ephemeral message; Matrix and Mattermost use a direct-message
+channel with that player).
 
 ## Architecture
 
@@ -137,6 +148,7 @@ adapters/        ← PlatformAdapter implementations (cli, discord, slack, matri
   discord.ts
   slack.ts
   matrix.ts
+  mattermost.ts
 core/
   bot.ts         ← platform-agnostic router (commands + turns)
   types.ts       ← canonical Message / Session / Provider contracts
@@ -177,9 +189,10 @@ lexical matching by default (offline, zero config), or embeddings + cosine
 similarity when `EMBEDDINGS_MODEL` is set. Still to do:
 
 - Initiative-rolled turn order (round-robin by join order is in: `/dm mode round-robin`)
-- More adapters: Mattermost, Signal (via signal-cli) — Slack is in
-  (`npm run slack`, Socket Mode via @slack/bolt) and so is Matrix
-  (`npm run matrix`, via matrix-bot-sdk)
+- More adapters: Signal (via signal-cli) — Slack is in
+  (`npm run slack`, Socket Mode via @slack/bolt), so is Matrix
+  (`npm run matrix`, via matrix-bot-sdk), and so is Mattermost
+  (`npm run mattermost`, dependency-free: REST API v4 + events WebSocket)
 - More native providers beyond Anthropic (Anthropic is in: `LLM_PROVIDER=anthropic`)
 
 ## Prior art studied

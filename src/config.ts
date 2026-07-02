@@ -22,6 +22,10 @@ export interface Config {
     homeserverUrl: string;
     accessToken: string;
   };
+  mattermost: {
+    url: string;
+    token: string;
+  };
   dataDir: string;
 }
 
@@ -45,6 +49,10 @@ export function loadConfig(): Config {
     matrix: {
       homeserverUrl: process.env.MATRIX_HOMESERVER_URL || '',
       accessToken: process.env.MATRIX_ACCESS_TOKEN || '',
+    },
+    mattermost: {
+      url: process.env.MATTERMOST_URL || '',
+      token: process.env.MATTERMOST_TOKEN || '',
     },
     dataDir: process.env.DATA_DIR || './data',
   };
