@@ -14,6 +14,10 @@ export interface Config {
   discord: {
     token: string;
   };
+  slack: {
+    botToken: string;
+    appToken: string;
+  };
   dataDir: string;
 }
 
@@ -29,6 +33,10 @@ export function loadConfig(): Config {
     },
     discord: {
       token: process.env.DISCORD_TOKEN || '',
+    },
+    slack: {
+      botToken: process.env.SLACK_BOT_TOKEN || '',
+      appToken: process.env.SLACK_APP_TOKEN || '',
     },
     dataDir: process.env.DATA_DIR || './data',
   };

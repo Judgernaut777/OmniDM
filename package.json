@@ -9,12 +9,14 @@
   "scripts": {
     "cli": "tsx src/index.ts --adapter cli",
     "discord": "tsx src/index.ts --adapter discord",
+    "slack": "tsx src/index.ts --adapter slack",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "smoke": "tsx src/smoke.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@slack/bolt": "^4.7.3",
     "discord.js": "^14.16.3",
     "dotenv": "^16.4.5",
     "nanoid": "^5.0.7",

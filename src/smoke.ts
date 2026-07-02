@@ -2,7 +2,8 @@
  * Smoke test — drives the full bot pipeline with a mock provider (no network,
  * no API key). Proves: command routing, multiplayer join, deterministic dice,
  * turn pipeline, narration wiring, character-card import, lorebook injection,
- * fog-of-war private narration, vector-memory recall, and disk persistence.
+ * fog-of-war private narration, vector-memory recall, disk persistence, and
+ * the Slack adapter's offline surface (module load + token guard).
  *
  * Run:  npx tsx src/smoke.ts
  */
@@ -18,6 +19,7 @@ import { buildWorldInfo, makeEntry } from './core/lore/lorebook.js';
 import { cosine, MemoryRetriever } from './core/memory/retrieval.js';
 import { AnthropicProvider, convertToAnthropic } from './providers/anthropic.js';
 import { OpenAICompatibleProvider } from './providers/openai-compatible.js';
+import { SlackAdapter } from './adapters/slack.js';
 
 let failures = 0;
 function check(label: string, cond: boolean) {
@@ -47,6 +49,7 @@ async function main() {
   const config: Config = {
     llm: { provider: '', baseUrl: 'http://mock', apiKey: 'x', model: 'mock/free-model', embeddingsModel: '' },
     discord: { token: '' },
+    slack: { botToken: '', appToken: '' },
     dataDir,
   };
   const provider = new MockProvider();
@@ -360,6 +363,18 @@ async function main() {
   check('memory: embeddings are off by default and opt-in via EMBEDDINGS_MODEL',
     new OpenAICompatibleProvider({ baseUrl: 'http://mock', apiKey: 'x' }).embed === undefined &&
     typeof new OpenAICompatibleProvider({ baseUrl: 'http://mock', apiKey: 'x', embeddingsModel: 'text-embedding-3-small' }).embed === 'function');
+
+  // ── Slack adapter: module loads offline; missing tokens fail fast ──
+  check('slack: constructing without tokens throws a clear error', (() => {
+    try { new SlackAdapter('', ''); return false; }
+    catch (e) { return e instanceof Error && e.message.includes('SLACK_BOT_TOKEN') && e.message.includes('SLACK_APP_TOKEN'); }
+  })());
+  {
+    const slack = new SlackAdapter('xoxb-test', 'xapp-test'); // constructs offline; no connection until start()
+    check('slack: adapter exposes the PlatformAdapter surface', slack.name === 'slack' &&
+      typeof slack.start === 'function' && typeof slack.stop === 'function' &&
+      typeof slack.send === 'function' && typeof slack.onMessage === 'function');
+  }
 
   // ── Backward compatibility: session saved before turnMode/npcs existed ──
   await fs.writeFile(

@@ -51,6 +51,18 @@ same dropdown includes Claude, GPT, Gemini, and local models.
 2. Put the token in `.env` as `DISCORD_TOKEN`, invite the bot to your server.
 3. `npm run discord`, then in any channel: `/dm new`.
 
+### Run on Slack
+
+1. Create an app at <https://api.slack.com/apps> and enable **Socket Mode**
+   (this mints an app-level token with `connections:write` — that's
+   `SLACK_APP_TOKEN`, it starts with `xapp-`).
+2. Give the bot the `chat:write`, `channels:history`, `groups:history` and
+   `users:read` scopes, subscribe to the `message.channels` event, and install
+   it to your workspace (`SLACK_BOT_TOKEN`, starts with `xoxb-`).
+3. Put both tokens in `.env`, invite the bot to a channel, then
+   `npm run slack` and in that channel: `/dm new`. Fog-of-war whispers arrive
+   as ephemeral messages only the target player can see.
+
 ## Using whatever model you want
 
 Everything goes through one OpenAI-compatible endpoint, so you change backends by
@@ -106,14 +118,16 @@ block. Entries with no keywords are always injected.
 `[PRIVATE:<CharacterName>] … [/PRIVATE]` sections to its narration. The public
 remainder is broadcast to the channel; each private section is delivered only
 to that character's player (the CLI prints a whisper; Discord sends a DM,
-falling back to a spoiler-tagged channel message if DMs are closed).
+falling back to a spoiler-tagged channel message if DMs are closed; Slack
+posts an ephemeral message).
 
 ## Architecture
 
 ```
-adapters/        ← PlatformAdapter implementations (cli, discord, …)  [the moat]
+adapters/        ← PlatformAdapter implementations (cli, discord, slack, …)  [the moat]
   cli.ts
   discord.ts
+  slack.ts
 core/
   bot.ts         ← platform-agnostic router (commands + turns)
   types.ts       ← canonical Message / Session / Provider contracts
@@ -154,7 +168,8 @@ lexical matching by default (offline, zero config), or embeddings + cosine
 similarity when `EMBEDDINGS_MODEL` is set. Still to do:
 
 - Initiative-rolled turn order (round-robin by join order is in: `/dm mode round-robin`)
-- More adapters: Matrix, Slack, Mattermost, Signal (via signal-cli)
+- More adapters: Matrix, Mattermost, Signal (via signal-cli) — Slack is in
+  (`npm run slack`, Socket Mode via @slack/bolt)
 - More native providers beyond Anthropic (Anthropic is in: `LLM_PROVIDER=anthropic`)
 
 ## Prior art studied

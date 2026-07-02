@@ -3,6 +3,7 @@
  *
  *   npm run cli       → terminal adapter (zero setup, great for testing)
  *   npm run discord   → Discord adapter (needs DISCORD_TOKEN)
+ *   npm run slack     → Slack adapter (needs SLACK_BOT_TOKEN + SLACK_APP_TOKEN)
  *
  * Adding a platform = writing one PlatformAdapter and adding a case below.
  */
@@ -11,12 +12,15 @@ import { createProvider } from './providers/index.js';
 import { Bot } from './core/bot.js';
 import { CliAdapter } from './adapters/cli.js';
 import { DiscordAdapter } from './adapters/discord.js';
+import { SlackAdapter } from './adapters/slack.js';
 import type { PlatformAdapter } from './core/types.js';
 
 function pickAdapter(name: string, config: ReturnType<typeof loadConfig>): PlatformAdapter {
   switch (name) {
     case 'discord':
       return new DiscordAdapter(config.discord.token);
+    case 'slack':
+      return new SlackAdapter(config.slack.botToken, config.slack.appToken);
     case 'cli':
     default:
       return new CliAdapter();
