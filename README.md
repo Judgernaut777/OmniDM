@@ -76,6 +76,8 @@ for their own usage. Local models are free.
 /dm mode <m>            turn mode: immediate (default) or round-robin
 /dm turn                show whose turn it is (round-robin)
 /dm pass                skip your turn (round-robin)
+/dm fog <on|off>        per-player fog of war: the DM can whisper private
+                        details to one character (default off)
 /dm import <src>        import a Character Card V2/V3 (JSON or PNG, path or URL)
 /dm lore add <name> | <keywords> | <content>
                         add world info, injected when a keyword comes up
@@ -98,6 +100,12 @@ A card's `character_book` is imported into the session lorebook automatically.
 pattern): when an entry's keyword appears in the current action or recent
 turns, its content is injected into the DM prompt as a bounded `WORLD INFO`
 block. Entries with no keywords are always injected.
+
+`/dm fog on` (daicer's `player_perspectives`) lets the DM append
+`[PRIVATE:<CharacterName>] … [/PRIVATE]` sections to its narration. The public
+remainder is broadcast to the channel; each private section is delivered only
+to that character's player (the CLI prints a whisper; Discord sends a DM,
+falling back to a spoiler-tagged channel message if DMs are closed).
 
 ## Architecture
 
@@ -140,7 +148,6 @@ message-converter would live.
 - Vector memory (RAG) alongside the living summary (keyword lorebook is in: `/dm lore`)
 - More adapters: Matrix, Slack, Mattermost, Signal (via signal-cli)
 - Native Anthropic provider with the full Claude converter
-- Per-player fog-of-war narration (daicer's `player_perspectives`)
 
 ## Prior art studied
 

@@ -57,7 +57,9 @@ export class CliAdapter implements PlatformAdapter {
 
   async send(msg: OutgoingMessage): Promise<void> {
     const label = msg.speaker ? `\n📖 ${msg.speaker}:` : '';
-    process.stdout.write(`${label}\n${msg.text}\n\n`);
+    // The terminal has one seat, so a private message is rendered as a whisper.
+    const text = msg.targetUserId ? `(whisper to ${msg.targetUserName ?? msg.targetUserId}) ${msg.text}` : msg.text;
+    process.stdout.write(`${label}\n${text}\n\n`);
   }
 
   private prompt(): void {

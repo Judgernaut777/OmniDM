@@ -31,6 +31,7 @@ export class SessionStore {
       session.turnIndex ??= 0;
       session.npcs ??= [];
       session.lorebook ??= [];
+      session.fogOfWar ??= false;
       this.cache.set(key, session);
       return session;
     } catch {

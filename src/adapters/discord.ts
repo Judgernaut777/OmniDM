@@ -57,10 +57,29 @@ export class DiscordAdapter implements PlatformAdapter {
   }
 
   async send(msg: OutgoingMessage): Promise<void> {
-    const channel = await this.client.channels.fetch(msg.channelId);
+    // Private (fog-of-war) delivery: DM the user; if their DMs are closed,
+    // fall back to the channel behind a spoiler tag addressed to them.
+    if (msg.targetUserId) {
+      try {
+        const user = await this.client.users.fetch(msg.targetUserId);
+        for (const chunk of chunkText(msg.text, 1900)) await user.send(chunk);
+        return;
+      } catch {
+        // Wrap each chunk so spoiler markers stay balanced across the cap.
+        for (const chunk of chunkText(msg.text, 1800)) {
+          await this.sendToChannel(msg.channelId, `🌫️ <@${msg.targetUserId}> only: ||${chunk}||`);
+        }
+        return;
+      }
+    }
+    await this.sendToChannel(msg.channelId, msg.text);
+  }
+
+  private async sendToChannel(channelId: string, text: string): Promise<void> {
+    const channel = await this.client.channels.fetch(channelId);
     if (channel && channel.isTextBased() && 'send' in channel) {
       // Discord caps messages at 2000 chars — chunk long narration.
-      for (const chunk of chunkText(msg.text, 1900)) {
+      for (const chunk of chunkText(text, 1900)) {
         await channel.send(chunk);
       }
     }

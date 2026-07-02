@@ -13,6 +13,7 @@ import path from 'node:path';
 import type { ChatMessage, GameSession, LLMProvider, RollResult } from '../types.js';
 import { renderCard } from '../cards/card.js';
 import { buildWorldInfo } from '../lore/lorebook.js';
+import { FOG_PROMPT } from './fog.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -52,6 +53,7 @@ export class Narrator {
       loadSystemModule(session.systemId),
       `## The party\n${roster}`,
       cards.length ? `## Imported characters (portray each consistently with their card)\n${cards.join('\n\n')}` : '',
+      session.fogOfWar ? FOG_PROMPT : '',
       session.summary ? `## Story so far\n${session.summary}` : '',
     ]
       .filter(Boolean)

@@ -36,6 +36,7 @@ export class SessionManager {
       summary: '',
       turnMode: 'immediate',
       turnIndex: 0,
+      fogOfWar: false,
       createdAt: Date.now(),
     };
     await this.store.save(this.key(msg), session);

@@ -2,7 +2,7 @@
  * Smoke test — drives the full bot pipeline with a mock provider (no network,
  * no API key). Proves: command routing, multiplayer join, deterministic dice,
  * turn pipeline, narration wiring, character-card import, lorebook injection,
- * and disk persistence.
+ * fog-of-war private narration, and disk persistence.
  *
  * Run:  npx tsx src/smoke.ts
  */
@@ -27,12 +27,13 @@ function check(label: string, cond: boolean) {
 class MockProvider implements LLMProvider {
   readonly id = 'mock';
   lastPrompt = '';
+  narration = 'The tavern falls silent as you act. (mock narration)';
   async listModels(): Promise<ModelInfo[]> {
     return [{ id: 'mock/free-model', free: true }];
   }
   async complete(req: CompletionRequest): Promise<string> {
     this.lastPrompt = req.messages.map((m) => m.content).join('\n');
-    return 'The tavern falls silent as you act. (mock narration)';
+    return this.narration;
   }
 }
 
@@ -50,9 +51,9 @@ async function main() {
 
   const out: OutgoingMessage[] = [];
   const send = async (m: OutgoingMessage) => void out.push(m);
-  const from = (userId: string, userName: string, text: string): IncomingMessage => ({
+  const from = (userId: string, userName: string, text: string, channelId = 'chan1'): IncomingMessage => ({
     platform: 'cli',
-    channelId: 'chan1',
+    channelId,
     userId,
     userName,
     text,
@@ -216,6 +217,45 @@ async function main() {
   check('persistence: lorebook saved with the session',
     Array.isArray(savedLore.lorebook) && savedLore.lorebook.some((e: { name: string }) => e.name === 'Grimble'));
 
+  // ── Fog of war: per-player private narration (fresh channel) ──
+  const fogFrom = (userId: string, userName: string, text: string) => from(userId, userName, text, 'chan2');
+  await bot.handle(fogFrom('u1', 'Alice', '/dm new'), send);
+  await bot.handle(fogFrom('u1', 'Alice', '/dm join Thorin'), send);
+  await bot.handle(fogFrom('u2', 'Bob', '/dm join Elaria'), send);
+  await bot.handle(fogFrom('u1', 'Alice', 'I scout ahead'), send);
+  check('fog: off by default — no fog instructions in the prompt', !provider.lastPrompt.includes('Fog of war'));
+
+  out.length = 0;
+  await bot.handle(fogFrom('u1', 'Alice', '/dm fog on'), send);
+  check('fog: /dm fog on enables it', out.at(-1)!.text.includes('Fog of war ON'));
+
+  provider.narration =
+    'The party enters the crypt. [PRIVATE:Thorin]You alone spot a glint of gold behind the sarcophagus.[/PRIVATE] Dust swirls in the torchlight.';
+  out.length = 0;
+  await bot.handle(fogFrom('u1', 'Alice', 'I search the crypt'), send);
+  check('fog: prompt instructs the model about [PRIVATE:...] sections', provider.lastPrompt.includes('Fog of war is ON') && provider.lastPrompt.includes('[/PRIVATE]'));
+  const publicMsg = out.find((m) => m.speaker === 'Dungeon Master' && !m.targetUserId);
+  check('fog: public remainder broadcast to the channel',
+    Boolean(publicMsg) && publicMsg!.text.includes('enters the crypt') && publicMsg!.text.includes('Dust swirls'));
+  check('fog: public text carries no private content or markers',
+    !publicMsg!.text.includes('glint of gold') && !publicMsg!.text.includes('[PRIVATE'));
+  const whisper = out.find((m) => m.targetUserId);
+  check("fog: private section targeted at Thorin's player",
+    whisper?.targetUserId === 'u1' && whisper.text.includes('glint of gold') && !whisper.text.includes('[PRIVATE'));
+
+  provider.narration = 'A cold wind blows. [PRIVATE:Gandalf]You sense a Balrog.[/PRIVATE]';
+  out.length = 0;
+  await bot.handle(fogFrom('u2', 'Bob', 'I listen at the door'), send);
+  check('fog: unknown character name in a marker is dropped silently',
+    !out.some((m) => m.targetUserId) && !out.some((m) => m.text.includes('Balrog')));
+
+  provider.narration = 'The tavern falls silent as you act. (mock narration)';
+  out.length = 0;
+  await bot.handle(fogFrom('u1', 'Alice', '/dm fog off'), send);
+  check('fog: /dm fog off disables it', out.at(-1)!.text.includes('Fog of war OFF'));
+  await bot.handle(fogFrom('u1', 'Alice', 'I sit by the fire'), send);
+  check('fog: off again — no fog instructions in the prompt', !provider.lastPrompt.includes('Fog of war'));
+
   // ── Backward compatibility: session saved before turnMode/npcs existed ──
   await fs.writeFile(
     path.join(dataDir, 'session_cli_legacy.json'),
@@ -226,6 +266,7 @@ async function main() {
   check('legacy: pre-feature session loads with mode immediate', legacy?.turnMode === 'immediate' && legacy?.turnIndex === 0);
   check('legacy: pre-card session defaults to no NPCs', Array.isArray(legacy?.npcs) && legacy!.npcs.length === 0);
   check('legacy: pre-lorebook session defaults to an empty lorebook', Array.isArray(legacy?.lorebook) && legacy!.lorebook.length === 0);
+  check('legacy: pre-fog session defaults to fog of war off', legacy?.fogOfWar === false);
 
   await fs.rm(dataDir, { recursive: true, force: true });
   console.log(`\n${failures === 0 ? '🎉 all checks passed' : `💥 ${failures} check(s) failed`}`);

@@ -12,6 +12,7 @@ import { SessionStore } from './session/store.js';
 import { Narrator } from './narrator/narrator.js';
 import { loadCard } from './cards/card.js';
 import { findEntry, importCardBook, makeEntry } from './lore/lorebook.js';
+import { splitFog } from './narrator/fog.js';
 import { TurnPipeline } from './engine/turn-pipeline.js';
 
 type Send = (msg: OutgoingMessage) => Promise<void>;
@@ -69,10 +70,34 @@ export class Bot {
     }
     const player = session.players[msg.userId];
     const record = await this.pipeline.processTurn(session, { actorName: name(player), text });
-    await send({ channelId: msg.channelId, text: record.narration, speaker: 'Dungeon Master' });
+    await this.broadcast(session, record.narration, send);
     if (session.turnMode === 'round-robin') {
       const next = await this.sessions.advanceTurn(session);
       if (next) await send({ channelId: msg.channelId, text: `➡️ Next up: ${name(next)}.` });
+    }
+  }
+
+  /**
+   * Deliver a narration. With fog of war on, [PRIVATE:<Character>] sections are
+   * stripped from the public text and whispered to that character's player
+   * (via `targetUserId`); sections for unknown names are dropped silently.
+   */
+  private async broadcast(session: GameSession, narration: string, send: Send): Promise<void> {
+    if (!session.fogOfWar) {
+      return await send({ channelId: session.channelId, text: narration, speaker: 'Dungeon Master' });
+    }
+    const { publicText, privates } = splitFog(narration);
+    if (publicText) await send({ channelId: session.channelId, text: publicText, speaker: 'Dungeon Master' });
+    for (const p of privates) {
+      const player = Object.values(session.players).find((pl) => name(pl).toLowerCase() === p.characterName.toLowerCase());
+      if (!player) continue;
+      await send({
+        channelId: session.channelId,
+        text: p.content,
+        speaker: 'Dungeon Master',
+        targetUserId: player.userId,
+        targetUserName: player.userName,
+      });
     }
   }
 
@@ -211,6 +236,20 @@ export class Bot {
         return reply(`🔄 Round-robin mode — players act in join order.${current ? ` It's ${name(current)}'s turn.` : ''}`);
       }
 
+      case 'fog': {
+        const session = await this.sessions.get(msg);
+        if (!session) return reply('No game here yet — `/dm new` first.');
+        if (!rest) return reply(`Fog of war is \`${session.fogOfWar ? 'on' : 'off'}\`. Change with \`/dm fog <on|off>\`.`);
+        if (rest !== 'on' && rest !== 'off') return reply('Fog of war must be `on` or `off`.');
+        session.fogOfWar = rest === 'on';
+        await this.sessions.save(session);
+        return reply(
+          session.fogOfWar
+            ? '🌫️ Fog of war ON — the DM may whisper private details to individual characters.'
+            : '☀️ Fog of war OFF — all narration is shared with the whole party.',
+        );
+      }
+
       case 'turn': {
         const session = await this.sessions.get(msg);
         if (!session) return reply('No game here yet.');
@@ -251,6 +290,7 @@ const HELP = `**OmniDM — commands**
 \`/dm who\` — show the party
 \`/dm mode <immediate|round-robin>\` — how turns are taken
 \`/dm turn\` — show whose turn it is (round-robin)
+\`/dm fog <on|off>\` — per-player fog of war: the DM can whisper private details to one character
 \`/dm pass\` — skip your turn (round-robin)
 \`/dm import <file-or-URL>\` — import a Character Card V2/V3 (JSON or PNG): your persona if joined, an NPC otherwise
 \`/dm lore add <name> | <keywords> | <content>\` — world info, injected when a keyword comes up (also \`list\`, \`remove <id-or-name>\`)

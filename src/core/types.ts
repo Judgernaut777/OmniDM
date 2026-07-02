@@ -28,6 +28,10 @@ export interface OutgoingMessage {
   text: string;
   /** Optional speaker label, e.g. "Dungeon Master" or an NPC name. */
   speaker?: string;
+  /** If set, deliver privately to this user only (fog-of-war whisper). */
+  targetUserId?: string;
+  /** Display name for the target, so adapters can label the whisper. */
+  targetUserName?: string;
 }
 
 /**
@@ -38,6 +42,11 @@ export interface PlatformAdapter {
   readonly name: string;
   start(): Promise<void>;
   stop(): Promise<void>;
+  /**
+   * Deliver a message. When `msg.targetUserId` is set, deliver it privately
+   * to that user (CLI: a "(whisper to …)" line; Discord: a DM, falling back
+   * to a spoiler-tagged channel message if DMs are closed).
+   */
   send(msg: OutgoingMessage): Promise<void>;
   /** Register the single handler the bot core uses to receive messages. */
   onMessage(handler: (msg: IncomingMessage) => void | Promise<void>): void;
@@ -121,5 +130,6 @@ export interface GameSession {
   summary: string;                   // rolling "living summary" of older history
   turnMode: TurnMode;                // defaulted to 'immediate' for pre-existing saves
   turnIndex: number;                 // round-robin pointer into join order
+  fogOfWar: boolean;                 // per-player private narration (`/dm fog on|off`)
   createdAt: number;
 }
