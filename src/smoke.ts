@@ -2,20 +2,22 @@
  * Smoke test — drives the full bot pipeline with a mock provider (no network,
  * no API key). Proves: command routing, multiplayer join, deterministic dice,
  * turn pipeline, narration wiring, character-card import, lorebook injection,
- * fog-of-war private narration, and disk persistence.
+ * fog-of-war private narration, vector-memory recall, and disk persistence.
  *
  * Run:  npx tsx src/smoke.ts
  */
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { Config } from './config.js';
-import type { CompletionRequest, IncomingMessage, LLMProvider, ModelInfo, OutgoingMessage } from './core/types.js';
+import type { CompletionRequest, GameSession, IncomingMessage, LLMProvider, ModelInfo, OutgoingMessage, TurnRecord } from './core/types.js';
 import { Bot } from './core/bot.js';
 import { roll, extractRolls } from './core/engine/dice.js';
 import { SessionStore } from './core/session/store.js';
 import { renderCard } from './core/cards/card.js';
 import { buildWorldInfo, makeEntry } from './core/lore/lorebook.js';
+import { cosine, MemoryRetriever } from './core/memory/retrieval.js';
 import { AnthropicProvider, convertToAnthropic } from './providers/anthropic.js';
+import { OpenAICompatibleProvider } from './providers/openai-compatible.js';
 
 let failures = 0;
 function check(label: string, cond: boolean) {
@@ -43,7 +45,7 @@ async function main() {
   await fs.rm(dataDir, { recursive: true, force: true });
 
   const config: Config = {
-    llm: { provider: '', baseUrl: 'http://mock', apiKey: 'x', model: 'mock/free-model' },
+    llm: { provider: '', baseUrl: 'http://mock', apiKey: 'x', model: 'mock/free-model', embeddingsModel: '' },
     discord: { token: '' },
     dataDir,
   };
@@ -297,6 +299,68 @@ async function main() {
   await bot.handle(fogFrom('u1', 'Alice', 'I sit by the fire'), send);
   check('fog: off again — no fog instructions in the prompt', !provider.lastPrompt.includes('Fog of war'));
 
+  // ── Vector memory / RAG: recall of turns outside the recent-history window ──
+  const memFrom = (text: string) => from('u1', 'Alice', text, 'chan3');
+  await bot.handle(memFrom('/dm new'), send);
+  await bot.handle(memFrom('/dm join Thorin'), send);
+  const seedTurns = [
+    'We ford the icy river at dusk',
+    'I pocket the obsidian raven amulet from the altar',
+    'We haggle with the caravan master over salt',
+    'I climb the crumbling watchtower',
+    'We share stew around the campfire',
+    'I question the innkeeper about the missing miners',
+    'We follow wolf tracks into the pines',
+    'I sharpen my blade before we break camp',
+  ];
+  for (const t of seedTurns) await bot.handle(memFrom(t), send);
+  check('memory: no recall while every matching turn is still in recent history',
+    !provider.lastPrompt.includes('RELEVANT PAST EVENTS'));
+
+  await bot.handle(memFrom('That obsidian raven amulet I took — I study it for markings'), send);
+  const pastBlock = provider.lastPrompt.match(/RELEVANT PAST EVENTS[^]*?(?=\n\nRECENT HISTORY)/)?.[0] ?? '';
+  check('memory: echoed turn outside the history window is recalled under RELEVANT PAST EVENTS',
+    pastBlock.includes('obsidian raven amulet from the altar'));
+  check('memory: unrelated old turn scores zero and is not recalled', !pastBlock.includes('icy river'));
+  check('memory: turns already in RECENT HISTORY are not duplicated as past events',
+    !pastBlock.includes('sharpen my blade') && !pastBlock.includes('wolf tracks'));
+
+  const memSession = JSON.parse(await fs.readFile(path.join(dataDir, 'session_cli_chan3.json'), 'utf8'));
+  check('memory: one record persisted per resolved turn', memSession.memories?.length === 9);
+  check('memory: record captures who did what plus a narration snippet',
+    memSession.memories?.[1]?.text.includes('Thorin: I pocket the obsidian raven amulet') &&
+    memSession.memories?.[1]?.text.includes('tavern falls silent'));
+
+  // ── Vector memory: embeddings backend (deterministic fake embed, no network) ──
+  {
+    const embedProvider: LLMProvider = {
+      id: 'fake-embed',
+      listModels: async () => [],
+      complete: async () => '',
+      // 2-D "embeddings": axis 0 = combat, axis 1 = commerce.
+      embed: async (texts) => texts.map((t) => (t.includes('goblin') || t.includes('fought') ? [1, 0] : [0, 1])),
+    };
+    const retriever = new MemoryRetriever(embedProvider);
+    const fake = {
+      history: [],
+      memories: [
+        { turn: 0, text: 'Thorin: bought rope in the goblin market → done', vector: [0, 1], ts: 1 },
+        { turn: 1, text: 'Thorin: fought off an ambush → done', vector: [1, 0], ts: 2 },
+      ],
+    } as unknown as GameSession;
+    const hits = await retriever.retrieve(fake, 'a goblin leaps at me', 1);
+    check('memory: embed() backend ranks by cosine similarity, not word overlap',
+      hits.length === 1 && hits[0].turn === 1);
+    const rec: TurnRecord = { actions: [{ name: 'Thorin', text: 'I stab the goblin' }], rolls: [], narration: 'It shrieks.', ts: 3 };
+    await retriever.remember(fake, rec);
+    check('memory: remember() stores the embedding vector with the record',
+      fake.memories.length === 3 && fake.memories[2].vector?.[0] === 1);
+    check('memory: cosine similarity is sane', cosine([1, 0], [1, 0]) === 1 && cosine([1, 0], [0, 1]) === 0);
+  }
+  check('memory: embeddings are off by default and opt-in via EMBEDDINGS_MODEL',
+    new OpenAICompatibleProvider({ baseUrl: 'http://mock', apiKey: 'x' }).embed === undefined &&
+    typeof new OpenAICompatibleProvider({ baseUrl: 'http://mock', apiKey: 'x', embeddingsModel: 'text-embedding-3-small' }).embed === 'function');
+
   // ── Backward compatibility: session saved before turnMode/npcs existed ──
   await fs.writeFile(
     path.join(dataDir, 'session_cli_legacy.json'),
@@ -308,6 +372,7 @@ async function main() {
   check('legacy: pre-card session defaults to no NPCs', Array.isArray(legacy?.npcs) && legacy!.npcs.length === 0);
   check('legacy: pre-lorebook session defaults to an empty lorebook', Array.isArray(legacy?.lorebook) && legacy!.lorebook.length === 0);
   check('legacy: pre-fog session defaults to fog of war off', legacy?.fogOfWar === false);
+  check('legacy: pre-memory session defaults to no memory records', Array.isArray(legacy?.memories) && legacy!.memories.length === 0);
 
   await fs.rm(dataDir, { recursive: true, force: true });
   console.log(`\n${failures === 0 ? '🎉 all checks passed' : `💥 ${failures} check(s) failed`}`);

@@ -34,6 +34,7 @@ export class SessionManager {
       lorebook: [],
       history: [],
       summary: '',
+      memories: [],
       turnMode: 'immediate',
       turnIndex: 0,
       fogOfWar: false,

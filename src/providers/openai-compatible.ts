@@ -20,12 +20,16 @@ import type { CompletionRequest, LLMProvider, ModelInfo } from '../core/types.js
 export interface OpenAICompatibleOptions {
   baseUrl: string;
   apiKey: string;
+  /** Model for the /embeddings endpoint (EMBEDDINGS_MODEL). Empty = embeddings off. */
+  embeddingsModel?: string;
 }
 
 export class OpenAICompatibleProvider implements LLMProvider {
   readonly id = 'openai-compatible';
   private client: OpenAI;
   private baseUrl: string;
+  /** Defined only when an embeddings model is configured — callers feature-detect it. */
+  embed?: (texts: string[]) => Promise<number[][]>;
 
   constructor(opts: OpenAICompatibleOptions) {
     this.baseUrl = opts.baseUrl;
@@ -38,6 +42,13 @@ export class OpenAICompatibleProvider implements LLMProvider {
         'X-Title': 'OmniDM',
       },
     });
+    if (opts.embeddingsModel) {
+      const model = opts.embeddingsModel;
+      this.embed = async (texts) => {
+        const res = await this.client.embeddings.create({ model, input: texts });
+        return res.data.map((d) => d.embedding);
+      };
+    }
   }
 
   async listModels(): Promise<ModelInfo[]> {

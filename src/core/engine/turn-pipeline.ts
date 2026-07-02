@@ -13,6 +13,7 @@
  * router before actions reach this pipeline.
  */
 import type { GameSession, LLMProvider, RollResult, TurnRecord } from '../types.js';
+import { MemoryRetriever } from '../memory/retrieval.js';
 import { Narrator } from '../narrator/narrator.js';
 import { SessionManager } from '../session/session-manager.js';
 import { extractRolls, roll } from './dice.js';
@@ -38,12 +39,15 @@ export interface TurnInput {
 
 export class TurnPipeline {
   private locks = new ChannelLock();
+  private memory: MemoryRetriever;
 
   constructor(
     private sessions: SessionManager,
     private narrator: Narrator,
     private provider: LLMProvider,
-  ) {}
+  ) {
+    this.memory = new MemoryRetriever(provider);
+  }
 
   async processTurn(session: GameSession, input: TurnInput): Promise<TurnRecord> {
     const lockKey = `${session.platform}:${session.channelId}`;
@@ -51,13 +55,16 @@ export class TurnPipeline {
       // 1. INTENT + 2. RESOLUTION (pure, deterministic dice)
       const rolls: RollResult[] = extractRolls(input.text).map((n) => roll(n, input.actorName));
 
-      // 3. NARRATION (LLM narrates the resolved turn)
+      // 3. NARRATION (LLM narrates the resolved turn, with long-term recall of
+      // relevant older turns from outside the prompt's recent-history window)
       const actions = [{ name: input.actorName, text: input.text }];
-      const narration = await this.narrator.narrate(session, actions, rolls);
+      const pastEvents = await this.memory.retrieve(session, input.text);
+      const narration = await this.narrator.narrate(session, actions, rolls, pastEvents);
 
-      // 4. PERSISTENCE
+      // 4. PERSISTENCE (history + a vector-memory record of the resolved turn)
       const record: TurnRecord = { actions, rolls, narration, ts: Date.now() };
       session.history.push(record);
+      await this.memory.remember(session, record);
       await this.maybeCompact(session);
       await this.sessions.save(session);
 

@@ -9,6 +9,7 @@
 
 import type { CharacterCard } from './cards/card.js';
 import type { LoreEntry } from './lore/lorebook.js';
+import type { MemoryRecord } from './memory/retrieval.js';
 
 // ─── Messaging (platform-neutral) ────────────────────────────────────────────
 
@@ -79,6 +80,12 @@ export interface LLMProvider {
   /** Powers the in-app model dropdown. May return [] if the backend can't list. */
   listModels(): Promise<ModelInfo[]>;
   complete(req: CompletionRequest): Promise<string>;
+  /**
+   * Optional embeddings backend (OpenAI-compatible /embeddings endpoint).
+   * Left undefined when not configured — callers feature-detect it and fall
+   * back to lexical scoring for vector memory.
+   */
+  embed?(texts: string[]): Promise<number[][]>;
 }
 
 // ─── Game domain ─────────────────────────────────────────────────────────────
@@ -128,6 +135,7 @@ export interface GameSession {
   lorebook: LoreEntry[];             // keyword-triggered world info (`/dm lore …`)
   history: TurnRecord[];             // recent verbatim turns
   summary: string;                   // rolling "living summary" of older history
+  memories: MemoryRecord[];          // per-turn RAG records (vector memory recall)
   turnMode: TurnMode;                // defaulted to 'immediate' for pre-existing saves
   turnIndex: number;                 // round-robin pointer into join order
   fogOfWar: boolean;                 // per-player private narration (`/dm fog on|off`)

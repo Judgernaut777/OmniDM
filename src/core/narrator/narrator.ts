@@ -13,6 +13,7 @@ import path from 'node:path';
 import type { ChatMessage, GameSession, LLMProvider, RollResult } from '../types.js';
 import { renderCard } from '../cards/card.js';
 import { buildWorldInfo } from '../lore/lorebook.js';
+import { HISTORY_WINDOW, type MemoryRecord } from '../memory/retrieval.js';
 import { FOG_PROMPT } from './fog.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -35,6 +36,7 @@ export class Narrator {
     session: GameSession,
     actions: { name: string; text: string }[],
     rolls: RollResult[],
+    pastEvents: MemoryRecord[],
   ): ChatMessage[] {
     const roster = Object.values(session.players)
       .map((p) => `- ${p.characterName || p.userName} (HP ${p.hp}/${p.maxHp})`)
@@ -61,7 +63,7 @@ export class Narrator {
 
     // Recent verbatim history (the rolling summary covers older turns).
     const historyText = session.history
-      .slice(-6)
+      .slice(-HISTORY_WINDOW)
       .map((t) => {
         const acts = t.actions.map((a) => `${a.name}: ${a.text}`).join('\n');
         return `${acts}\nDM: ${t.narration}`;
@@ -81,14 +83,19 @@ export class Narrator {
     const scanTexts = [
       actions.map((a) => a.text).join('\n'),
       ...session.history
-        .slice(-6)
+        .slice(-HISTORY_WINDOW)
         .reverse()
         .map((t) => [...t.actions.map((a) => a.text), t.narration].join('\n')),
     ];
     const worldInfo = buildWorldInfo(session.lorebook ?? [], scanTexts);
 
+    // Vector-memory recall: older turns relevant to this action, retrieved by
+    // the pipeline from outside the recent-history window above.
+    const pastText = pastEvents.map((m) => `- ${m.text}`).join('\n');
+
     const user = [
       worldInfo ? `WORLD INFO (established lore — keep your narration consistent with it):\n${worldInfo}` : '',
+      pastText ? `RELEVANT PAST EVENTS (recalled from earlier in the campaign — stay consistent with them):\n${pastText}` : '',
       historyText ? `RECENT HISTORY:\n${historyText}` : '',
       `RESOLVED ROLLS (narrate these exact outcomes; do not change them):\n${rollText}`,
       `THE PLAYERS' ACTIONS THIS TURN:\n${actionText}`,
@@ -107,8 +114,9 @@ export class Narrator {
     session: GameSession,
     actions: { name: string; text: string }[],
     rolls: RollResult[],
+    pastEvents: MemoryRecord[] = [],
   ): Promise<string> {
-    const messages = this.buildMessages(session, actions, rolls);
+    const messages = this.buildMessages(session, actions, rolls, pastEvents);
     return this.provider.complete({ model: session.model, messages });
   }
 }

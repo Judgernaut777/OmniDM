@@ -8,6 +8,8 @@ export interface Config {
     baseUrl: string;
     apiKey: string;
     model: string;
+    /** Embeddings model for vector memory; '' (default) = lexical fallback. */
+    embeddingsModel: string;
   };
   discord: {
     token: string;
@@ -23,6 +25,7 @@ export function loadConfig(): Config {
       // ANTHROPIC_API_KEY is accepted as an alias for the native Anthropic provider.
       apiKey: process.env.LLM_API_KEY || process.env.ANTHROPIC_API_KEY || '',
       model: process.env.LLM_MODEL || 'meta-llama/llama-3.3-70b-instruct:free',
+      embeddingsModel: process.env.EMBEDDINGS_MODEL || '',
     },
     discord: {
       token: process.env.DISCORD_TOKEN || '',

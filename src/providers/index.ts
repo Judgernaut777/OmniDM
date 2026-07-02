@@ -25,6 +25,7 @@ export function createProvider(config: Config): LLMProvider {
   return new OpenAICompatibleProvider({
     baseUrl: config.llm.baseUrl,
     apiKey: config.llm.apiKey,
+    embeddingsModel: config.llm.embeddingsModel,
   });
 }
 

@@ -19,7 +19,7 @@ The design borrows deliberately from prior art (see [`docs` credits](#prior-art-
 | **Turn engine** | "Sandwich": lock → resolve dice (pure) → persist → LLM narrates the *resolved* outcome | daicer |
 | **Dice/rules** | Standalone deterministic resolver; rules as swappable markdown modules | open-tabletop-gm |
 | **Providers** | One canonical message format → per-backend converter | SillyTavern |
-| **Memory** | Rolling "living summary" compaction of old turns | NeverEndingQuest / NarrativeEngine-P |
+| **Memory** | Rolling "living summary" compaction + per-turn RAG recall (embedding or lexical) | NeverEndingQuest / NarrativeEngine-P |
 | **Multiplayer** | Per-channel lock; shared session; targeted broadcast | Agnai / daicer |
 | **Platform layer** | One `PlatformAdapter` interface; add a platform = add one file | *new — the moat* |
 
@@ -124,6 +124,8 @@ core/
   engine/
     dice.ts      ← deterministic roller (seedable)
     turn-pipeline.ts  ← the sandwich: lock → resolve → persist → narrate
+  memory/
+    retrieval.ts ← vector memory / RAG: per-turn records, embedding or lexical recall
   narrator/
     narrator.ts  ← builds the prompt; LLM narrates resolved turns
   session/
@@ -146,8 +148,12 @@ message-converter pattern as a pure function plus a thin fetch wrapper.
 
 ## Roadmap / not done yet
 
+Vector memory (RAG) is in: every resolved turn is stored as a memory record and
+relevant older turns are recalled into the prompt as `RELEVANT PAST EVENTS` —
+lexical matching by default (offline, zero config), or embeddings + cosine
+similarity when `EMBEDDINGS_MODEL` is set. Still to do:
+
 - Initiative-rolled turn order (round-robin by join order is in: `/dm mode round-robin`)
-- Vector memory (RAG) alongside the living summary (keyword lorebook is in: `/dm lore`)
 - More adapters: Matrix, Slack, Mattermost, Signal (via signal-cli)
 - More native providers beyond Anthropic (Anthropic is in: `LLM_PROVIDER=anthropic`)
 
