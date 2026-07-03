@@ -26,6 +26,12 @@ export interface LlmProviderConfig {
    * for the in-app engine (the user brings their own key).
    */
   allowBrowser?: boolean;
+  /**
+   * Override the HTTP transport for both providers. Undefined = global fetch /
+   * the SDK default. The in-app engine passes a CapacitorHttp-backed fetch on a
+   * native mobile WebView (see src/browser/native-http.ts) to bypass CORS.
+   */
+  fetchImpl?: typeof fetch;
 }
 
 /** Build the provider a config selects — native Anthropic, else OpenAI-compatible. */
@@ -38,6 +44,7 @@ export function buildProvider(cfg: LlmProviderConfig): LLMProvider {
       // otherwise it's the leftover OpenRouter default and the provider's own
       // default applies.
       baseUrl: cfg.baseUrl.includes('anthropic.com') ? cfg.baseUrl : undefined,
+      fetchImpl: cfg.fetchImpl,
     });
   }
   return new OpenAICompatibleProvider({
@@ -45,5 +52,6 @@ export function buildProvider(cfg: LlmProviderConfig): LLMProvider {
     apiKey: cfg.apiKey,
     embeddingsModel: cfg.embeddingsModel,
     allowBrowser: cfg.allowBrowser,
+    fetchImpl: cfg.fetchImpl,
   });
 }

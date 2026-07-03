@@ -65,17 +65,26 @@ export function convertToAnthropic(messages: ChatMessage[]): AnthropicRequestSha
 export interface AnthropicOptions {
   apiKey: string;
   baseUrl?: string;
+  /**
+   * Override the HTTP transport. Undefined = the global `fetch`. The in-app
+   * engine injects a CapacitorHttp-backed fetch on a native mobile WebView so
+   * the request runs natively (no browser CORS, no CSP connect-src gate).
+   */
+  fetchImpl?: typeof fetch;
 }
 
 export class AnthropicProvider implements LLMProvider {
   readonly id = 'anthropic';
   private apiKey: string;
   private baseUrl: string;
+  private fetchImpl: typeof fetch;
 
   constructor(opts: AnthropicOptions) {
     this.apiKey = opts.apiKey;
     // Tolerate a base URL given with a trailing slash or /v1 suffix.
     this.baseUrl = (opts.baseUrl || DEFAULT_BASE_URL).replace(/\/+$/, '').replace(/\/v1$/, '');
+    // Bind so a non-method fetch (e.g. our native shim) keeps working.
+    this.fetchImpl = opts.fetchImpl ?? ((...a: Parameters<typeof fetch>) => fetch(...a));
   }
 
   async listModels(): Promise<ModelInfo[]> {
@@ -92,7 +101,7 @@ export class AnthropicProvider implements LLMProvider {
 
   async complete(req: CompletionRequest): Promise<string> {
     const { system, messages } = convertToAnthropic(req.messages);
-    const res = await fetch(`${this.baseUrl}/v1/messages`, {
+    const res = await this.fetchImpl(`${this.baseUrl}/v1/messages`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',

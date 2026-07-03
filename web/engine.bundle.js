@@ -1428,10 +1428,12 @@ ${m.content}`;
       __publicField(this, "id", "anthropic");
       __publicField(this, "apiKey");
       __publicField(this, "baseUrl");
+      __publicField(this, "fetchImpl");
       /** Session-model fallback when a save carries an id from another backend. */
       __publicField(this, "defaultModel", MODELS[0].id);
       this.apiKey = opts.apiKey;
       this.baseUrl = (opts.baseUrl || DEFAULT_BASE_URL).replace(/\/+$/, "").replace(/\/v1$/, "");
+      this.fetchImpl = opts.fetchImpl ?? ((...a) => fetch(...a));
     }
     async listModels() {
       return MODELS;
@@ -1442,7 +1444,7 @@ ${m.content}`;
     }
     async complete(req) {
       const { system, messages } = convertToAnthropic(req.messages);
-      const res = await fetch(`${this.baseUrl}/v1/messages`, {
+      const res = await this.fetchImpl(`${this.baseUrl}/v1/messages`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -7770,6 +7772,9 @@ ${str2(snapshot)}`);
         // In a WebView the SDK runs client-side with the user's own key; opt in
         // explicitly. Auto-detect a browser so the Node server never sets it.
         dangerouslyAllowBrowser: opts.allowBrowser ?? typeof globalThis.window !== "undefined",
+        // On a native mobile WebView, route through CapacitorHttp (no CORS). Omit
+        // when undefined so the SDK keeps its built-in fetch everywhere else.
+        ...opts.fetchImpl ? { fetch: opts.fetchImpl } : {},
         // OpenRouter appreciates these; harmless elsewhere.
         defaultHeaders: {
           "HTTP-Referer": "https://github.com/your/omnidm",
@@ -7819,14 +7824,16 @@ ${str2(snapshot)}`);
         // Only honor an explicit base URL when it actually points at Anthropic;
         // otherwise it's the leftover OpenRouter default and the provider's own
         // default applies.
-        baseUrl: cfg.baseUrl.includes("anthropic.com") ? cfg.baseUrl : void 0
+        baseUrl: cfg.baseUrl.includes("anthropic.com") ? cfg.baseUrl : void 0,
+        fetchImpl: cfg.fetchImpl
       });
     }
     return new OpenAICompatibleProvider({
       baseUrl: cfg.baseUrl,
       apiKey: cfg.apiKey,
       embeddingsModel: cfg.embeddingsModel,
-      allowBrowser: cfg.allowBrowser
+      allowBrowser: cfg.allowBrowser,
+      fetchImpl: cfg.fetchImpl
     });
   }
 
@@ -7929,6 +7936,67 @@ ${str2(snapshot)}`);
     throw new Error("no browser storage backend (need indexedDB or localStorage)");
   }
 
+  // src/browser/native-http.ts
+  function isCapacitorNative(g = globalThis) {
+    const cap = g.Capacitor;
+    return !!cap && typeof cap.isNativePlatform === "function" && cap.isNativePlatform() === true;
+  }
+  function getCapacitorHttp(g = globalThis) {
+    const gg = g;
+    const http = gg.Capacitor?.Plugins?.CapacitorHttp ?? gg.CapacitorHttp;
+    return http && typeof http.request === "function" ? http : void 0;
+  }
+  function headersToObject(headers) {
+    const out = {};
+    if (!headers) return out;
+    if (typeof headers.forEach === "function" && !Array.isArray(headers)) {
+      headers.forEach((value, key) => {
+        out[key] = value;
+      });
+      return out;
+    }
+    if (Array.isArray(headers)) {
+      for (const [key, value] of headers) out[key] = value;
+      return out;
+    }
+    for (const [key, value] of Object.entries(headers)) out[key] = value;
+    return out;
+  }
+  function isJsonContentType(headers) {
+    for (const [k, v] of Object.entries(headers)) {
+      if (k.toLowerCase() === "content-type") return /application\/json/i.test(v);
+    }
+    return false;
+  }
+  function makeNativeFetch(http, ResponseCtor = Response) {
+    return async (input, init2) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      const method = (init2?.method ?? (typeof input === "object" && "method" in input ? input.method : void 0) ?? "GET").toUpperCase();
+      const headers = headersToObject(init2?.headers);
+      let data = init2?.body;
+      if (typeof data === "string" && isJsonContentType(headers)) {
+        try {
+          data = JSON.parse(data);
+        } catch {
+        }
+      }
+      const res = await http.request({ url, method, headers, data, responseType: "text" });
+      const bodyText = typeof res.data === "string" ? res.data : res.data == null ? "" : JSON.stringify(res.data);
+      const nullBody = res.status === 204 || res.status === 205 || bodyText === "";
+      return new ResponseCtor(nullBody ? null : bodyText, {
+        status: res.status,
+        headers: res.headers ?? {}
+      });
+    };
+  }
+  function selectFetch(g = globalThis) {
+    if (!isCapacitorNative(g)) return void 0;
+    const http = getCapacitorHttp(g);
+    if (!http) return void 0;
+    const ResponseCtor = g.Response ?? Response;
+    return makeNativeFetch(http, ResponseCtor);
+  }
+
   // src/browser/local-engine.ts
   var DEFAULT_MODEL = "meta-llama/llama-3.3-70b-instruct:free";
   var DEFAULT_BASE_URL2 = "https://openrouter.ai/api/v1";
@@ -7945,7 +8013,11 @@ ${str2(snapshot)}`);
       apiKey: llm.apiKey ?? "",
       embeddingsModel: llm.embeddingsModel ?? "",
       // The user brings their own key; opt the OpenAI SDK into client-side use.
-      allowBrowser: true
+      allowBrowser: true,
+      // On a Capacitor native WebView (iOS/Android) route the LLM HTTP through
+      // CapacitorHttp so it runs natively and is not blocked by browser CORS;
+      // `undefined` in a plain browser/Node leaves the default fetch untouched.
+      fetchImpl: selectFetch()
     });
     const model = llm.model || (opts.provider ? "mock/model" : DEFAULT_MODEL);
     const config = {

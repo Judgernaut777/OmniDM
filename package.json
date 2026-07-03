@@ -21,7 +21,10 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "tauri:icons": "node src-tauri/icons/generate-icons.mjs"
+    "tauri:icons": "node src-tauri/icons/generate-icons.mjs",
+    "cap:sync": "cap sync",
+    "cap:android": "cap run android",
+    "cap:ios": "cap run ios"
   },
   "dependencies": {
     "@slack/bolt": "^4.7.3",
@@ -33,6 +36,10 @@
     "ws": "^8.21.0"
   },
   "devDependencies": {
+    "@capacitor/android": "^8.4.1",
+    "@capacitor/cli": "^8.4.1",
+    "@capacitor/core": "^8.4.1",
+    "@capacitor/ios": "^8.4.1",
     "@tauri-apps/cli": "^2.1.0",
     "@types/node": "^22.7.4",
     "@types/ws": "^8.18.1",

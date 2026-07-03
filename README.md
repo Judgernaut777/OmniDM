@@ -156,6 +156,37 @@ The adapter itself speaks a small JSON-over-WebSocket protocol (`msg`, `roll`,
 image bytes travel over HTTP (`GET`/`POST /portrait/<channel>/<user>`), never
 inside a socket frame.
 
+### Run on desktop (Tauri) and mobile (Capacitor)
+
+The same `web/` client is wrapped as native apps with **no rewrite** — both use
+the **hybrid model**: a native WebView loads the committed client and runs the
+whole AI-DM engine (`web/engine.bundle.js`) **in the WebView**. No Node sidecar,
+no bundled server. "Play on this device" talks straight to your own LLM; "Connect
+to a server" uses the unchanged WebSocket protocol.
+
+- **Desktop** — Tauri v2 (`src-tauri/`, `npm run tauri:dev` / `tauri:build`).
+- **Mobile** — Capacitor for **iOS + Android** (`capacitor.config.ts`,
+  `capacitor/`). `appId com.omnidm.app`, `webDir` = the committed `web/` client.
+
+  ```bash
+  npm install                 # brings in @capacitor/{core,cli,ios,android}
+  npm run build:web           # refresh web/engine.bundle.js if the engine changed
+  npx cap add android         # generate the native project (Android SDK required)
+  npm run cap:sync            # copy web/ into it + update plugins
+  npm run cap:android         # build & launch on an emulator/device
+  # iOS (macOS + Xcode only): npx cap add ios && npm run cap:sync && npx cap open ios
+  ```
+
+  **LLM CORS on device.** A mobile WebView is still a browser, so a plain `fetch`
+  to your LLM endpoint is subject to CORS. On a Capacitor **native** platform the
+  in-app provider instead routes through the native **`CapacitorHttp`** stack
+  (URLSession / OkHttp) — not a browser context, so no CORS and no page-CSP
+  `connect-src` gate; any LLM host is reachable. This is **feature-detected**
+  (`src/browser/native-http.ts`): native → CapacitorHttp, plain browser → `fetch`.
+  Your API key stays on the device (WebView localStorage in v1) and is sent only
+  to the endpoint you configured. Full build steps + toolchain requirements +
+  the offline WebView check are in [`capacitor/README.md`](capacitor/README.md).
+
 ## Using whatever model you want
 
 Everything goes through one OpenAI-compatible endpoint, so you change backends by

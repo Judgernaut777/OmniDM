@@ -30,6 +30,13 @@ export interface OpenAICompatibleOptions {
    * auto-detecting a browser global, so the Node path is unaffected.
    */
   allowBrowser?: boolean;
+  /**
+   * Override the HTTP transport handed to the OpenAI SDK. Undefined = the SDK's
+   * built-in (global) fetch. The in-app engine injects a CapacitorHttp-backed
+   * fetch on a native mobile WebView so requests run natively — bypassing the
+   * WebView's CORS check for LLM hosts that don't send CORS headers.
+   */
+  fetchImpl?: typeof fetch;
 }
 
 export class OpenAICompatibleProvider implements LLMProvider {
@@ -47,6 +54,9 @@ export class OpenAICompatibleProvider implements LLMProvider {
       // In a WebView the SDK runs client-side with the user's own key; opt in
       // explicitly. Auto-detect a browser so the Node server never sets it.
       dangerouslyAllowBrowser: opts.allowBrowser ?? typeof (globalThis as { window?: unknown }).window !== 'undefined',
+      // On a native mobile WebView, route through CapacitorHttp (no CORS). Omit
+      // when undefined so the SDK keeps its built-in fetch everywhere else.
+      ...(opts.fetchImpl ? { fetch: opts.fetchImpl } : {}),
       // OpenRouter appreciates these; harmless elsewhere.
       defaultHeaders: {
         'HTTP-Referer': 'https://github.com/your/omnidm',

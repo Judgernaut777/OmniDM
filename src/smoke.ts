@@ -47,6 +47,7 @@ import { BrowserSessionStorage, webStorageKeyValue, type AsyncKeyValue, type Web
 import { buildProvider } from './providers/factory.js';
 import { RoomEngine, type Frame as RoomFrame, type RoomConnection } from './core/room/room-engine.js';
 import { createLocalEngine } from './browser/local-engine.js';
+import { isCapacitorNative, getCapacitorHttp, makeNativeFetch, selectFetch, type CapacitorHttpLike } from './browser/native-http.js';
 
 let failures = 0;
 function check(label: string, cond: boolean) {
@@ -2289,6 +2290,96 @@ async function main() {
     const pkg = JSON.parse(await fs.readFile('package.json', 'utf8')) as { scripts?: Record<string, string>; devDependencies?: Record<string, string> };
     check('tauri: package.json exposes tauri:dev / tauri:build scripts + the CLI devDependency',
       Boolean(pkg.scripts?.['tauri:dev']) && Boolean(pkg.scripts?.['tauri:build']) && Boolean(pkg.devDependencies?.['@tauri-apps/cli']));
+  }
+
+  // ── Mobile shell: the Capacitor (iOS + Android) scaffold wraps web/ ─────────
+  // Same hybrid model as Tauri: a native WebView loads the committed web client
+  // and runs the engine in-WebView. Two things are asserted here: (1) the
+  // capacitor.config.ts is present and points webDir at the real web client with
+  // the native-HTTP plugin enabled; (2) the in-app provider's transport selection
+  // — on a SIMULATED Capacitor native platform it routes through CapacitorHttp
+  // (no CORS), and in a plain browser/Node it falls back to the default fetch.
+  {
+    // (1) Config points at the committed web client, with CapacitorHttp enabled.
+    const capConfRaw = await fs.readFile('capacitor.config.ts', 'utf8');
+    check('capacitor: appId is com.omnidm.app and appName is OmniDM',
+      /appId:\s*'com\.omnidm\.app'/.test(capConfRaw) && /appName:\s*'OmniDM'/.test(capConfRaw));
+    const webDirMatch = capConfRaw.match(/webDir:\s*'([^']+)'/);
+    check('capacitor: webDir points at the committed web client',
+      Boolean(webDirMatch) && webDirMatch![1] === 'web');
+    check('capacitor: the webDir resolves to web/index.html + the engine bundle on disk',
+      webDirMatch != null &&
+      await fs.access(path.join(webDirMatch[1], 'index.html')).then(() => true, () => false) &&
+      await fs.access(path.join(webDirMatch[1], 'engine.bundle.js')).then(() => true, () => false));
+    check('capacitor: CapacitorHttp plugin is enabled (native LLM transport, CORS bypass)',
+      /CapacitorHttp:\s*\{[^}]*enabled:\s*true/.test(capConfRaw));
+    const capPkg = JSON.parse(await fs.readFile('package.json', 'utf8')) as { scripts?: Record<string, string>; devDependencies?: Record<string, string> };
+    check('capacitor: package.json exposes cap:sync / cap:android / cap:ios + the @capacitor devDeps',
+      Boolean(capPkg.scripts?.['cap:sync']) && Boolean(capPkg.scripts?.['cap:android']) && Boolean(capPkg.scripts?.['cap:ios']) &&
+      Boolean(capPkg.devDependencies?.['@capacitor/core']) && Boolean(capPkg.devDependencies?.['@capacitor/cli']) &&
+      Boolean(capPkg.devDependencies?.['@capacitor/android']) && Boolean(capPkg.devDependencies?.['@capacitor/ios']));
+
+    // (2a) Feature detection — Node is NOT a native platform, so the providers
+    // keep their default fetch (selectFetch returns undefined, changing nothing).
+    check('capacitor: plain Node/browser is not detected as native → default fetch kept',
+      isCapacitorNative(globalThis) === false && selectFetch(globalThis) === undefined);
+
+    // (2b) A SIMULATED Capacitor native WebView: a fake global with a native-flag
+    // and a CapacitorHttp stub that records the request and returns a canned body.
+    const nativeCalls: Array<{ url: string; method?: string; data?: unknown; headers?: Record<string, string> }> = [];
+    const fakeHttp: CapacitorHttpLike = {
+      async request(o) {
+        nativeCalls.push(o);
+        if (o.url.endsWith('/v1/messages')) {
+          return { status: 200, data: JSON.stringify({ content: [{ type: 'text', text: 'native narration' }] }), headers: { 'content-type': 'application/json' } };
+        }
+        return { status: 404, data: 'nope', headers: {} as Record<string, string> };
+      },
+    };
+    const nativeGlobal = {
+      Capacitor: { isNativePlatform: () => true, Plugins: { CapacitorHttp: fakeHttp } },
+      Response,
+    } as unknown as typeof globalThis;
+
+    check('capacitor: a native WebView is detected and exposes CapacitorHttp',
+      isCapacitorNative(nativeGlobal) === true && getCapacitorHttp(nativeGlobal) === fakeHttp);
+    const nativeFetch = selectFetch(nativeGlobal);
+    check('capacitor: selectFetch returns a native-backed fetch on a native platform',
+      typeof nativeFetch === 'function');
+
+    // makeNativeFetch maps a request→native call→a real Response the SDK can read.
+    const nf = makeNativeFetch(fakeHttp, Response);
+    const okRes = await nf('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'claude-opus-4-8', messages: [] }),
+    });
+    const okJson = (await okRes.json()) as { content?: { text?: string }[] };
+    check('capacitor: makeNativeFetch returns a Response with the native status + JSON body',
+      okRes.ok && okRes.status === 200 && okJson.content?.[0]?.text === 'native narration');
+    const lastCall = nativeCalls.at(-1)!;
+    check('capacitor: a JSON body string is reparsed to an object so CapacitorHttp serializes it once',
+      typeof lastCall.data === 'object' && (lastCall.data as { model?: string }).model === 'claude-opus-4-8');
+    const missRes = await nf('https://api.anthropic.com/nope', { method: 'GET' });
+    check('capacitor: a native error status surfaces as a non-ok Response (no silent success)',
+      missRes.ok === false && missRes.status === 404);
+
+    // (2c) End-to-end through the provider: buildProvider hands the native fetch to
+    // the AnthropicProvider, whose complete() must go through CapacitorHttp — and
+    // the user's secret key rides only in the request headers to the endpoint.
+    nativeCalls.length = 0;
+    const nativeProvider = buildProvider({
+      provider: 'anthropic',
+      baseUrl: 'https://api.anthropic.com',
+      apiKey: 'sk-native-secret',
+      fetchImpl: selectFetch(nativeGlobal),
+    });
+    const narration = await nativeProvider.complete({ model: 'claude-opus-4-8', messages: [{ role: 'user', content: 'hi' }] });
+    const provCall = nativeCalls.at(-1);
+    check('capacitor: the provider routes its LLM call through the native HTTP path on device',
+      narration === 'native narration' && provCall?.url === 'https://api.anthropic.com/v1/messages' && provCall?.method === 'POST');
+    check('capacitor: the user API key is sent only in the request headers to the configured endpoint',
+      (provCall?.headers?.['x-api-key']) === 'sk-native-secret');
   }
 
   await fs.rm(dataDir, { recursive: true, force: true });
