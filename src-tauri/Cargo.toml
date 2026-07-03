@@ -1,0 +1,31 @@
+[package]
+name = "omnidm"
+version = "0.1.0"
+description = "OmniDM desktop — a multi-platform, multi-player, model-agnostic AI Dungeon Master"
+authors = ["OmniDM"]
+license = "MIT"
+repository = ""
+edition = "2021"
+rust-version = "1.77.2"
+
+# The library holds the app entry point so the same code path can be reused by a
+# future mobile (tauri-cli) target; `main.rs` is a thin binary that calls into it.
+[lib]
+name = "omnidm_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Smaller, faster release binaries for the shipped desktop app.
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

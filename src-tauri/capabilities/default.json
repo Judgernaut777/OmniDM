@@ -1,0 +1,9 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Baseline capability for the OmniDM desktop window. The app is a plain WebView around same-origin static assets, so it grants ONLY Tauri's core defaults (window/webview lifecycle, event IPC) — no filesystem, shell, http-plugin or other OS reach is enabled. Add permissions here deliberately if a feature ever needs them.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default"
+  ]
+}

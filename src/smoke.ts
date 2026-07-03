@@ -2228,6 +2228,69 @@ async function main() {
       Boolean(conn.last((f) => f.type === 'msg' && /Could not import|unavailable in-app|upload/i.test(String(f.text)))));
   }
 
+  // ── Desktop shell: the Tauri v2 scaffold wraps web/ in a native WebView ──────
+  // No Node sidecar — the engine runs in-WebView (the hybrid model), so this only
+  // asserts the scaffold is present and correctly wired: valid config JSON that
+  // points frontendDist at the committed web client, a same-origin CSP that keeps
+  // script-src 'self' (no XSS opening) while allowing the user-configured LLM
+  // endpoint via connect-src, and the Rust/build files a proper toolchain needs.
+  {
+    const tauriDir = 'src-tauri';
+    const confRaw = await fs.readFile(path.join(tauriDir, 'tauri.conf.json'), 'utf8');
+    let conf: {
+      identifier?: string;
+      build?: { frontendDist?: string };
+      app?: { security?: { csp?: string }; windows?: { title?: string }[] };
+      bundle?: { icon?: string[] };
+    } = {};
+    let confValid = true;
+    try { conf = JSON.parse(confRaw); } catch { confValid = false; }
+    check('tauri: tauri.conf.json is valid JSON', confValid);
+    check('tauri: app identifier is com.omnidm.app', conf.identifier === 'com.omnidm.app');
+    check('tauri: frontendDist points at the committed web client (../web)', conf.build?.frontendDist === '../web');
+
+    // The referenced frontend dir + its entry HTML actually exist.
+    const distRel = conf.build?.frontendDist ?? '';
+    const webIndex = path.join(tauriDir, distRel, 'index.html');
+    check('tauri: the frontendDist directory resolves to web/index.html on disk',
+      await fs.access(webIndex).then(() => true, () => false));
+
+    const csp = conf.app?.security?.csp ?? '';
+    check('tauri: CSP keeps script-src \'self\' (no inline/injected script — XSS stays shut)',
+      /script-src\s+'self'/.test(csp) && !/script-src[^;]*'unsafe-inline'/.test(csp));
+    check('tauri: CSP allows the user-configured LLM endpoint via connect-src (https + loopback)',
+      /connect-src[^;]*\bhttps:/.test(csp) && /connect-src[^;]*127\.0\.0\.1/.test(csp));
+    check('tauri: CSP bakes in NO external origin (only schemes/loopback are allowed)',
+      !/(?:script|default|img|style)-src[^;]*https?:\/\//.test(csp));
+    check('tauri: a native window carries the app title', Boolean(conf.app?.windows?.[0]?.title));
+
+    // The Rust + capability + icon files a real build consumes are all present.
+    const need = [
+      'Cargo.toml', 'build.rs', 'src/main.rs', 'src/lib.rs',
+      'capabilities/default.json',
+      'icons/32x32.png', 'icons/128x128.png', 'icons/icon.ico', 'icons/icon.icns',
+    ];
+    const present = await Promise.all(need.map((f) => fs.access(path.join(tauriDir, f)).then(() => true, () => false)));
+    check('tauri: the Rust/build/capability/icon scaffold files all exist', present.every(Boolean));
+
+    // Every bundle-referenced icon exists on disk (a real build fails otherwise).
+    const icons = conf.bundle?.icon ?? [];
+    const iconsPresent = await Promise.all(icons.map((f) => fs.access(path.join(tauriDir, f)).then(() => true, () => false)));
+    check('tauri: every icon listed in bundle.icon exists', icons.length > 0 && iconsPresent.every(Boolean));
+
+    // The capability grants only Tauri core defaults — no fs/shell/http reach.
+    const capRaw = await fs.readFile(path.join(tauriDir, 'capabilities/default.json'), 'utf8');
+    const cap = JSON.parse(capRaw) as { permissions?: string[] };
+    check('tauri: capability grants only core defaults (no fs/shell/http permission)',
+      Array.isArray(cap.permissions) && cap.permissions.includes('core:default') &&
+      !cap.permissions.some((p) => /^(fs|shell|http):/.test(p)));
+
+    // The npm scripts a developer runs are wired at the repo root.
+    const pkg = JSON.parse(await fs.readFile('package.json', 'utf8')) as { scripts?: Record<string, string>; devDependencies?: Record<string, string> };
+    check('tauri: package.json exposes tauri:dev / tauri:build scripts + the CLI devDependency',
+      Boolean(pkg.scripts?.['tauri:dev']) && Boolean(pkg.scripts?.['tauri:build']) && Boolean(pkg.devDependencies?.['@tauri-apps/cli']));
+  }
+
   await fs.rm(dataDir, { recursive: true, force: true });
   console.log(`\n${failures === 0 ? '🎉 all checks passed' : `💥 ${failures} check(s) failed`}`);
   process.exit(failures === 0 ? 0 : 1);
