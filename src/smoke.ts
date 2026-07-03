@@ -455,9 +455,12 @@ async function main() {
     await mgr.join(s, rm('w1', 'Alice'), 'Thorin');
     await mgr.join(s, rm('w2', 'Bob'), 'Elaria');
     s.players.w1.hp = 3;
+    s.players.w1.portrait = { kind: 'preset', id: 'mage' }; // set a portrait BEFORE the reconnect
     await mgr.join(s, rm('w9', 'Alice'), 'thorin'); // reconnected: new userId, same character (case-insensitive)
     check('reclaim: migrated seat keeps hp and its join-order slot, dead userId is gone',
       !s.players.w1 && s.players.w9?.hp === 3 && Object.keys(s.players).join(',') === 'w9,w2');
+    check('reclaim: the portrait survives the seat re-claim (not reverted to the default crest)',
+      s.players.w9?.portrait?.kind === 'preset' && (s.players.w9!.portrait as { id: string }).id === 'mage');
     await mgr.join(s, rm('w2', 'Bob'), 'Thorin'); // a member renaming to a taken name is NOT a takeover
     check('reclaim: an existing member renaming keeps their own seat',
       Boolean(s.players.w9) && s.players.w2?.characterName === 'Thorin' && Object.keys(s.players).length === 2);
@@ -711,6 +714,19 @@ async function main() {
       stray.publicText.includes('Nothing stirs.') && stray.privates.length === 0);
   }
 
+  // Fog + a roll whose narration is addressed WHOLLY to one character (empty
+  // public remainder): the dice outcome is a shared fact, so the structured roll
+  // must still ride out on a PUBLIC frame (else no client animates it and the
+  // board never pops), while the private prose is whispered.
+  provider.narration = '[PRIVATE:Thorin]The rune answers only you.[/PRIVATE]';
+  out.length = 0;
+  await bot.handle(fogFrom('u1', 'Alice', '/dm roll d20'), send);
+  const fogRollPublic = out.find((m) => !m.targetUserId && Array.isArray(m.rolls) && m.rolls.length > 0);
+  const fogRollWhisper = out.find((m) => m.targetUserId === 'u1');
+  check('fog: an all-private narration still emits the roll on a public frame (board can pop, dice animate)',
+    Boolean(fogRollPublic) && fogRollPublic!.rolls![0].notation === 'd20' &&
+    !fogRollPublic!.text.includes('rune answers') && Boolean(fogRollWhisper) && fogRollWhisper!.text.includes('rune answers'));
+
   provider.narration = 'The tavern falls silent as you act. (mock narration)';
   out.length = 0;
   await bot.handle(fogFrom('u1', 'Alice', '/dm fog off'), send);
@@ -938,6 +954,14 @@ async function main() {
       html.includes('id="board-svg"') && html.includes('id="board-toggle"'));
     check('web-ui: token drags are throttled and send a final move on drop',
       appSrc.includes('lastMoveSent') && appSrc.includes("type: 'move'") && /pointerup/.test(appSrc));
+    // Client fixes smoke can't execute, pinned statically: the portrait upload
+    // authorizes with the per-seat token (never the room password), and the board
+    // dice-pop dedupes on the monotonic rollSeq with a first-frame baseline (so
+    // repeat rolls still pop and a late joiner never pops a roll that predates it).
+    check('web-ui: portrait upload authorizes with the per-seat upload token (not the password)',
+      appSrc.includes("'x-upload-token'") && appSrc.includes('state.uploadToken') && !/password=\$\{/.test(appSrc));
+    check('web-ui: the board dice-pop dedupes on rollSeq with a first-frame baseline',
+      appSrc.includes('rollSeq') && appSrc.includes('lastRollSeen') && !appSrc.includes('lastRollSig'));
 
     // Optional, offline: render a crest in headless chromium to prove the
     // procedural SVG actually builds (createElementNS path) and is deterministic,
@@ -960,6 +984,9 @@ async function main() {
     check('web: hello is answered with a welcome carrying an assigned userId',
       typeof welcome?.userId === 'string' && (welcome.userId as string).startsWith('web-'));
     const aliceId = welcome!.userId as string;
+    const aliceToken = welcome!.uploadToken as string;
+    check('web: welcome carries a per-seat upload token (binds HTTP portrait uploads to this seat)',
+      typeof aliceToken === 'string' && aliceToken.length >= 12);
     await a.next((f) => f.type === 'roster'); // consume the initial 1-user roster
 
     const b = new WsClient(url);
@@ -1017,6 +1044,22 @@ async function main() {
     check('web: the roll frame broadcasts to the whole room, unflagged',
       rollFrameB?.notation === 'd20+5' && !rollFrameB?.private);
 
+    // The board dice-pop is driven by scene.lastRoll + a monotonic rollSeq: the
+    // roll stashes onto the scene and bumps the sequence so every client pops it
+    // exactly once (and a late joiner can tell a stale roll from a fresh one).
+    const rollScene1 = await a.next((f) => f.type === 'scene' && Boolean(f.lastRoll) && Number.isFinite(f.rollSeq));
+    const seq1 = rollScene1!.rollSeq as number;
+    check('web: a roll stashes onto the scene with a numeric rollSeq for the board pop',
+      (rollScene1!.lastRoll as { notation?: string })?.notation === 'd20+5' && seq1 >= 1);
+    // A SECOND identical roll (same actor/notation) must still advance rollSeq,
+    // so an unchanged-fingerprint client no longer swallows the repeat pop.
+    await new Promise((r) => setTimeout(r, 1100)); // drain the rate-limit window
+    a.send({ type: 'say', text: '/dm roll d20+5' });
+    const rollScene2 = await a.next((f) => f.type === 'scene' && Number.isFinite(f.rollSeq) && (f.rollSeq as number) > seq1);
+    check('web: a second identical roll advances rollSeq (repeat pop is not suppressed)',
+      Boolean(rollScene2) && (rollScene2!.rollSeq as number) > seq1);
+    await a.next((f) => f.type === 'msg' && f.speaker === 'Dungeon Master' && String(f.text).includes('tavern'));
+
     // A plain narration action (no dice) must yield NO roll frame.
     const rollsSoFar = a.all.filter((f) => f.type === 'roll').length;
     await new Promise((r) => setTimeout(r, 1100));
@@ -1038,27 +1081,51 @@ async function main() {
     check('web: enriched roster carries the character name and a preset portrait descriptor',
       aliceSeat?.characterName === 'Thorin' && aliceSeat?.portrait?.kind === 'preset' && aliceSeat?.portrait?.id === 'ranger');
 
-    // POST an image upload (with the room password), then GET it back byte-for-byte.
+    // POST an image upload (carrying the seat's upload token), then GET it back
+    // byte-for-byte. The token — not the URL userId — is what authorizes the write.
     const upBody = Buffer.from('\x89PNG\r\n\x1a\nMOCK-PORTRAIT-BYTES', 'latin1');
-    const upRes = await fetch(`http://127.0.0.1:${port}/portrait/room1/${aliceId}?password=hunter2`, {
-      method: 'POST', headers: { 'Content-Type': 'image/png' }, body: upBody,
+    const upRes = await fetch(`http://127.0.0.1:${port}/portrait/room1/${aliceId}`, {
+      method: 'POST', headers: { 'Content-Type': 'image/png', 'x-upload-token': aliceToken }, body: upBody,
     });
-    check('web: POST /portrait accepts an image upload carrying the room password', upRes.ok);
+    check('web: POST /portrait accepts an image upload carrying the seat upload token', upRes.ok);
     const getRes = await fetch(`http://127.0.0.1:${port}/portrait/room1/${aliceId}`);
     const gotBytes = Buffer.from(await getRes.arrayBuffer());
     check('web: GET /portrait round-trips the uploaded bytes with an image content-type',
       getRes.ok && (getRes.headers.get('content-type') ?? '').startsWith('image/') && gotBytes.equals(upBody));
+    // The one endpoint that echoes attacker-supplied bytes must defang them:
+    // nosniff (no MIME sniffing to an active type) + an explicit disposition.
+    check('web: GET /portrait sends X-Content-Type-Options: nosniff and a Content-Disposition',
+      getRes.headers.get('x-content-type-options') === 'nosniff' &&
+      (getRes.headers.get('content-disposition') ?? '').includes('inline'));
 
-    const noPw = await fetch(`http://127.0.0.1:${port}/portrait/room1/${aliceId}`, {
+    // No token → refused (userIds are public in the roster; they authorize nothing).
+    const noTok = await fetch(`http://127.0.0.1:${port}/portrait/room1/${aliceId}`, {
       method: 'POST', headers: { 'Content-Type': 'image/png' }, body: upBody,
     });
-    check('web: POST /portrait without the room password is refused', noPw.status === 401);
-    const badType = await fetch(`http://127.0.0.1:${port}/portrait/room1/${aliceId}?password=hunter2`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    check('web: POST /portrait without an upload token is refused', noTok.status === 401);
+
+    // Cross-user spoofing: Bob's token must NOT authorize writing Alice's portrait.
+    const bobToken = bWelcome!.uploadToken as string;
+    const spoof = await fetch(`http://127.0.0.1:${port}/portrait/room1/${aliceId}`, {
+      method: 'POST', headers: { 'Content-Type': 'image/png', 'x-upload-token': bobToken }, body: upBody,
+    });
+    check("web: one seat's token cannot overwrite another seat's portrait (no impersonation)", spoof.status === 401);
+    const afterSpoof = Buffer.from(await (await fetch(`http://127.0.0.1:${port}/portrait/room1/${aliceId}`)).arrayBuffer());
+    check("web: the spoof attempt left Alice's portrait untouched", afterSpoof.equals(upBody));
+
+    // Stored-XSS guard: an SVG (an active document) must be rejected outright.
+    const svg = await fetch(`http://127.0.0.1:${port}/portrait/room1/${aliceId}`, {
+      method: 'POST', headers: { 'Content-Type': 'image/svg+xml', 'x-upload-token': aliceToken },
+      body: '<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"><script>alert(1)</script></svg>',
+    });
+    check('web: POST /portrait rejects image/svg+xml (stored-XSS vector)', svg.status === 415);
+
+    const badType = await fetch(`http://127.0.0.1:${port}/portrait/room1/${aliceId}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-upload-token': aliceToken }, body: '{}',
     });
     check('web: POST /portrait rejects a non-image content-type', badType.status === 415);
-    const tooBig = await fetch(`http://127.0.0.1:${port}/portrait/room1/${aliceId}?password=hunter2`, {
-      method: 'POST', headers: { 'Content-Type': 'image/png' }, body: Buffer.alloc(MAX_PORTRAIT_BYTES + 1, 0x61),
+    const tooBig = await fetch(`http://127.0.0.1:${port}/portrait/room1/${aliceId}`, {
+      method: 'POST', headers: { 'Content-Type': 'image/png', 'x-upload-token': aliceToken }, body: Buffer.alloc(MAX_PORTRAIT_BYTES + 1, 0x61),
     });
     check('web: POST /portrait rejects an oversize upload', tooBig.status === 413);
     const missing = await fetch(`http://127.0.0.1:${port}/portrait/room1/web-nobody`);
@@ -1114,6 +1181,48 @@ async function main() {
     a.send({ type: 'move', id: 'pc:web-ghost', x: 0.5, y: 0.5 });
     const ghostErr = await a.next((f) => f.type === 'error' && /Unknown token/i.test(String(f.error)));
     check('web: a move for an unknown token id is rejected, server still up', Boolean(ghostErr));
+
+    // ── Scene: a dragged token survives a reconnect (a seat re-key keeps its spot) ──
+    // A reconnect mints a fresh userId, re-keying the pc token id. The dragged
+    // position must follow the character, not snap back to the default spawn.
+    {
+      const keep = new WsClient(url); // a co-occupant keeps the room (and its scene) alive across the reconnect
+      await keep.open();
+      keep.send({ type: 'hello', userName: 'Keeper', channelId: 'posroom', password: 'hunter2' });
+      await keep.next((f) => f.type === 'welcome');
+      const p1 = new WsClient(url);
+      await p1.open();
+      p1.send({ type: 'hello', userName: 'Pat', channelId: 'posroom', password: 'hunter2' });
+      const p1id = (await p1.next((f) => f.type === 'welcome'))!.userId as string;
+      await new Promise((r) => setTimeout(r, 1100));
+      p1.send({ type: 'say', text: '/dm new' });
+      await p1.next((f) => f.type === 'msg' && String(f.text).includes('new campaign'));
+      await new Promise((r) => setTimeout(r, 1100));
+      p1.send({ type: 'say', text: '/dm join Ranger' });
+      await p1.next((f) => f.type === 'msg' && String(f.text).includes('Ranger joins'));
+      await p1.next((f) => f.type === 'scene' && (f.tokens as SToken[]).some((t) => t.id === `pc:${p1id}`));
+      p1.send({ type: 'move', id: `pc:${p1id}`, x: 0.87, y: 0.12 });
+      const placed = await p1.next(
+        (f) => f.type === 'scene' && (f.tokens as SToken[]).some((t) => t.id === `pc:${p1id}` && Math.abs(t.x - 0.87) < 1e-6 && Math.abs(t.y - 0.12) < 1e-6),
+      );
+      check('web: a token drag is recorded before the reconnect', Boolean(placed));
+      p1.close(); // Pat's socket drops; Keeper remains so the scene is not reclaimed
+      await p1.closed();
+      const p2 = new WsClient(url);
+      await p2.open();
+      p2.send({ type: 'hello', userName: 'Pat', channelId: 'posroom', password: 'hunter2' });
+      const p2id = (await p2.next((f) => f.type === 'welcome'))!.userId as string;
+      await new Promise((r) => setTimeout(r, 1100));
+      p2.send({ type: 'say', text: '/dm join Ranger' }); // re-claim the seat under a fresh userId
+      await p2.next((f) => f.type === 'msg' && String(f.text).includes('Ranger joins'));
+      const reScene = await p2.next((f) => f.type === 'scene' && (f.tokens as SToken[]).some((t) => t.id === `pc:${p2id}`));
+      const reTok = (reScene!.tokens as SToken[]).find((t) => t.id === `pc:${p2id}`);
+      check('web: a dragged token survives a reconnect — the re-keyed seat keeps its board position, not a fresh spawn',
+        p2id !== p1id && Boolean(reTok) && Math.abs(reTok!.x - 0.87) < 1e-6 && Math.abs(reTok!.y - 0.12) < 1e-6 &&
+        !(reScene!.tokens as SToken[]).some((t) => t.id === `pc:${p1id}`));
+      keep.close();
+      p2.close();
+    }
 
     // An NPC import (by a spectator, so it lands as an NPC) adds an npc token.
     const sp = new WsClient(url);

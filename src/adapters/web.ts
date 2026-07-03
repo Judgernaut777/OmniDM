@@ -6,13 +6,15 @@
  *
  * Protocol:  client → { type:'hello', userName, channelId, password? }
  *                     { type:'say', text }
- *            server → { type:'welcome', userId, channelId }   (your seat)
+ *            server → { type:'welcome', userId, channelId, uploadToken }  (your seat;
+ *                       uploadToken authorizes POST /portrait for THIS seat only)
  *                     { type:'roster', users }                (room membership)
  *                     { type:'msg', speaker?, text, private?: true }
  *                     { type:'roll', notation, dice, total, actor, modifier?, note? }
  *                       (one per resolved die roll, sent WITH the public 'msg')
- *                     { type:'scene', tokens:[{id,who,kind,x,y}], actor, lastRoll? }
- *                       (the shared token-board — see the "Scene" section below)
+ *                     { type:'scene', tokens:[{id,who,kind,x,y}], actor, lastRoll?, rollSeq? }
+ *                       (the shared token-board — see the "Scene" section below;
+ *                        rollSeq bumps per new roll so a client pops each once)
  *                     { type:'error', error }
  *            client → { type:'move', id, x, y }                  (reposition a token)
  *
@@ -73,6 +75,13 @@ export const MAX_ROOM_CHARS = 64;
 export const MAX_TEXT_CHARS = 4000;
 /** Upload cap for POST /portrait — portraits are small; bytes go over HTTP, never a WS frame. */
 export const MAX_PORTRAIT_BYTES = 256 * 1024;
+/**
+ * Raster image types a portrait upload may carry AND that may be served back
+ * inline. `image/svg+xml` is deliberately EXCLUDED: an SVG is an active document
+ * (script/onload) and, served on the app's own origin, would be a stored XSS.
+ * Anything outside this set is served as an opaque attachment, never inline.
+ */
+export const PORTRAIT_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
 /** Web userIds are `web-<nanoid>` (~12 chars); bound the path component anyway. */
 export const MAX_USER_CHARS = 128;
 /** Per-seat card summary length in the enriched roster — keep the frame well under the cap. */
@@ -95,6 +104,14 @@ interface Seat {
   userId: string;
   userName: string;
   channelId: string;
+  /**
+   * Per-seat secret, minted at hello and delivered ONLY on this socket's welcome
+   * frame. A portrait upload must present it, so the HTTP POST is bound to the
+   * authenticated WebSocket seat: userIds are broadcast to the whole room in the
+   * roster, so they can't authorize anything — the token can. It never leaves
+   * the owning socket, so no room member can overwrite another's portrait.
+   */
+  uploadToken: string;
   saidAt: number[]; // recent `say` timestamps, for the rate limit
   movedAt: number[]; // recent `move` timestamps, for the separate move allowance
 }
@@ -114,6 +131,14 @@ interface Scene {
   tokens: Map<string, Token>;
   actor: string | null; // round-robin current actor's name, or null in immediate mode
   lastRoll?: OutgoingRoll; // most recent resolved roll, for a dice pop near the actor
+  /**
+   * Monotonic per-scene counter, bumped every time `lastRoll` is replaced. It
+   * rides on the scene frame so a client can pop each NEW roll exactly once:
+   * distinct rolls that happen to share actor/notation/total no longer collide,
+   * and a fresh client adopts the current value as a baseline instead of popping
+   * a roll that predates its arrival.
+   */
+  rollSeq: number;
 }
 
 export class WebAdapter implements PlatformAdapter {
@@ -122,8 +147,6 @@ export class WebAdapter implements PlatformAdapter {
   private http?: Server;
   private wss?: WebSocketServer;
   private seats = new Map<WebSocket, Seat>();
-  /** In-memory portrait uploads, keyed by channel+user. Bytes never touch a WS frame. */
-  private uploads = new Map<string, { mime: string; bytes: Buffer }>();
   /** In-memory shared token boards, keyed by channelId. Positions live and die with the process. */
   private scenes = new Map<string, Scene>();
 
@@ -223,6 +246,7 @@ export class WebAdapter implements PlatformAdapter {
       const scene = this.scenes.get(msg.channelId);
       if (scene) {
         scene.lastRoll = msg.rolls[msg.rolls.length - 1];
+        scene.rollSeq++; // a new roll — bump so clients pop it exactly once
         this.broadcastScene(msg.channelId);
       }
     }
@@ -261,9 +285,9 @@ export class WebAdapter implements PlatformAdapter {
     if (userName.length > MAX_NAME_CHARS || channelId.length > MAX_ROOM_CHARS)
       return this.error(ws, `hello fields too long (userName ≤ ${MAX_NAME_CHARS}, channelId ≤ ${MAX_ROOM_CHARS} chars).`);
     if (this.seats.has(ws)) return this.error(ws, 'Already joined — one hello per connection.');
-    const seat: Seat = { ws, userId: `web-${nanoid(8)}`, userName, channelId, saidAt: [], movedAt: [] };
+    const seat: Seat = { ws, userId: `web-${nanoid(8)}`, userName, channelId, uploadToken: nanoid(24), saidAt: [], movedAt: [] };
     this.seats.set(ws, seat);
-    ws.send(JSON.stringify({ type: 'welcome', userId: seat.userId, channelId }));
+    ws.send(JSON.stringify({ type: 'welcome', userId: seat.userId, channelId, uploadToken: seat.uploadToken }));
     void this.broadcastRoster(channelId);
   }
 
@@ -324,6 +348,11 @@ export class WebAdapter implements PlatformAdapter {
     const seat = this.seats.get(ws);
     if (!seat) return;
     this.seats.delete(ws);
+    // Reclaim the room's in-memory token board once its last member leaves —
+    // otherwise a public server handing out room codes accumulates one dead
+    // Scene per distinct channelId forever. Portrait bytes live in the session
+    // now (evicted by `/dm end`), so nothing else is stranded here.
+    if (![...this.seats.values()].some((s) => s.channelId === seat.channelId)) this.scenes.delete(seat.channelId);
     void this.broadcastRoster(seat.channelId);
   }
 
@@ -351,23 +380,39 @@ export class WebAdapter implements PlatformAdapter {
    * token for each new member/NPC (spread out by default), drop tokens for
    * anyone who left, and KEEP the position of tokens that persist. Also caches
    * the round-robin actor so a move can rebroadcast without reloading storage.
+   *
+   * A pc token is keyed `pc:<userId>`, but a web reconnect re-keys the seat to a
+   * fresh userId (session-manager migrates the party entry) — so the OLD token id
+   * vanishes and a NEW one appears for the SAME character in a single reconcile.
+   * To honor the invariant that a carefully-dragged token survives a reconnect,
+   * a newly-added token inherits the position of a same-identity token that this
+   * pass is dropping, instead of snapping back to the default spawn slot.
    */
   private reconcileScene(channelId: string, session: GameSession | null): Scene {
     let scene = this.scenes.get(channelId);
     if (!scene) {
-      scene = { tokens: new Map(), actor: null };
+      scene = { tokens: new Map(), actor: null, rollSeq: 0 };
       this.scenes.set(channelId, scene);
     }
     const desired = sceneTokens(session);
     const wanted = new Set(desired.map((d) => d.id));
-    for (const id of [...scene.tokens.keys()]) if (!wanted.has(id)) scene.tokens.delete(id);
+    // Drop departed tokens, but remember where each one sat keyed by character
+    // identity (kind + name), so a re-keyed seat can reclaim its exact position.
+    const vacated = new Map<string, { x: number; y: number }>();
+    for (const [id, t] of [...scene.tokens]) {
+      if (!wanted.has(id)) {
+        vacated.set(identityKey(t.kind, t.who), { x: t.x, y: t.y });
+        scene.tokens.delete(id);
+      }
+    }
     for (const d of desired) {
       const existing = scene.tokens.get(d.id);
       if (existing) {
         existing.who = d.who; // a rename keeps the token's slot and position
         existing.kind = d.kind;
       } else {
-        scene.tokens.set(d.id, { id: d.id, who: d.who, kind: d.kind, ...spawnPos(d.kind, scene.tokens) });
+        const inherited = vacated.get(identityKey(d.kind, d.who)); // a reconnect re-key keeps its spot
+        scene.tokens.set(d.id, { id: d.id, who: d.who, kind: d.kind, ...(inherited ?? spawnPos(d.kind, scene.tokens)) });
       }
     }
     scene.actor = actorName(session);
@@ -384,7 +429,7 @@ export class WebAdapter implements PlatformAdapter {
       type: 'scene',
       tokens: [...scene.tokens.values()].map((t) => ({ id: t.id, who: t.who, kind: t.kind, x: t.x, y: t.y })),
       actor: scene.actor,
-      ...(scene.lastRoll ? { lastRoll: scene.lastRoll } : {}),
+      ...(scene.lastRoll ? { lastRoll: scene.lastRoll, rollSeq: scene.rollSeq } : {}),
     });
     for (const s of inRoom) s.ws.send(frame);
   }
@@ -409,13 +454,17 @@ export class WebAdapter implements PlatformAdapter {
     };
   }
 
-  /** The portrait descriptor for the roster: an upload wins, then the player/card portrait. */
+  /**
+   * The portrait descriptor for the roster: the player's effective portrait — a
+   * preset id, or an image (upload OR embedded card art) referenced by its
+   * /portrait URL. Uploads now live on the Player in the session (so they survive
+   * a seat re-claim and are evicted with the campaign), never in a side map.
+   */
   private portraitDescriptor(
     channelId: string,
     userId: string,
     player: Player | undefined,
   ): { kind: 'preset'; id: string } | { kind: 'image'; url: string } | null {
-    if (this.uploads.has(uploadKey(channelId, userId))) return { kind: 'image', url: portraitUrl(channelId, userId) };
     const p = player ? effectivePortrait(player) : undefined;
     if (p?.kind === 'preset') return { kind: 'preset', id: p.id };
     if (p?.kind === 'image') return { kind: 'image', url: portraitUrl(channelId, userId) };
@@ -464,22 +513,31 @@ export class WebAdapter implements PlatformAdapter {
     return void res.writeHead(405, { Allow: 'GET, HEAD, POST' }).end();
   }
 
-  /** Serve a user's portrait bytes with an image content-type, or 404. */
+  /**
+   * Serve a user's portrait bytes. The content-type is clamped to a raster
+   * allowlist (an unknown/hostile type — e.g. a card that smuggled SVG — is
+   * served as an opaque attachment, never an inline document), and
+   * `nosniff` + `Content-Disposition` stop the browser from re-interpreting the
+   * bytes as an active document on the app's own origin. This endpoint is the
+   * one place attacker-supplied bytes are echoed back, so it must never let them
+   * execute as script.
+   */
   private async getPortrait(req: HttpRequest, res: ServerResponse, channelId: string, userId: string): Promise<void> {
     const img = await this.resolvePortrait(channelId, userId);
     if (!img) return void res.writeHead(404, { 'Content-Type': 'text/plain' }).end('No portrait');
+    const safe = PORTRAIT_IMAGE_TYPES.has(img.mime);
     res.writeHead(200, {
-      'Content-Type': img.mime,
+      'Content-Type': safe ? img.mime : 'application/octet-stream',
       'Content-Length': String(img.bytes.length),
       'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+      'Content-Disposition': safe ? 'inline' : 'attachment; filename="portrait"',
     });
     res.end(req.method === 'HEAD' ? undefined : img.bytes);
   }
 
-  /** An uploaded portrait wins; otherwise the player's/card's stored image bytes. */
+  /** The player's stored portrait image bytes (an upload or embedded card art), else null. */
   private async resolvePortrait(channelId: string, userId: string): Promise<{ mime: string; bytes: Buffer } | null> {
-    const up = this.uploads.get(uploadKey(channelId, userId));
-    if (up) return up;
     const session = (await this.storage?.load(sessionKey(channelId)).catch(() => null)) ?? null;
     const p = session?.players?.[userId] && effectivePortrait(session.players[userId]);
     if (p?.kind === 'image') {
@@ -493,14 +551,29 @@ export class WebAdapter implements PlatformAdapter {
     return null;
   }
 
-  /** Accept an `image/*` upload (size-capped; password-gated when the room has one). */
+  /**
+   * Accept a raster-image upload and store it as the caller's OWN portrait.
+   *
+   * Authorization is by upload token, not by the URL: the token is minted per
+   * seat at hello and delivered only on that socket, so the request is bound to
+   * an authenticated WebSocket seat that must own the target userId. A room
+   * member who knows another seat's userId (they all do — it's in the roster)
+   * still can't overwrite that seat's portrait. The bytes land on the Player in
+   * the shared session, so there is no unbounded side map to exhaust: it's one
+   * portrait per seated player, capped in size, and evicted with the campaign.
+   */
   private async postPortrait(req: HttpRequest, res: ServerResponse, channelId: string, userId: string): Promise<void> {
-    if (this.password && !this.uploadAuthorized(req)) {
-      return void res.writeHead(401, { 'Content-Type': 'text/plain' }).end('Unauthorized');
+    const seat = this.seatForUpload(req, channelId, userId);
+    if (!seat) {
+      // Drain the body so the socket closes cleanly, then refuse. 401: bad/absent
+      // token; the caller must upload to its own seat with its own token.
+      req.resume();
+      return void res.writeHead(401, { 'Content-Type': 'text/plain' }).end('Unauthorized — upload only your own portrait, with your seat token.');
     }
     const contentType = String(req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase();
-    if (!contentType.startsWith('image/') || contentType === 'image/') {
-      return void res.writeHead(415, { 'Content-Type': 'text/plain' }).end('Content-Type must be image/*');
+    if (!PORTRAIT_IMAGE_TYPES.has(contentType)) {
+      req.resume();
+      return void res.writeHead(415, { 'Content-Type': 'text/plain' }).end('Content-Type must be one of: ' + [...PORTRAIT_IMAGE_TYPES].join(', '));
     }
     const declared = Number(req.headers['content-length']);
     if (Number.isFinite(declared) && declared > MAX_PORTRAIT_BYTES) {
@@ -524,22 +597,42 @@ export class WebAdapter implements PlatformAdapter {
     if (over) return void res.writeHead(413, { 'Content-Type': 'text/plain' }).end('Portrait too large');
     const bytes = Buffer.concat(chunks);
     if (!bytes.length) return void res.writeHead(400, { 'Content-Type': 'text/plain' }).end('Empty body');
-    this.uploads.set(uploadKey(channelId, userId), { mime: contentType, bytes });
+    // Store on the Player in the session. Requires a seated player: this both
+    // gives the bytes a bounded, evictable home and keeps a spectator from
+    // planting art on a userId with no game presence.
+    const session = (await this.storage?.load(sessionKey(channelId)).catch(() => null)) ?? null;
+    const player = session?.players?.[userId];
+    if (!session || !player) {
+      return void res.writeHead(409, { 'Content-Type': 'text/plain' }).end('Join the party first (`/dm join <name>`) to set a portrait.');
+    }
+    player.portrait = { kind: 'image', mime: contentType, data: bytes.toString('base64') };
+    await this.storage!.save(sessionKey(channelId), session);
     res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true, url: portraitUrl(channelId, userId) }));
     void this.broadcastRoster(channelId); // clients pick up the new portrait
   }
 
-  /** Room-password check for uploads: `?password=` query or `x-web-password` header. */
-  private uploadAuthorized(req: HttpRequest): boolean {
+  /**
+   * The seat authorized to write `userId`'s portrait in `channelId`: the one
+   * whose upload token matches (query `token` or `x-upload-token` header) AND
+   * which owns that userId in that room. Returns undefined otherwise — a token
+   * only ever authorizes its own seat's portrait.
+   */
+  private seatForUpload(req: HttpRequest, channelId: string, userId: string): Seat | undefined {
     let query = '';
     try {
-      query = new URL(req.url ?? '/', 'http://x').searchParams.get('password') ?? '';
+      query = new URL(req.url ?? '/', 'http://x').searchParams.get('token') ?? '';
     } catch {
       query = '';
     }
-    const header = req.headers['x-web-password'];
-    const given = (typeof header === 'string' && header) || query || '';
-    return given === this.password;
+    const header = req.headers['x-upload-token'];
+    const token = (typeof header === 'string' && header) || query || '';
+    if (!token) return undefined;
+    for (const seat of this.seats.values()) {
+      if (seat.uploadToken === token) {
+        return seat.channelId === channelId && seat.userId === userId ? seat : undefined;
+      }
+    }
+    return undefined;
   }
 
   /** Serve the static client from web/ — GET/HEAD only, no path traversal. */
@@ -562,9 +655,6 @@ export class WebAdapter implements PlatformAdapter {
 /** Storage key for a web room — the web adapter's platform is always 'web'. */
 const sessionKey = (channelId: string) => `web:${channelId}`;
 
-/** In-memory upload key — NUL-joined so it can't collide with real ids. */
-const uploadKey = (channelId: string, userId: string) => `${channelId} ${userId}`;
-
 /** The same-origin URL a portrait is served from (components percent-encoded). */
 const portraitUrl = (channelId: string, userId: string) =>
   `/portrait/${encodeURIComponent(channelId)}/${encodeURIComponent(userId)}`;
@@ -577,6 +667,9 @@ const validPathId = (v: string, max: number): boolean => v.length > 0 && v.lengt
 
 /** Clamp a board coordinate into the normalized 0..1 range. */
 const clamp01 = (n: number): number => (n < 0 ? 0 : n > 1 ? 1 : n);
+
+/** A token's character identity (kind + case-folded name) — stable across a seat re-key. */
+const identityKey = (kind: TokenKind, who: string): string => `${kind}:${who.toLowerCase()}`;
 
 /**
  * The token set a session implies: one per seated player (id `pc:<userId>`) and

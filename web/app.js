@@ -26,10 +26,13 @@ const state = {
   welcomed: false,     // this connection completed the hello handshake
   backoff: 1000,       // ms, doubles to BACKOFF_MAX, resets on welcome
   userId: null,
+  uploadToken: null,   // per-seat secret from welcome — authorizes MY portrait upload only
   roster: [],          // [{ userId, userName }] — sockets in the room
   chars: new Map(),    // userName → characterName (parsed from relayed /dm join lines)
   turnName: null,      // round-robin: whose turn, parsed from DM notices
-  scene: { tokens: [], actor: null, lastRoll: null, lastRollSig: '' }, // the shared token board
+  // lastRollSeen: the scene's rollSeq we last acted on. null until the first
+  // scene frame, whose roll (if any) predates us and is adopted, never popped.
+  scene: { tokens: [], actor: null, lastRoll: null, lastRollSeen: null }, // the shared token board
 };
 const BACKOFF_MAX = 15000;
 
@@ -78,6 +81,7 @@ function onFrame(f) {
   if (f.type === 'welcome') {
     state.welcomed = true;
     state.userId = f.userId;
+    state.uploadToken = typeof f.uploadToken === 'string' ? f.uploadToken : null;
     state.backoff = 1000;
     $('join-screen').hidden = true;
     $('table').hidden = false;
@@ -380,21 +384,25 @@ $('card-file').addEventListener('change', async (e) => {
   e.target.value = ''; // let the same file be re-picked after a failure
   if (!file || !state.join || !state.userId) return;
   const status = $('card-upload-status');
+  if (!state.uploadToken) { status.textContent = 'Reconnecting — try again in a moment.'; return; }
   status.textContent = 'Uploading…';
   try {
     const ch = encodeURIComponent(state.join.channelId);
     const uid = encodeURIComponent(state.userId);
-    const q = state.join.password ? `?password=${encodeURIComponent(state.join.password)}` : '';
-    const res = await fetch(`/portrait/${ch}/${uid}${q}`, {
+    // The seat token (from welcome) authorizes writing MY OWN portrait — the room
+    // password gates joining, not whose portrait you set. Sent as a header so it
+    // stays out of URLs/referrers.
+    const res = await fetch(`/portrait/${ch}/${uid}`, {
       method: 'POST',
-      headers: { 'Content-Type': file.type || 'application/octet-stream' },
+      headers: { 'Content-Type': file.type || 'application/octet-stream', 'x-upload-token': state.uploadToken },
       body: file,
     });
     if (!res.ok) {
       status.textContent = res.status === 401
-        ? 'Upload refused — check the room password.'
+        ? 'Upload refused — you can only set your own portrait.'
+        : res.status === 409 ? 'Join the party first (/dm join <name>) to set a portrait.'
         : res.status === 413 ? 'That image is too large.'
-        : res.status === 415 ? 'That file is not an image.'
+        : res.status === 415 ? 'That file type is not allowed (use PNG, JPEG, GIF or WebP).'
         : `Upload failed (${res.status}).`;
       return;
     }
@@ -438,11 +446,18 @@ function onScene(f) {
   state.scene.lastRoll = roll;
   renderBoard();
   // Pop the freshest roll near the roller's token — but only ONCE per new roll.
-  // The scene rebroadcasts on every move, so an unchanged lastRoll must not
-  // re-pop; we fingerprint it and fire only on a change.
-  const sig = roll ? `${roll.actor}|${roll.notation}|${roll.total}|${roll.note || ''}` : '';
-  if (sig && sig !== state.scene.lastRollSig) showRollPop(roll);
-  state.scene.lastRollSig = sig;
+  // The server bumps `rollSeq` on every genuinely-new roll (even two identical
+  // d20=15s), and the scene rebroadcasts unchanged on every move. So we pop only
+  // when the sequence ADVANCES past what we've seen. The very first scene frame
+  // just sets the baseline: whatever roll it carries happened before we joined
+  // (or reconnected), so it must never pop a phantom die at us.
+  const seq = Number.isFinite(f.rollSeq) ? f.rollSeq : 0;
+  if (state.scene.lastRollSeen === null) {
+    state.scene.lastRollSeen = seq;
+  } else if (seq > state.scene.lastRollSeen) {
+    state.scene.lastRollSeen = seq;
+    if (roll) showRollPop(roll);
+  }
 }
 
 /** A roster seat by userId — the source of a pc token's portrait descriptor. */
@@ -613,7 +628,7 @@ function showJoin(error) {
   $('join-error').textContent = error;
   state.roster = [];
   state.turnName = null;
-  state.scene = { tokens: [], actor: null, lastRoll: null, lastRollSig: '' };
+  state.scene = { tokens: [], actor: null, lastRoll: null, lastRollSeen: null };
   $('board-svg')?.replaceChildren();
   $('board')?.querySelectorAll('.board-pop').forEach((p) => p.remove());
 }

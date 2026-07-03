@@ -8,6 +8,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
+<!-- Defense-in-depth: players and the LLM are untrusted. Lock scripts to same-origin
+     (no inline/injected code executes), block plugins/base-tag hijacks, and keep every
+     fetch/socket same-origin. Portraits and the favicon are same-origin or data: images. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:; object-src 'none'; base-uri 'none'; form-action 'none'">
 <title>OmniDM — the table awaits</title>
 <link rel="icon" href="data:image/svg+xml;charset=utf-8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>🎲</text></svg>">
 <link rel="stylesheet" href="style.css">
@@ -94,7 +98,7 @@
       <div id="card-gallery" class="card-gallery" role="list"></div>
       <label class="card-upload">
         <span>Upload your own portrait</span>
-        <input id="card-file" type="file" accept="image/*">
+        <input id="card-file" type="file" accept="image/png,image/jpeg,image/gif,image/webp">
       </label>
       <div id="card-upload-status" class="card-upload-status" role="status" aria-live="polite"></div>
     </div>

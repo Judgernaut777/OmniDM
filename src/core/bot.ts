@@ -89,7 +89,12 @@ export class Bot {
       return await send({ channelId: session.channelId, text: narration, speaker: 'Dungeon Master', ...(rollPayload ? { rolls: rollPayload } : {}) });
     }
     const { publicText, privates } = splitFog(narration);
-    if (publicText) await send({ channelId: session.channelId, text: publicText, speaker: 'Dungeon Master', ...(rollPayload ? { rolls: rollPayload } : {}) });
+    // Dice outcomes are shared facts, so the roll payload must ride on a PUBLIC
+    // frame even when the whole narration was addressed to one character (empty
+    // publicText). Falling back to a terse public roll line keeps text adapters
+    // sane (never an empty message) and lets rich adapters animate/pop the die.
+    const publicBody = publicText || (rollPayload ? rollLine(rollPayload) : '');
+    if (publicBody) await send({ channelId: session.channelId, text: publicBody, speaker: 'Dungeon Master', ...(rollPayload ? { rolls: rollPayload } : {}) });
     for (const p of privates) {
       // Latest matching join wins: seat re-claims (session-manager) keep names
       // unique, but if they ever collide the most recent joiner is the live one
@@ -313,6 +318,18 @@ export class Bot {
 }
 
 const name = (p: Player) => p.characterName || p.userName;
+
+/**
+ * A terse, PUBLIC one-line summary of the dice a turn resolved. Used only as the
+ * public body when fog mode routed the entire narration to a whisper: the dice
+ * result is still a shared fact and must reach the room (and text adapters that
+ * ignore the structured `rolls`), never leak into (or vanish behind) the whisper.
+ */
+function rollLine(rolls: OutgoingRoll[]): string {
+  return rolls
+    .map((r) => `🎲 ${r.actor} rolls ${r.notation}: ${r.total}${r.note ? ` (${r.note})` : ''}`)
+    .join('\n');
+}
 
 /**
  * Project an engine `RollResult` onto the wire `OutgoingRoll`. The modifier is

@@ -92,6 +92,11 @@ export class SessionManager {
       hp: prior?.hp ?? 10,
       maxHp: prior?.maxHp ?? 10,
       card: prior?.card,
+      // A seat re-claim (new userId, same character) must carry the portrait
+      // across too — a preset OR uploaded image lives on the Player, and the web
+      // adapter mints a fresh userId per reconnect. Dropping it here reverts the
+      // portrait to the default crest and strands the uploaded bytes.
+      portrait: prior?.portrait,
     };
     if (prior && prior.userId !== msg.userId) {
       // Re-key the migrated seat in place — join order (and with it the
