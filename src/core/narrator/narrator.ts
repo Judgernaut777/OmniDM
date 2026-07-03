@@ -7,28 +7,15 @@
  * the small/free models you'll test with are unreliable at JSON, and the
  * open-tabletop-gm probe notes they drift after a few structured tool calls.
  */
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import path from 'node:path';
 import type { ChatMessage, GameSession, LLMProvider, Player, RollResult } from '../types.js';
-import { renderCard } from '../cards/card.js';
+import { renderCard } from '../cards/card-parse.js';
 import { classPreset, MAX_BIO_CHARS } from '../portraits.js';
 import { buildWorldInfo } from '../lore/lorebook.js';
 import { HISTORY_WINDOW, type MemoryRecord } from '../memory/retrieval.js';
+import { bundledRulesProvider, type RulesProvider } from '../rules/registry.js';
 import { FOG_PROMPT } from './fog.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
 const BASE_DM_PROMPT = `You are an expert tabletop RPG Dungeon Master running a game for multiple players in a shared chat channel. You are collaborative, vivid, and fair. You keep the spotlight moving between players and never railroad them. Stay in character as the narrator/DM at all times.`;
-
-function loadSystemModule(systemId: string): string {
-  try {
-    const p = path.join(__dirname, '..', '..', 'rules', systemId, 'system.md');
-    return readFileSync(p, 'utf8');
-  } catch {
-    return '';
-  }
-}
 
 /**
  * A one-line character sheet for the prompt: the player's class (with its flavor
@@ -51,7 +38,17 @@ function characterSheet(p: Player): string {
 }
 
 export class Narrator {
-  constructor(private provider: LLMProvider) {}
+  /**
+   * @param provider the LLM backend
+   * @param rules where the per-session system module (rules markdown) comes
+   *   from. Defaults to the bundled, dependency-free registry so the narrator
+   *   never touches node:fs and can run in a browser; a Node host may inject a
+   *   filesystem-backed provider to restore the "drop a markdown file" flow.
+   */
+  constructor(
+    private provider: LLMProvider,
+    private rules: RulesProvider = bundledRulesProvider,
+  ) {}
 
   private buildMessages(
     session: GameSession,
@@ -80,7 +77,7 @@ export class Narrator {
 
     const system = [
       BASE_DM_PROMPT,
-      loadSystemModule(session.systemId),
+      this.rules.system(session.systemId),
       `## The party\n${roster}`,
       sheets.length ? `## Player characters (play each true to their class and bio)\n${sheets.join('\n')}` : '',
       cards.length ? `## Imported characters (portray each consistently with their card)\n${cards.join('\n\n')}` : '',

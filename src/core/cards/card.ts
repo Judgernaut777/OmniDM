@@ -1,136 +1,47 @@
 /**
- * Character Card import — the V2/V3 spec used across the SillyTavern
- * ecosystem. Cards arrive either as raw JSON (spec_version '2.0'/'3.0', fields
- * under `data`) or embedded in a PNG: a tEXt/zTXt chunk keyed 'chara' (V2) or
- * 'ccv3' (V3) holding base64 JSON. The PNG chunk walk is done by hand — the
- * format is simple enough that a dependency isn't worth it.
+ * Character Card import — the NODE half.
  *
- * Sources are UNTRUSTED — any channel member can pass one to `/dm import`, so
- * loading is hardened: local paths must stay under the data dir (no /etc/passwd
- * oracle), URLs must resolve to public addresses (no SSRF against loopback or
- * cloud metadata), downloads and zTXt inflation are size-capped (no OOM), and
- * parse errors never echo input bytes back to the channel.
+ * The V2/V3 PARSING (JSON, PNG chunk walk, base64) is browser-safe and lives in
+ * ./card-parse.ts. This module layers on the Node-only concerns that a WebView
+ * can't (and shouldn't) do the same way:
+ *   - fetching a card over http(s) behind an SSRF/DNS guard (no loopback/metadata),
+ *   - reading a local file restricted to the data dir (no /etc/passwd oracle),
+ *   - inflating zTXt via node:zlib with a hard output cap (no zip bomb).
+ * All three protections are UNCHANGED from before the split. The pure API is
+ * re-exported so existing importers (`import … from './cards/card.js'`) keep
+ * working; the browser build imports ./card-parse.js (and a browser platform)
+ * directly instead of this file.
  */
 import { lookup } from 'node:dns/promises';
 import { promises as fs } from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { inflateSync } from 'node:zlib';
+import {
+  extractCardFromPng,
+  type InflateFn,
+  isPng,
+  MAX_CARD_BYTES,
+  parseCardJson,
+  parseJson,
+  type CharacterCard,
+} from './card-parse.js';
 
-/** Cards are small; anything bigger is a mistake or an attack. */
-export const MAX_CARD_BYTES = 2 * 1024 * 1024;
+// Re-export the pure surface so callers of card.js are unaffected by the split.
+export {
+  MAX_CARD_BYTES,
+  parseCardJson,
+  extractCardFromPng,
+  renderCard,
+  isPng,
+  bytesToBase64,
+  base64ToBytes,
+} from './card-parse.js';
+export type { CharacterCard, CardBookEntry, Portrait, InflateFn } from './card-parse.js';
 
-/**
- * A character portrait: EITHER a preset archetype id (the server stores only
- * the id; the art is rendered client-side) OR stored image bytes (from a card
- * PNG's embedded art, or a player upload). Image bytes are base64-encoded so
- * they serialize into the session JSON; they are served over HTTP by the web
- * adapter, NEVER inlined into a WebSocket frame (the 32KB frame cap).
- */
-export type Portrait =
-  | { kind: 'preset'; id: string }
-  | { kind: 'image'; mime: string; data: string };
-
-/** A normalized character card, whatever spec version it came from. */
-export interface CharacterCard {
-  specVersion: string;   // '2.0' | '3.0'
-  name: string;
-  description?: string;
-  personality?: string;
-  scenario?: string;
-  firstMes?: string;
-  mesExample?: string;
-  systemPrompt?: string;
-  /** Legacy flattened lore (cards saved pre-lorebook) — still rendered inline. */
-  bookEntries?: string[];
-  /** Structured `character_book` entries — imported into the session lorebook. */
-  book?: CardBookEntry[];
-  /** Portrait art. Set from the embedded image when the card is a PNG. Absent-safe. */
-  portrait?: Portrait;
-}
-
-/** One `character_book` entry, normalized. Shape matches the lorebook's needs. */
-export interface CardBookEntry {
-  name: string;
-  keywords: string[];
-  content: string;
-  enabled: boolean;
-}
-
-const str = (v: unknown): string => (typeof v === 'string' ? v.trim() : '');
-
-/** Parse a decoded card JSON object (V2/V3; tolerates V1's top-level fields). */
-export function parseCardJson(json: unknown): CharacterCard {
-  const obj = (json ?? {}) as Record<string, unknown>;
-  const data = (obj.data ?? obj) as Record<string, unknown>;
-  const name = str(data.name);
-  if (!name) throw new Error('not a character card (missing data.name)');
-  const entries = (data.character_book as { entries?: unknown } | undefined)?.entries;
-  return {
-    specVersion: str(obj.spec_version) || '2.0',
-    name,
-    description: str(data.description),
-    personality: str(data.personality),
-    scenario: str(data.scenario),
-    firstMes: str(data.first_mes),
-    mesExample: str(data.mes_example),
-    systemPrompt: str(data.system_prompt),
-    book: Array.isArray(entries)
-      ? entries.flatMap((raw): CardBookEntry[] => {
-          const e = (raw ?? {}) as Record<string, unknown>;
-          const content = str(e.content);
-          if (!content || e.enabled === false) return [];
-          const keys = Array.isArray(e.keys) ? e.keys.map(str).filter(Boolean) : [];
-          return [{ name: str(e.name) || str(e.comment), keywords: keys, content, enabled: true }];
-        })
-      : [],
-  };
-}
-
-const PNG_SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-
-/** Walk PNG chunks and pull the embedded card ('ccv3' preferred over 'chara'). */
-export function extractCardFromPng(buf: Buffer): CharacterCard {
-  if (!buf.subarray(0, 8).equals(PNG_SIG)) throw new Error('not a PNG file');
-  const texts = new Map<string, Buffer>();
-  for (let off = 8; off + 12 <= buf.length; ) {
-    const len = buf.readUInt32BE(off);
-    const type = buf.toString('latin1', off + 4, off + 8);
-    if (type === 'IEND') break;
-    if (type === 'tEXt' || type === 'zTXt') {
-      const data = buf.subarray(off + 8, off + 8 + len);
-      const nul = data.indexOf(0);
-      if (nul > 0) {
-        const key = data.toString('latin1', 0, nul);
-        // zTXt: a compression-method byte follows the NUL, then zlib data.
-        // maxOutputLength stops decompression bombs (a few KB inflating to GBs).
-        texts.set(
-          key,
-          type === 'tEXt'
-            ? data.subarray(nul + 1)
-            : inflateSync(data.subarray(nul + 2), { maxOutputLength: MAX_CARD_BYTES }),
-        );
-      }
-    }
-    off += 12 + len; // length + type + data + CRC
-  }
-  const b64 = texts.get('ccv3') ?? texts.get('chara');
-  if (!b64) throw new Error('PNG has no embedded character card (no chara/ccv3 chunk)');
-  const card = parseCardJson(parseJson(Buffer.from(b64.toString('latin1'), 'base64'), 'embedded card is not valid JSON'));
-  // The card art IS this PNG — keep the bytes as the character's portrait
-  // (served over HTTP by the web adapter, never inlined into a WS frame).
-  card.portrait = { kind: 'image', mime: 'image/png', data: buf.toString('base64') };
-  return card;
-}
-
-/** JSON.parse without echoing input bytes: Node's SyntaxError embeds a prefix of the input. */
-function parseJson(buf: Buffer, message: string): unknown {
-  try {
-    return JSON.parse(buf.toString('utf8'));
-  } catch {
-    throw new Error(message);
-  }
-}
+/** node:zlib inflate with the same hard output cap the pure walker enforces. */
+const nodeInflate: InflateFn = (data, maxOutputBytes) =>
+  inflateSync(data, { maxOutputLength: maxOutputBytes });
 
 /** RFC1918/loopback/link-local/CGNAT/unspecified — anything a bot host must not be steered into. */
 function isPrivateIp(ip: string): boolean {
@@ -198,26 +109,11 @@ async function readCardFile(source: string, baseDir: string): Promise<Buffer> {
 
 /**
  * Load a card from a local file path (restricted to `baseDir`) or a public
- * http(s) URL (size-capped); JSON or card PNG.
+ * http(s) URL (size-capped); JSON or card PNG. This is the Node entrypoint;
+ * an in-browser build parses uploaded bytes with ./card-parse.js directly.
  */
 export async function loadCard(source: string, baseDir: string): Promise<CharacterCard> {
   const buf = /^https?:\/\//i.test(source) ? await fetchCard(source) : await readCardFile(source, baseDir);
-  if (buf.subarray(0, 8).equals(PNG_SIG)) return extractCardFromPng(buf);
+  if (isPng(buf)) return extractCardFromPng(buf, nodeInflate);
   return parseCardJson(parseJson(buf, 'file is neither a card PNG nor valid card JSON'));
-}
-
-/** Per-field clip so one giant card can't blow out the prompt budget. */
-const FIELD_CLIP = 700;
-const clip = (s: string) => (s.length > FIELD_CLIP ? `${s.slice(0, FIELD_CLIP)}…` : s);
-
-/** Render a card as a bounded prompt block for the narrator. */
-export function renderCard(card: CharacterCard, role: string): string {
-  const lines = [`### ${card.name} — ${role}`];
-  if (card.description) lines.push(`Description: ${clip(card.description)}`);
-  if (card.personality) lines.push(`Personality: ${clip(card.personality)}`);
-  if (card.scenario) lines.push(`Scenario: ${clip(card.scenario)}`);
-  if (card.systemPrompt) lines.push(`Character notes: ${clip(card.systemPrompt)}`);
-  if (card.mesExample) lines.push(`Example dialogue: ${clip(card.mesExample)}`);
-  for (const entry of (card.bookEntries ?? []).slice(0, 3)) lines.push(`Lore: ${clip(entry)}`);
-  return lines.join('\n');
 }

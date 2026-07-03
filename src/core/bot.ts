@@ -10,13 +10,22 @@ import type { GameSession, IncomingMessage, LLMProvider, OutgoingMessage, Outgoi
 import { SessionManager } from './session/session-manager.js';
 import type { SessionStorage } from './session/storage.js';
 import { Narrator } from './narrator/narrator.js';
-import { loadCard } from './cards/card.js';
+import type { CharacterCard } from './cards/card-parse.js';
 import { findEntry, importCardBook, makeEntry } from './lore/lorebook.js';
 import { splitFog } from './narrator/fog.js';
 import { TurnPipeline } from './engine/turn-pipeline.js';
 import { classPreset, MAX_BIO_CHARS, normalizePresetId, PORTRAIT_PRESETS } from './portraits.js';
 
 type Send = (msg: OutgoingMessage) => Promise<void>;
+
+/**
+ * How `/dm import <src>` turns a source into a card. Injected so the core stays
+ * Node-free: the Node host uses the default (a lazy import of ./cards/card.js,
+ * with its URL/file/zlib machinery), while an in-app build passes a browser
+ * importer that parses uploaded bytes. Because the default is a DYNAMIC import,
+ * bot.ts's static module graph never references node: builtins.
+ */
+export type CardImporter = (source: string, baseDir: string) => Promise<CharacterCard>;
 
 export class Bot {
   private sessions: SessionManager;
@@ -26,10 +35,19 @@ export class Bot {
     private config: Config,
     private provider: LLMProvider,
     storage: SessionStorage, // injected at the composition root so the core stays Node-free
+    /** Card loader for `/dm import`; defaults to the Node loader (lazy-imported). */
+    private cardImporter?: CardImporter,
   ) {
     this.sessions = new SessionManager(storage, config.llm.model, provider);
     const narrator = new Narrator(provider);
     this.pipeline = new TurnPipeline(this.sessions, narrator, provider);
+  }
+
+  /** Resolve a card source. Uses the injected importer, else lazy-loads the Node one. */
+  private async importCard(source: string, baseDir: string): Promise<CharacterCard> {
+    if (this.cardImporter) return this.cardImporter(source, baseDir);
+    const { loadCard } = await import('./cards/card.js');
+    return loadCard(source, baseDir);
   }
 
   async handle(msg: IncomingMessage, send: Send): Promise<void> {
@@ -153,7 +171,7 @@ export class Bot {
         if (!rest) return reply('Usage: `/dm import <file-path-or-URL>` — a Character Card V2/V3 JSON or card PNG (local files must live under the data dir).');
         let card;
         try {
-          card = await loadCard(rest, this.config.dataDir);
+          card = await this.importCard(rest, this.config.dataDir);
         } catch (err) {
           return reply(`⚠️ Could not import that card: ${(err as Error).message}`);
         }

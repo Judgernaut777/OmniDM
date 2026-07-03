@@ -7,7 +7,7 @@
  * model API wants. Nothing below the adapter layer knows what "Discord" is.
  */
 
-import type { CharacterCard, Portrait } from './cards/card.js';
+import type { CharacterCard, Portrait } from './cards/card-parse.js';
 import type { LoreEntry } from './lore/lorebook.js';
 import type { MemoryRecord } from './memory/retrieval.js';
 

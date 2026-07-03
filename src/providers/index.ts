@@ -8,25 +8,19 @@
  */
 import type { Config } from '../config.js';
 import type { LLMProvider } from '../core/types.js';
+import { buildProvider } from './factory.js';
 import { AnthropicProvider } from './anthropic.js';
 import { OpenAICompatibleProvider } from './openai-compatible.js';
 
+/** Node composition root: adapt the env-backed Config to the neutral factory. */
 export function createProvider(config: Config): LLMProvider {
-  const isAnthropic =
-    config.llm.provider === 'anthropic' || config.llm.baseUrl.includes('anthropic.com');
-  if (isAnthropic) {
-    return new AnthropicProvider({
-      apiKey: config.llm.apiKey,
-      // Only honor LLM_BASE_URL when it actually points at Anthropic; otherwise
-      // it's the leftover OpenRouter default and the provider's own default applies.
-      baseUrl: config.llm.baseUrl.includes('anthropic.com') ? config.llm.baseUrl : undefined,
-    });
-  }
-  return new OpenAICompatibleProvider({
+  return buildProvider({
+    provider: config.llm.provider,
     baseUrl: config.llm.baseUrl,
     apiKey: config.llm.apiKey,
     embeddingsModel: config.llm.embeddingsModel,
   });
 }
 
-export { AnthropicProvider, OpenAICompatibleProvider };
+export { buildProvider, AnthropicProvider, OpenAICompatibleProvider };
+export type { LlmProviderConfig } from './factory.js';

@@ -40,6 +40,12 @@ import { MatrixAdapter } from './adapters/matrix.js';
 import { MattermostAdapter } from './adapters/mattermost.js';
 import { MAX_CARD_SUMMARY_CHARS, MAX_FRAME_BYTES, MAX_NAME_CHARS, MAX_PORTRAIT_BYTES, MAX_TEXT_CHARS, RATE_LIMIT_PER_SEC, UNJOINED_FRAMES_PER_SEC, WebAdapter } from './adapters/web.js';
 import { MAX_BIO_CHARS, PORTRAIT_PRESETS, resolvePresetId } from './core/portraits.js';
+import { BUNDLED_RULES, bundledRulesProvider } from './core/rules/registry.js';
+import { base64ToBytes, bytesToBase64 } from './core/cards/card-parse.js';
+import { loadCardFromBytes } from './core/cards/card-browser.js';
+import { BrowserSessionStorage, webStorageKeyValue, type AsyncKeyValue, type WebStorageLike } from './core/session/browser-storage.js';
+import { buildProvider } from './providers/factory.js';
+import { RoomEngine, type Frame as RoomFrame, type RoomConnection } from './core/room/room-engine.js';
 
 let failures = 0;
 function check(label: string, cond: boolean) {
@@ -71,9 +77,9 @@ type Frame = { type: string; [k: string]: unknown };
  * received so "this was NEVER delivered here" can be asserted.
  */
 class WsClient {
-  readonly all: Frame[] = [];
-  private pending: Frame[] = [];
-  private waiter?: { pred: (f: Frame) => boolean; resolve: (f: Frame | undefined) => void };
+  readonly all: RoomFrame[] = [];
+  private pending: RoomFrame[] = [];
+  private waiter?: { pred: (f: RoomFrame) => boolean; resolve: (f: RoomFrame | undefined) => void };
   private isClosed = false;
   private ws: WebSocket;
 
@@ -1685,6 +1691,254 @@ async function main() {
     oldPreset?.players.u1?.class === undefined &&
     oldPreset?.players.u1?.portrait?.kind === 'preset' &&
     resolvePresetId((oldPreset!.players.u1!.portrait as { id: string }).id) === 'wizard');
+
+  // ── Portable engine: bundled rules registry (no node:fs on the narrator path) ──
+  {
+    const ruleMd = await fs.readFile('src/rules/dnd5e/system.md', 'utf8');
+    check('rules: bundled dnd5e module is byte-identical to rules/dnd5e/system.md (no drift)', BUNDLED_RULES.dnd5e === ruleMd);
+    check('rules: provider returns bundled content and empty for unknown systems',
+      bundledRulesProvider.system('dnd5e') === ruleMd && bundledRulesProvider.system('nope') === '');
+    // The narrator now reads rules through the registry — the on-disk rules text
+    // still reaches the prompt (behaviour preserved, proven live below).
+    const rBot = new Bot(config, provider, new MemoryStorage());
+    const rOut: OutgoingMessage[] = [];
+    const rMsg = (t: string): IncomingMessage => ({ platform: 'cli', channelId: 'rules', userId: 'u1', userName: 'Alice', text: t });
+    await rBot.handle(rMsg('/dm new'), async (m) => void rOut.push(m));
+    await rBot.handle(rMsg('/dm join Thorin'), async (m) => void rOut.push(m));
+    await rBot.handle(rMsg('I look around'), async (m) => void rOut.push(m));
+    check('rules: bundled system module reaches the narrator prompt without node:fs',
+      provider.lastPrompt.includes('System Module — D&D 5e'));
+  }
+
+  // ── Portable engine: browser-safe card parsing (Uint8Array + DecompressionStream) ──
+  {
+    // base64 helpers match node:Buffer exactly.
+    const sample = new Uint8Array([0x00, 0x01, 0x02, 0x7f, 0x80, 0xff, 0x89, 0x50]);
+    check('card-parse: bytesToBase64 matches Buffer.toString(base64)', bytesToBase64(sample) === Buffer.from(sample).toString('base64'));
+    check('card-parse: base64ToBytes round-trips', Buffer.from(base64ToBytes(bytesToBase64(sample))).equals(Buffer.from(sample)));
+
+    // JSON card via the browser (upload-only) entrypoint.
+    const jsonCard = Buffer.from(JSON.stringify({ spec_version: '2.0', data: { name: 'Wisp', description: 'A browser-parsed spirit.' } }));
+    const bc1 = await loadCardFromBytes(new Uint8Array(jsonCard));
+    check('card-browser: parses an uploaded JSON card', bc1.name === 'Wisp' && bc1.description === 'A browser-parsed spirit.');
+
+    // tEXt PNG card (no inflation needed) — keeps the embedded PNG as the portrait.
+    const embB64 = Buffer.from(JSON.stringify({ spec_version: '2.0', data: { name: 'Glim' } })).toString('base64');
+    const textPng = Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      pngChunk('IHDR', Buffer.alloc(13)),
+      pngChunk('tEXt', Buffer.from(`chara\0${embB64}`, 'latin1')),
+      pngChunk('IEND', Buffer.alloc(0)),
+    ]);
+    const bc2 = await loadCardFromBytes(new Uint8Array(textPng));
+    check('card-browser: parses a tEXt PNG card and keeps the embedded image portrait',
+      bc2.name === 'Glim' && bc2.portrait?.kind === 'image' && bc2.portrait.mime === 'image/png' && (bc2.portrait.data?.length ?? 0) > 0);
+
+    // zTXt PNG card — the browser inflate path runs over DecompressionStream (present in Node ≥18).
+    const zB64 = Buffer.from(JSON.stringify({ spec_version: '2.0', data: { name: 'Zib' } })).toString('base64');
+    const zPng = Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      pngChunk('IHDR', Buffer.alloc(13)),
+      pngChunk('zTXt', Buffer.concat([Buffer.from('chara\0\0', 'latin1'), deflateSync(Buffer.from(zB64, 'latin1'))])),
+      pngChunk('IEND', Buffer.alloc(0)),
+    ]);
+    const bc3 = await loadCardFromBytes(new Uint8Array(zPng));
+    check('card-browser: inflates a zTXt PNG card via DecompressionStream', bc3.name === 'Zib');
+
+    // The zip-bomb cap holds on the browser inflate too.
+    const bombPng = Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      pngChunk('IHDR', Buffer.alloc(13)),
+      pngChunk('zTXt', Buffer.concat([Buffer.from('chara\0\0', 'latin1'), bomb])),
+      pngChunk('IEND', Buffer.alloc(0)),
+    ]);
+    let bombRejected = false;
+    try { await loadCardFromBytes(new Uint8Array(bombPng)); } catch { bombRejected = true; }
+    check('card-browser: a zTXt decompression bomb is rejected by the browser inflate cap', bombRejected);
+  }
+
+  // ── Portable engine: browser SessionStorage round-trips a session ──
+  {
+    // A fake Web Storage (localStorage) backing the KV adapter.
+    const backing = new Map<string, string>();
+    const fakeStorage: WebStorageLike = {
+      getItem: (k) => (backing.has(k) ? backing.get(k)! : null),
+      setItem: (k, v) => void backing.set(k, v),
+      removeItem: (k) => void backing.delete(k),
+    };
+    const kv: AsyncKeyValue = webStorageKeyValue(fakeStorage);
+    const bStore = new BrowserSessionStorage(kv);
+    const sess: GameSession = {
+      id: 'b1', platform: 'web', channelId: 'r1', systemId: 'dnd5e', model: 'mock/free-model',
+      players: { u1: { userId: 'u1', userName: 'Alice', characterName: 'Thorin', hp: 7, maxHp: 10 } },
+      npcs: [], lorebook: [], history: [], summary: '', memories: [],
+      turnMode: 'immediate', turnIndex: 0, fogOfWar: false, createdAt: 1,
+    };
+    await bStore.save('web:r1', sess);
+    check('browser-storage: a session round-trips through the KV adapter (durable under localStorage)',
+      [...backing.keys()].some((k) => k.includes('web:r1')) && backing.size === 1);
+    const fresh = new BrowserSessionStorage(kv); // a fresh instance (empty cache) must reload from storage
+    const loaded = await fresh.load('web:r1');
+    check('browser-storage: load reconstructs the session from a cold cache',
+      loaded?.players.u1?.characterName === 'Thorin' && loaded.players.u1?.hp === 7);
+    await fresh.delete('web:r1');
+    check('browser-storage: delete removes the record (and returns null after)', backing.size === 0 && (await new BrowserSessionStorage(kv).load('web:r1')) === null);
+
+    // Legacy defaulting: a record written by an older build (missing post-v1
+    // fields) still loads with sane defaults, like NodeFileStorage.
+    backing.set('omnidm:session:web:old', JSON.stringify({ id: 'o', platform: 'web', channelId: 'old', systemId: 'dnd5e', model: 'm', players: {}, history: [], summary: '', createdAt: 1 }));
+    const legacyB = await new BrowserSessionStorage(kv).load('web:old');
+    check('browser-storage: a pre-feature record loads with defaulted turnMode/npcs/lorebook/fog/memories',
+      legacyB?.turnMode === 'immediate' && legacyB.turnIndex === 0 && Array.isArray(legacyB.npcs) &&
+      Array.isArray(legacyB.lorebook) && legacyB.fogOfWar === false && Array.isArray(legacyB.memories));
+
+    // The full Bot pipeline runs unchanged on the browser storage.
+    const bBot = new Bot(config, provider, new BrowserSessionStorage(webStorageKeyValue({
+      getItem: (k) => (backing.has(k) ? backing.get(k)! : null),
+      setItem: (k, v) => void backing.set(k, v),
+      removeItem: (k) => void backing.delete(k),
+    })));
+    const bOut: OutgoingMessage[] = [];
+    const bSend = async (m: OutgoingMessage) => void bOut.push(m);
+    const bMsg = (t: string): IncomingMessage => ({ platform: 'cli', channelId: 'play', userId: 'u1', userName: 'Alice', text: t });
+    await bBot.handle(bMsg('/dm new'), bSend);
+    await bBot.handle(bMsg('/dm join Thorin'), bSend);
+    bOut.length = 0;
+    await bBot.handle(bMsg('I attack the goblin with my d20+5 sword'), bSend);
+    check('browser-storage: a full turn (dice → narration) resolves against BrowserSessionStorage',
+      bOut.at(-1)!.speaker === 'Dungeon Master' && /d20\+5/.test(provider.lastPrompt));
+  }
+
+  // ── Portable engine: environment-neutral provider factory ──
+  {
+    check('factory: anthropic provider from LLM_PROVIDER=anthropic',
+      buildProvider({ provider: 'anthropic', baseUrl: 'https://openrouter.ai/api/v1', apiKey: 'x' }).id === 'anthropic');
+    check('factory: anthropic provider from an anthropic.com base URL',
+      buildProvider({ baseUrl: 'https://api.anthropic.com', apiKey: 'x' }).id === 'anthropic');
+    check('factory: OpenAI-compatible provider otherwise',
+      buildProvider({ baseUrl: 'https://openrouter.ai/api/v1', apiKey: 'x' }).id === 'openai-compatible');
+    check('factory: allowBrowser flag is accepted (in-app engine builds a client-side provider)',
+      buildProvider({ baseUrl: 'http://mock', apiKey: 'x', allowBrowser: true }).id === 'openai-compatible');
+  }
+
+  // ── Portable engine: RoomEngine drives a full flow with NO node:http/ws/fs ──
+  {
+    /** An in-process connection collecting frames — the transport-agnostic seam. */
+    class FakeConn implements RoomConnection {
+      readonly all: RoomFrame[] = [];
+      private pending: RoomFrame[] = [];
+      private waiter?: { pred: (f: RoomFrame) => boolean; resolve: (f: RoomFrame | undefined) => void };
+      send(frame: RoomFrame): void {
+        const f = JSON.parse(JSON.stringify(frame)) as RoomFrame; // snapshot (engine reuses frame objects)
+        this.all.push(f);
+        if (this.waiter?.pred(f)) { const w = this.waiter; this.waiter = undefined; w.resolve(f); }
+        else this.pending.push(f);
+      }
+      close(): void {}
+      next(pred: (f: RoomFrame) => boolean, timeoutMs = 2000): Promise<RoomFrame | undefined> {
+        const i = this.pending.findIndex(pred);
+        if (i !== -1) return Promise.resolve(this.pending.splice(i, 1)[0]);
+        return new Promise((resolve) => {
+          const timer = setTimeout(() => { this.waiter = undefined; resolve(undefined); }, timeoutMs);
+          this.waiter = { pred, resolve: (f) => { clearTimeout(timer); resolve(f); } };
+        });
+      }
+      sawText(t: string): boolean { return this.all.some((f) => typeof f.text === 'string' && (f.text as string).includes(t)); }
+    }
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    type RUser = { userId: string; userName: string; characterName?: string; portrait?: { kind?: string; id?: string; url?: string } | null };
+    type STok = { id: string; who: string; kind: string; x: number; y: number };
+
+    const reStorage = new MemoryStorage();
+    const reBot = new Bot(config, provider, reStorage);
+    const engine = new RoomEngine({ storage: reStorage, platform: 'web' });
+    engine.setHandler((m) => reBot.handle(m, async (o) => engine.emit(o)));
+
+    const ca = new FakeConn();
+    const cb = new FakeConn();
+    engine.handleFrame(ca, { type: 'hello', userName: 'Alice', channelId: 'r1' });
+    const welA = await ca.next((f) => f.type === 'welcome');
+    check('room-engine: hello is answered with a welcome carrying a userId and per-seat upload token',
+      typeof welA?.userId === 'string' && String(welA.userId).startsWith('web-') && typeof welA.uploadToken === 'string' && (welA.uploadToken as string).length >= 12);
+    const aId = welA!.userId as string;
+    const aTok = welA!.uploadToken as string;
+    await ca.next((f) => f.type === 'roster');
+    engine.handleFrame(cb, { type: 'hello', userName: 'Bob', channelId: 'r1' });
+    await cb.next((f) => f.type === 'welcome');
+    const roster2 = await ca.next((f) => f.type === 'roster' && (f.users as RUser[]).length === 2);
+    check('room-engine: a join broadcasts the enriched roster to the room',
+      (roster2!.users as RUser[]).map((u) => u.userName).join(',') === 'Alice,Bob');
+
+    engine.handleFrame(ca, { type: 'say', text: '/dm new' });
+    check('room-engine: bot reply broadcasts to every connection in the room',
+      Boolean(await ca.next((f) => f.type === 'msg' && String(f.text).includes('new campaign'))) &&
+      Boolean(await cb.next((f) => f.type === 'msg' && String(f.text).includes('new campaign'))));
+    check('room-engine: player lines are relayed to the room', cb.sawText('/dm new'));
+
+    engine.handleFrame(ca, { type: 'say', text: '/dm join Thorin' });
+    await ca.next((f) => f.type === 'msg' && String(f.text).includes('Thorin joins'));
+    engine.handleFrame(cb, { type: 'say', text: '/dm join Elaria' });
+    await cb.next((f) => f.type === 'msg' && String(f.text).includes('Elaria joins'));
+
+    // Scene: one pc token per party member, seeded inside 0..1 with a stable id.
+    const partyScene = await ca.next((f) => f.type === 'scene' && (f.tokens as STok[]).filter((t) => t.kind === 'pc').length === 2);
+    const pcs = (partyScene!.tokens as STok[]).filter((t) => t.kind === 'pc');
+    check('room-engine: the scene carries a pc token per party member, seeded inside 0..1 with stable ids',
+      pcs.length === 2 && pcs.some((t) => t.who === 'Thorin') && pcs.some((t) => t.id === `pc:${aId}`) &&
+      pcs.every((t) => t.x >= 0 && t.x <= 1 && t.y >= 0 && t.y <= 1));
+
+    // Portrait: /dm portrait enriches the roster with a preset descriptor.
+    engine.handleFrame(ca, { type: 'say', text: '/dm portrait ranger' });
+    const presetRoster = await ca.next((f) => f.type === 'roster' && (f.users as RUser[]).some((u) => u.userName === 'Alice' && u.portrait?.kind === 'preset'));
+    const aliceSeat = (presetRoster!.users as RUser[]).find((u) => u.userName === 'Alice');
+    check('room-engine: the enriched roster carries the character name and a preset portrait descriptor',
+      aliceSeat?.characterName === 'Thorin' && aliceSeat?.portrait?.kind === 'preset' && aliceSeat?.portrait?.id === 'ranger');
+
+    // Roll: a structured roll frame + a board pop (scene lastRoll + rollSeq), plus the msg narration.
+    engine.handleFrame(ca, { type: 'say', text: '/dm roll d20+5' });
+    const rollFrame = await ca.next((f) => f.type === 'roll');
+    const rDice = rollFrame?.dice as number[] | undefined;
+    check('room-engine: /dm roll emits a self-consistent roll frame (notation, actor, dice+modifier)',
+      rollFrame?.notation === 'd20+5' && rollFrame?.actor === 'Thorin' &&
+      Array.isArray(rDice) && rDice.length === 1 && (rollFrame!.total as number) === rDice[0] + ((rollFrame!.modifier as number) ?? 0));
+    const rollScene = await ca.next((f) => f.type === 'scene' && Boolean(f.lastRoll) && Number.isFinite(f.rollSeq));
+    check('room-engine: a roll stashes onto the scene with a numeric rollSeq for the board pop',
+      (rollScene!.lastRoll as { notation?: string })?.notation === 'd20+5' && (rollScene!.rollSeq as number) >= 1);
+    const rollTotal = rollFrame!.total as number;
+    const reRoom = await reStorage.load('web:r1');
+    check('room-engine: the roll frame total matches the persisted engine roll (no re-roll)',
+      reRoom?.history.at(-1)?.rolls[0]?.total === rollTotal && reRoom?.history.at(-1)?.rolls[0]?.notation === 'd20+5');
+    check('room-engine: the roll also produced a normal DM narration frame (transcript intact)',
+      Boolean(await ca.next((f) => f.type === 'msg' && f.speaker === 'Dungeon Master')));
+
+    // Portrait bytes: the engine owns the session read/write; the transport only serves them.
+    const okSet = await engine.setPortrait('r1', aId, 'image/png', bytesToBase64(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3])));
+    const gotImg = await engine.resolvePortraitImage('r1', aId);
+    check('room-engine: setPortrait stores an image and resolvePortraitImage returns it as {mime,base64}',
+      okSet === 'ok' && gotImg?.mime === 'image/png' && (gotImg?.data.length ?? 0) > 0);
+    check('room-engine: an upload token authorizes only its own seat',
+      engine.seatForUpload(aTok, 'r1', aId) === true && engine.seatForUpload(aTok, 'r1', 'web-someone-else') === false && engine.seatForUpload('bogus', 'r1', aId) === false);
+    check('room-engine: setPortrait on an unseated user is refused (no session presence)',
+      (await engine.setPortrait('r1', 'web-nobody', 'image/png', 'AAAA')) === 'no-player');
+
+    // Fog routing: a private section reaches only its target's connection.
+    await sleep(1100); // drain Alice's say rate-limit window
+    engine.handleFrame(ca, { type: 'say', text: '/dm fog on' });
+    await ca.next((f) => f.type === 'msg' && String(f.text).includes('Fog of war ON'));
+    provider.narration = 'The corridor forks. [PRIVATE:Elaria]A pressure plate glints under your boot.[/PRIVATE] Torches gutter.';
+    await sleep(1100);
+    engine.handleFrame(ca, { type: 'say', text: 'I lead the way' });
+    const pubBoth = await cb.next((f) => f.type === 'msg' && String(f.text).includes('corridor forks'));
+    const whisper = await cb.next((f) => f.type === 'msg' && f.private === true);
+    check('room-engine: fog routes the private section only to its target, flagged private',
+      Boolean(pubBoth) && Boolean(whisper?.text) && String(whisper!.text).includes('pressure plate') && !ca.sawText('pressure plate'));
+    provider.narration = 'The tavern falls silent as you act. (mock narration)';
+
+    // A dropped connection leaves the roster.
+    engine.dropConnection(cb);
+    const shrunk = await ca.next((f) => f.type === 'roster' && (f.users as RUser[]).length === 1);
+    check('room-engine: dropping a connection leaves the roster', (shrunk!.users as RUser[])[0]?.userName === 'Alice');
+  }
 
   await fs.rm(dataDir, { recursive: true, force: true });
   console.log(`\n${failures === 0 ? '🎉 all checks passed' : `💥 ${failures} check(s) failed`}`);

@@ -22,6 +22,14 @@ export interface OpenAICompatibleOptions {
   apiKey: string;
   /** Model for the /embeddings endpoint (EMBEDDINGS_MODEL). Empty = embeddings off. */
   embeddingsModel?: string;
+  /**
+   * Allow the OpenAI SDK to run in a browser. The SDK refuses to run client-side
+   * unless this is set (keys in a browser are exposed to that page's JS) — which
+   * for the in-app engine is intended: the user brings their OWN key, stored only
+   * in app storage, and talks to the endpoint THEY configured. Defaults to
+   * auto-detecting a browser global, so the Node path is unaffected.
+   */
+  allowBrowser?: boolean;
 }
 
 export class OpenAICompatibleProvider implements LLMProvider {
@@ -36,6 +44,9 @@ export class OpenAICompatibleProvider implements LLMProvider {
     this.client = new OpenAI({
       baseURL: opts.baseUrl,
       apiKey: opts.apiKey || 'not-needed-for-local',
+      // In a WebView the SDK runs client-side with the user's own key; opt in
+      // explicitly. Auto-detect a browser so the Node server never sets it.
+      dangerouslyAllowBrowser: opts.allowBrowser ?? typeof (globalThis as { window?: unknown }).window !== 'undefined',
       // OpenRouter appreciates these; harmless elsewhere.
       defaultHeaders: {
         'HTTP-Referer': 'https://github.com/your/omnidm',
