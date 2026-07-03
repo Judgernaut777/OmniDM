@@ -31,7 +31,11 @@ const state = {
   chars: new Map(),    // userName → characterName (parsed from relayed /dm join lines)
   turnName: null,      // round-robin: whose turn, parsed from DM notices
   creatorPrompted: false, // auto-opened the creator once this connection (first-time setup)
-  creator: { pendingClass: null }, // optimistic class pick, for an instant preview before the roster confirms
+  // creator: optimistic class pick (for an instant preview before the roster
+  // confirms) + the name/bio a Save is awaiting server confirmation for — the
+  // status text is only promoted to "Saved" once the enriched roster reflects it,
+  // so a rejected `/dm join`/`/dm bio` (e.g. before `/dm new`) never shows a lie.
+  creator: { pendingClass: null, pendingName: null, pendingBio: null },
   // lastRollSeen: the scene's rollSeq we last acted on. null until the first
   // scene frame, whose roll (if any) predates us and is adopted, never popped.
   scene: { tokens: [], actor: null, lastRoll: null, lastRollSeen: null }, // the shared token board
@@ -301,9 +305,10 @@ function renderRoster() {
     box.append(seat);
   }
   $('turn-line').textContent = state.turnName ? `⚔ ${state.turnName} acts` : '';
-  // Keep the live creator preview in step with server state, and offer the
-  // first-time setup prompt once my own seat has arrived.
-  if (!$('creator').hidden) updateCreator();
+  // Keep the live creator preview in step with server state, confirm any pending
+  // name/bio Save the roster now reflects, and offer the first-time setup prompt
+  // once my own seat has arrived.
+  if (!$('creator').hidden) { updateCreator(); reconcileCreatorStatus(); }
   maybePromptCreator();
 }
 
@@ -402,11 +407,47 @@ function myCharacterName() { const u = mySeat(); return (u && typeof u.character
 /** True once I've actually done `/dm join <name>` (a server-confirmed character). */
 function characterIsSet() { return myCharacterName() !== ''; }
 
-/** The class id currently in effect for me: the server's, else my optimistic pick. */
+/** The class id currently in effect for me: my optimistic pick, else the server's.
+ * The optimistic pick wins so the highlighted tile, class name and flavor track
+ * the live portrait preview (creatorPreviewSeat also prefers pendingClass) the
+ * instant a tile is clicked — instead of lagging a class change by a roster
+ * round-trip because the server value was still the stale previous class. */
 function currentClassId() {
   const u = mySeat();
-  const raw = (u && typeof u.class === 'string' && u.class) || state.creator.pendingClass || '';
+  const raw = state.creator.pendingClass || (u && typeof u.class === 'string' && u.class) || '';
   return raw ? raw.trim().toLowerCase() : '';
+}
+
+/* The bot's `/dm` tokenizer collapses runs of whitespace, and the server clamps
+ * a name to 40 / a bio to 500 chars — so normalize the same way before comparing
+ * a pending Save against the value the roster echoes back, or a match is missed. */
+const normSaved = (s, max) => String(s).trim().replace(/\s+/g, ' ').slice(0, max);
+
+/**
+ * Promote a pending name/bio Save to "Saved" ONLY once the server-enriched roster
+ * actually reflects it — the client has no request/response correlation, so this
+ * is how a Save waits for the server instead of optimistically claiming success.
+ * A rejected command (e.g. `/dm join` before any `/dm new`) never lands in the
+ * roster, so the status stays on "Saving…" while the log shows the real error —
+ * no false confirmation. Called on every roster frame while the creator is open.
+ */
+function reconcileCreatorStatus() {
+  const cr = state.creator;
+  if (cr.pendingName != null) {
+    const server = myCharacterName();
+    if (server && normSaved(server, 40) === normSaved(cr.pendingName, 40)) {
+      $('creator-name-status').textContent = `Saved. The party knows you as “${server}”.`;
+      cr.pendingName = null;
+    }
+  }
+  if (cr.pendingBio != null) {
+    const u = mySeat();
+    const server = u && typeof u.bio === 'string' ? u.bio : '';
+    if (server && normSaved(server, 500) === normSaved(cr.pendingBio, 500)) {
+      $('creator-bio-status').textContent = 'Bio saved.';
+      cr.pendingBio = null;
+    }
+  }
 }
 
 /**
@@ -474,10 +515,13 @@ function openCreator() {
   buildCreatorGallery();
   const u = mySeat();
   state.creator.pendingClass = null;
+  state.creator.pendingName = null;
+  state.creator.pendingBio = null;
   $('creator-name').value = myCharacterName();
   $('creator-bio').value = (u && typeof u.bio === 'string') ? u.bio : '';
   updateBioCount();
   $('creator-name-status').textContent = '';
+  $('creator-bio-status').textContent = '';
   $('creator-import').value = '';
   $('creator-import-status').textContent = '';
   $('card-upload-status').textContent = '';
@@ -506,7 +550,10 @@ $('creator-name-form')?.addEventListener('submit', (e) => {
   const name = $('creator-name').value.trim();
   if (!name) return;
   sendSay(`/dm join ${name}`); // also renames if already joined
-  $('creator-name-status').textContent = `Saved. The party knows you as “${name}”.`;
+  // Don't claim success yet — the join is rejected before `/dm new` exists.
+  // reconcileCreatorStatus() promotes this to "Saved" once the roster confirms.
+  state.creator.pendingName = name;
+  $('creator-name-status').textContent = 'Saving…';
 });
 
 $('creator-bio')?.addEventListener('input', updateBioCount);
@@ -515,6 +562,10 @@ $('creator-bio-form')?.addEventListener('submit', (e) => {
   const text = $('creator-bio').value.trim();
   if (!text) return;
   sendSay(`/dm bio ${text}`);
+  // Same as the name Save: wait for the enriched roster to echo the bio back
+  // before confirming, so a rejected `/dm bio` never shows a false "saved".
+  state.creator.pendingBio = text;
+  $('creator-bio-status').textContent = 'Saving…';
 });
 
 $('creator-import-form')?.addEventListener('submit', (e) => {
@@ -783,6 +834,8 @@ function showJoin(error) {
   $('card-sheet').hidden = true;
   state.creatorPrompted = false;
   state.creator.pendingClass = null;
+  state.creator.pendingName = null;
+  state.creator.pendingBio = null;
   $('join-screen').hidden = false;
   $('join-error').textContent = error;
   state.roster = [];

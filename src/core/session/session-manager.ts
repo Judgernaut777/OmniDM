@@ -7,6 +7,15 @@ import { nanoid } from 'nanoid';
 import type { GameSession, IncomingMessage, LLMProvider, Player } from '../types.js';
 import type { SessionStorage } from './storage.js';
 
+/**
+ * Server-side cap on a stored character name. The web client's input maxlength
+ * (40) is advisory only — a raw socket can send `/dm join ` + arbitrary text —
+ * and the name is echoed into every roster broadcast, each seat label, and the
+ * DM system prompt's party roster, so an unbounded name is prompt/resource bloat
+ * on every turn. Mirrors the adapter's hello userName cap.
+ */
+export const MAX_CHARACTER_NAME_CHARS = 40;
+
 export class SessionManager {
   constructor(
     private store: SessionStorage,
@@ -84,11 +93,14 @@ export class SessionManager {
    * takes over someone else's seat.
    */
   async join(session: GameSession, msg: IncomingMessage, characterName?: string): Promise<Player> {
-    const prior = session.players[msg.userId] ?? (characterName ? this.reclaimable(session, characterName) : undefined);
+    // Clamp the incoming name before it is stored, matched for a seat re-claim,
+    // or echoed anywhere — the client maxlength is not enforceable over a raw socket.
+    const name = characterName === undefined ? undefined : characterName.slice(0, MAX_CHARACTER_NAME_CHARS);
+    const prior = session.players[msg.userId] ?? (name ? this.reclaimable(session, name) : undefined);
     const player: Player = {
       userId: msg.userId,
       userName: msg.userName,
-      characterName: characterName ?? prior?.characterName,
+      characterName: name ?? prior?.characterName,
       hp: prior?.hp ?? 10,
       maxHp: prior?.maxHp ?? 10,
       // Class + bio are part of the character identity — carry them across a

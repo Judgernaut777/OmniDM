@@ -60,6 +60,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import type { GameSession, IncomingMessage, OutgoingMessage, OutgoingRoll, PlatformAdapter, Player } from '../core/types.js';
 import type { Portrait } from '../core/cards/card.js';
 import type { SessionStorage } from '../core/session/storage.js';
+import { MAX_BIO_CHARS } from '../core/portraits.js';
 
 /** Max `say` frames per joined connection per rolling second; excess gets an error frame. */
 export const RATE_LIMIT_PER_SEC = 5;
@@ -445,8 +446,15 @@ export class WebAdapter implements PlatformAdapter {
       portrait: this.portraitDescriptor(seat.channelId, seat.userId, player),
       // Class + bio ride on the seat (bounded), so the client can show a
       // character's identity without an imported card. Never image bytes.
+      //
+      // Bio rides at its FULL stored length (MAX_BIO_CHARS), not the tighter
+      // card-summary clamp: the creator pre-fills its editable textarea from this
+      // value, so clamping here would round-trip a truncated+ellipsised bio back
+      // through `/dm bio` on the next save and silently overwrite the real one.
+      // The bio is already bounded server-side (bot.ts) and is tiny next to the
+      // frame cap. The card DESCRIPTION below stays clamped — it is display-only.
       ...(player?.class ? { class: player.class } : {}),
-      ...(player?.bio ? { bio: clampText(player.bio, MAX_CARD_SUMMARY_CHARS) } : {}),
+      ...(player?.bio ? { bio: clampText(player.bio, MAX_BIO_CHARS) } : {}),
       ...(card
         ? {
             card: {

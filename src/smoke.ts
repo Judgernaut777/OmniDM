@@ -26,7 +26,7 @@ import type { Config } from './config.js';
 import type { CompletionRequest, GameSession, IncomingMessage, LLMProvider, ModelInfo, OutgoingMessage, TurnRecord } from './core/types.js';
 import { Bot } from './core/bot.js';
 import { roll, extractRolls } from './core/engine/dice.js';
-import { SessionManager } from './core/session/session-manager.js';
+import { MAX_CHARACTER_NAME_CHARS, SessionManager } from './core/session/session-manager.js';
 import { NodeFileStorage } from './core/session/store.js';
 import { MemoryStorage } from './core/session/storage.js';
 import { loadCard, MAX_CARD_BYTES, renderCard } from './core/cards/card.js';
@@ -38,7 +38,7 @@ import { OpenAICompatibleProvider } from './providers/openai-compatible.js';
 import { SlackAdapter } from './adapters/slack.js';
 import { MatrixAdapter } from './adapters/matrix.js';
 import { MattermostAdapter } from './adapters/mattermost.js';
-import { MAX_FRAME_BYTES, MAX_NAME_CHARS, MAX_PORTRAIT_BYTES, MAX_TEXT_CHARS, RATE_LIMIT_PER_SEC, UNJOINED_FRAMES_PER_SEC, WebAdapter } from './adapters/web.js';
+import { MAX_CARD_SUMMARY_CHARS, MAX_FRAME_BYTES, MAX_NAME_CHARS, MAX_PORTRAIT_BYTES, MAX_TEXT_CHARS, RATE_LIMIT_PER_SEC, UNJOINED_FRAMES_PER_SEC, WebAdapter } from './adapters/web.js';
 import { MAX_BIO_CHARS, PORTRAIT_PRESETS, resolvePresetId } from './core/portraits.js';
 
 let failures = 0;
@@ -595,6 +595,21 @@ async function main() {
     await mgr.join(s, rm('w2', 'Bob'), 'Thorin'); // a member renaming to a taken name is NOT a takeover
     check('reclaim: an existing member renaming keeps their own seat',
       Boolean(s.players.w9) && s.players.w2?.characterName === 'Thorin' && Object.keys(s.players).length === 2);
+  }
+
+  // ── Character name is length-capped server-side (client maxlength is advisory) ──
+  // A raw socket can send `/dm join ` + arbitrary text; an unbounded name would
+  // then bloat every roster broadcast and the DM system prompt on each turn.
+  {
+    const mgr = new SessionManager(new MemoryStorage(), 'mock/free-model');
+    const nm = (userId: string, userName: string): IncomingMessage => ({ platform: 'web', channelId: 'namecap', userId, userName, text: '' });
+    const s = await mgr.create(nm('n1', 'Alice'));
+    const p = await mgr.join(s, nm('n1', 'Alice'), 'N'.repeat(MAX_CHARACTER_NAME_CHARS + 500));
+    check('join: an over-long character name is clamped to MAX_CHARACTER_NAME_CHARS server-side',
+      p.characterName?.length === MAX_CHARACTER_NAME_CHARS && s.players.n1?.characterName?.length === MAX_CHARACTER_NAME_CHARS);
+    // A short name is stored verbatim (the clamp is a ceiling, not a mangle).
+    await mgr.join(s, nm('n1', 'Alice'), 'Thorin the Bold');
+    check('join: a normal-length character name is stored unchanged', s.players.n1?.characterName === 'Thorin the Bold');
   }
   {
     const rcBot = new Bot(config, provider, new MemoryStorage());
@@ -1162,6 +1177,18 @@ async function main() {
       appSrc.includes("'x-upload-token'") && appSrc.includes('state.uploadToken') && !/password=\$\{/.test(appSrc));
     check('web-ui: the board dice-pop dedupes on rollSeq with a first-frame baseline',
       appSrc.includes('rollSeq') && appSrc.includes('lastRollSeen') && !appSrc.includes('lastRollSig'));
+    // Creator Save honesty: a name/bio Save must NOT flip the status to "Saved"
+    // optimistically (a `/dm join`/`/dm bio` before `/dm new` is rejected). It
+    // shows "Saving…" and only reconcileCreatorStatus() promotes it once the
+    // enriched roster actually reflects the change.
+    check('web-ui: creator name/bio Saves confirm from the server roster, never optimistically (no false "Saved")',
+      appSrc.includes('reconcileCreatorStatus') && appSrc.includes('state.creator.pendingName') &&
+      appSrc.includes('state.creator.pendingBio') && appSrc.includes("textContent = 'Saving…'") &&
+      !/\/dm join \$\{name\}`\);\s*\$\('creator-name-status'\)\.textContent = `Saved/.test(appSrc));
+    // Class highlight/label must track the optimistic pick (like the live preview),
+    // not lag a class change behind a roster round-trip on the stale server value.
+    check('web-ui: currentClassId prefers the optimistic pendingClass, matching creatorPreviewSeat',
+      /function currentClassId\(\)[^]*?state\.creator\.pendingClass \|\| \(u &&/.test(appSrc));
 
     // Optional, offline: render a crest in headless chromium to prove the
     // procedural SVG actually builds (createElementNS path) and is deterministic,
@@ -1301,6 +1328,23 @@ async function main() {
     const aliceBio = (bioRoster?.users as RosterUser[] | undefined)?.find((u) => u.userName === 'Alice');
     check('web: enriched roster carries the character bio (no inline image bytes)',
       typeof aliceBio?.bio === 'string' && aliceBio.bio.includes('spellbook') && aliceBio.portrait?.data === undefined);
+
+    // A bio LONGER than the card-summary clamp must ride the roster in FULL (up to
+    // MAX_BIO_CHARS), not truncated with an ellipsis: the creator pre-fills its
+    // editable textarea from this value, so a clamped bio would round-trip back
+    // through `/dm bio` on the next save and silently overwrite the real 500-char
+    // bio (and inject a literal '…'). The narrator already uses the full bio.
+    await new Promise((r) => setTimeout(r, 1100));
+    const longBioText = 'Lorekeeper of the Obsidian Spire; ' + 'a'.repeat(300);
+    check('web: the long-bio fixture is deliberately over the card-summary clamp',
+      longBioText.length > MAX_CARD_SUMMARY_CHARS && longBioText.length <= MAX_BIO_CHARS);
+    a.send({ type: 'say', text: `/dm bio ${longBioText}` });
+    const longBioRoster = await a.next(
+      (f) => f.type === 'roster' && (f.users as RosterUser[]).some((u) => u.userName === 'Alice' && typeof u.bio === 'string' && u.bio.length > MAX_CARD_SUMMARY_CHARS),
+    );
+    const aliceLongBio = (longBioRoster?.users as RosterUser[] | undefined)?.find((u) => u.userName === 'Alice');
+    check('web: a bio past the card-summary clamp rides the roster in full, un-ellipsised (creator round-trips it losslessly)',
+      aliceLongBio?.bio === longBioText && aliceLongBio.bio.length === longBioText.length && !aliceLongBio.bio.endsWith('…'));
 
     // POST an image upload (carrying the seat's upload token), then GET it back
     // byte-for-byte. The token — not the URL userId — is what authorizes the write.
