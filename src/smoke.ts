@@ -187,6 +187,77 @@ try {
   check('web-ui: headless chromium renders a deterministic procedural crest (createElementNS)', dom.includes('CREST_OK=true'));
 }
 
+/**
+ * Best-effort offline check that a 'scene' frame RENDERS on the token board:
+ * loads the real client (portraits.js + app.js) against the served page's DOM
+ * inside headless chromium, dispatches a scene of pc + npc tokens, and asserts
+ * the board drew one portrait-crest token per entry, with the actor + npc
+ * classes and name labels. Skipped — never failed — when chromium is missing,
+ * so the gate stays portable.
+ */
+async function headlessBoardCheck(html: string, portraitSrc: string, appSrc: string): Promise<void> {
+  const chromium = '/usr/bin/chromium';
+  try {
+    await fs.access(chromium);
+  } catch {
+    console.log('⏭  web-ui: headless board check skipped (no chromium)');
+    return;
+  }
+  const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+  if (!bodyMatch) {
+    console.log('⏭  web-ui: headless board check skipped (no <body> in served HTML)');
+    return;
+  }
+  const body = bodyMatch[1].replace(/<script\b[^>]*><\/script>/gi, ''); // drop the real src=… tags; we inline the sources
+  const tmpDir = path.join('data', 'smoke');
+  await fs.mkdir(tmpDir, { recursive: true });
+  const htmlPath = path.join(tmpDir, 'board-probe.html');
+  const probe = `
+    try {
+      state.roster = [
+        { userId: 'u1', userName: 'Alice', characterName: 'Thorin', portrait: { kind: 'preset', id: 'fighter' } },
+        { userId: 'u2', userName: 'Bob', characterName: 'Elaria', portrait: null },
+      ];
+      onScene({ type: 'scene', actor: 'Thorin', tokens: [
+        { id: 'pc:u1', who: 'Thorin', kind: 'pc', x: 0.3, y: 0.7 },
+        { id: 'pc:u2', who: 'Elaria', kind: 'pc', x: 0.5, y: 0.6 },
+        { id: 'npc:Vex', who: 'Vex', kind: 'npc', x: 0.7, y: 0.3 }
+      ] });
+      var svg = document.getElementById('board-svg');
+      var tokens = svg.querySelectorAll('g.token');
+      var crests = svg.querySelectorAll('.crest');
+      var labels = [].map.call(svg.querySelectorAll('.token-label'), function (n) { return n.textContent; });
+      var ok = tokens.length === 3 && crests.length === 3
+        && svg.querySelector('g.token.actor') != null
+        && svg.querySelector('g.token.npc') != null
+        && svg.getElementsByTagName('image').length === 0
+        && labels.indexOf('Thorin') !== -1 && labels.indexOf('Vex') !== -1;
+      document.getElementById('board-probe-out').textContent = 'BOARD_OK=' + ok;
+    } catch (e) {
+      document.getElementById('board-probe-out').textContent = 'BOARD_OK=false:' + e;
+    }
+  `;
+  const page = `<!doctype html><html><head><meta charset="utf-8"></head><body>${body}
+<pre id="board-probe-out"></pre>
+<script>${portraitSrc}</script>
+<script>${appSrc}</script>
+<script>${probe}</script>
+</body></html>`;
+  await fs.writeFile(htmlPath, page, 'utf8');
+  const { spawnSync } = await import('node:child_process');
+  const res = spawnSync(
+    chromium,
+    ['--headless', '--no-sandbox', '--disable-gpu', '--dump-dom', `file://${path.resolve(htmlPath)}`],
+    { encoding: 'utf8', timeout: 25000 },
+  );
+  const dom = String(res.stdout ?? '');
+  if (res.error || !dom.includes('BOARD_OK=')) {
+    console.log('⏭  web-ui: headless board check skipped (chromium did not produce output)');
+    return;
+  }
+  check('web-ui: headless chromium renders scene tokens as portrait crests on the board', dom.includes('BOARD_OK=true'));
+}
+
 async function main() {
   const dataDir = path.join('data', 'smoke');
   await fs.rm(dataDir, { recursive: true, force: true });
@@ -853,10 +924,27 @@ async function main() {
     check('web-ui: index.html includes the character-card sheet with a crest gallery + upload',
       html.includes('id="card-sheet"') && html.includes('id="card-gallery"') && html.includes('id="card-file"'));
 
+    // The token board draws each scene token as a PORTRAIT (reusing the roster's
+    // descriptor + portraitSVG), with a name label and distinct pc/npc + actor
+    // styling; drags are throttled and send a final position on drop.
+    const styleSrc = await cssRes.text();
+    check('web-ui: the board draws portrait tokens (crest/image) with a name label, not bare hue dots',
+      appSrc.includes('renderBoard') && appSrc.includes('tokenPortrait') && appSrc.includes('portraitForToken') &&
+      appSrc.includes('crestNode') && appSrc.includes('token-label'));
+    check('web-ui: board CSS distinguishes pc/npc tokens, glows the actor, and fades the dice pop',
+      /\.token\.pc/.test(styleSrc) && /\.token\.npc/.test(styleSrc) &&
+      /\.token\.actor/.test(styleSrc) && /@keyframes tokenglow/.test(styleSrc) && /\.board-pop/.test(styleSrc));
+    check('web-ui: index.html carries the token board with a Map toggle',
+      html.includes('id="board-svg"') && html.includes('id="board-toggle"'));
+    check('web-ui: token drags are throttled and send a final move on drop',
+      appSrc.includes('lastMoveSent') && appSrc.includes("type: 'move'") && /pointerup/.test(appSrc));
+
     // Optional, offline: render a crest in headless chromium to prove the
-    // procedural SVG actually builds (createElementNS path) and is deterministic.
-    // Best-effort — skipped (never failed) when chromium is unavailable.
+    // procedural SVG actually builds (createElementNS path) and is deterministic,
+    // then render a full scene onto the real board. Both are best-effort —
+    // skipped (never failed) when chromium is unavailable.
     await headlessCrestCheck(portraitSrc);
+    await headlessBoardCheck(html, portraitSrc, appSrc);
 
     const bad = new WsClient(url);
     await bad.open();

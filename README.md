@@ -215,6 +215,17 @@ message-converter pattern as a pure function plus a thin fetch wrapper.
 
 Shipped since the initial scaffold (newest first):
 
+- **Shared token board (VTT-lite)** — the browser table has a battle map where
+  every party member and imported NPC is a draggable token drawn as its own
+  portrait (the same uploaded image or procedural crest as the roster), with a
+  name label, gold rims for PCs and dashed steel rims for NPCs, and a candle
+  glow on whoever's turn it is; it's a *shared* table (anyone may move any
+  token). Dragging sends a throttled `{type:'move'}` (plus a final frame on
+  drop) and the server clamps to 0..1 and rebroadcasts the authoritative scene,
+  so every screen stays in sync; a resolved roll pops over the roller's token
+  and fades. Collapse it with the topbar-adjacent "Map" toggle; it stacks above
+  the log on mobile. XSS-safe (SVG built with `createElementNS`, labels via
+  `textContent`), no external origins, reduced-motion aware
 - **Browser table UI** — `web/` is three plain files (`index.html`, `app.js`,
   `style.css`): no build step, no external origins; join screen (name + room
   code + optional password), scrolling log with distinct DM / player / whisper

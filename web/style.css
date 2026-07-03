@@ -290,22 +290,60 @@ main { flex: 1; display: flex; min-height: 0; }
 }
 #roster h2 { margin: 0 0 .7rem; font: 700 .74rem var(--ui); letter-spacing: .18em; text-transform: uppercase; color: var(--gold-deep); }
 .turn-line { min-height: 1.1em; margin-bottom: .7rem; color: var(--gold); font: italic .88rem var(--serif); text-shadow: 0 0 12px #e3ba6633; }
+
+/* ── Token board (VTT-lite) ──────────────────────────────────────────────── */
+.board-head { display: flex; align-items: center; justify-content: space-between; gap: .5rem; margin-bottom: .4rem; }
+.board-title { font: 700 .7rem var(--ui); letter-spacing: .14em; text-transform: uppercase; color: var(--gold-deep); }
+.board-toggle {
+  cursor: pointer; font: 600 .64rem/1 var(--ui); letter-spacing: .05em; color: var(--dim);
+  background: #ffffff05; border: 1px solid var(--line); border-radius: 6px; padding: .22rem .5rem;
+  transition: color .15s, border-color .15s;
+}
+.board-toggle:hover { color: var(--gold); border-color: var(--gold-deep); }
+.board-toggle:focus-visible { outline: 2px solid var(--gold-hi); outline-offset: 1px; }
 .board {
   position: relative; margin-bottom: .9rem; aspect-ratio: 1 / 1;
   border: 1px solid var(--line-2); border-radius: 10px; overflow: hidden;
   background:
-    linear-gradient(180deg, #0d1410, #0b0f0c),
+    radial-gradient(120% 120% at 50% 0%, #15110b, #0b0806 72%),
     repeating-linear-gradient(0deg, transparent 0 24%, #ffffff08 24% 25%),
     repeating-linear-gradient(90deg, transparent 0 24%, #ffffff08 24% 25%);
-  box-shadow: 0 0 18px #0007 inset;
+  box-shadow: 0 0 18px #0007 inset, 0 4px 14px #0005;
 }
 #board-svg { display: block; width: 100%; height: 100%; touch-action: none; }
 .token { cursor: grab; }
 .token:active { cursor: grabbing; }
-.token circle { transition: stroke .15s ease; filter: drop-shadow(0 1px 2px #0009); }
-.token.actor circle { filter: drop-shadow(0 0 5px #f5c453cc); }
+.token .token-disc { fill: #0c0805; }
+.token .token-disc, .token image, .token .crest { filter: drop-shadow(0 1px 2px #0009); }
+/* PC vs NPC read at a glance: a gold rim for the party, a dashed steel rim for
+   the DM's cast. The acting token brightens and breathes with the candle glow. */
+.token .token-ring { stroke: #c9a24a; stroke-width: 1.6; transition: stroke .15s, stroke-width .15s; }
+.token.pc .token-ring { stroke: var(--gold); }
+.token.npc .token-ring { stroke: #9aa6b8; stroke-dasharray: 3 2.4; }
+.token.actor .token-ring { stroke: var(--gold-hi); stroke-width: 2.4; animation: tokenglow 3.2s ease-in-out infinite; }
+@keyframes tokenglow {
+  0%, 100% { filter: drop-shadow(0 0 2px #f5c45366); }
+  50%      { filter: drop-shadow(0 0 6px #f5c453cc); }
+}
 .token-label { fill: #e9ddc7; font: 600 6px var(--ui); paint-order: stroke; stroke: #000a; stroke-width: 1.6px; pointer-events: none; }
-.token-pop { fill: var(--gold); font: 700 7px var(--ui); paint-order: stroke; stroke: #000c; stroke-width: 1.8px; pointer-events: none; }
+
+/* A dice total popping over the acting token, then rising and fading away. */
+.board-pop {
+  position: absolute; transform: translate(-50%, -150%); pointer-events: none; z-index: 1;
+  padding: .06rem .4rem; border-radius: 8px; white-space: nowrap;
+  font: 800 .78rem/1.35 var(--mono); color: #14100a;
+  background: linear-gradient(180deg, var(--gold-hi), var(--gold-deep));
+  border: 1px solid #7d5e26; box-shadow: 0 2px 8px #0008, 0 0 12px #e3ba6644;
+  animation: boardpop 2.4s cubic-bezier(.2, .8, .2, 1) forwards;
+}
+.board-pop.crit { box-shadow: 0 2px 8px #0008, 0 0 16px #f7e1a4aa; }
+.board-pop.fumble { background: linear-gradient(180deg, #f0b3ab, #b0504a); border-color: #7a3c37; color: #1a0c0a; }
+@keyframes boardpop {
+  0%   { opacity: 0; transform: translate(-50%, -120%) scale(.7); }
+  16%  { opacity: 1; transform: translate(-50%, -160%) scale(1.06); }
+  70%  { opacity: 1; transform: translate(-50%, -160%) scale(1); }
+  100% { opacity: 0; transform: translate(-50%, -210%) scale(.96); }
+}
 .seat {
   display: flex; align-items: center; gap: .7rem;
   padding: .55rem .6rem; margin-bottom: .5rem;

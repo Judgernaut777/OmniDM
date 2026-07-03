@@ -29,7 +29,7 @@ const state = {
   roster: [],          // [{ userId, userName }] — sockets in the room
   chars: new Map(),    // userName → characterName (parsed from relayed /dm join lines)
   turnName: null,      // round-robin: whose turn, parsed from DM notices
-  scene: { tokens: [], actor: null, lastRoll: null }, // the shared token board
+  scene: { tokens: [], actor: null, lastRoll: null, lastRollSig: '' }, // the shared token board
 };
 const BACKOFF_MAX = 15000;
 
@@ -409,11 +409,18 @@ $('card-file').addEventListener('change', async (e) => {
 /* ── Token board (VTT-lite) ──────────────────────────────────────────────────
  * The adapter owns the board: a 'scene' frame carries every token
  * { id, who, kind, x, y } with x,y normalized 0..1, the round-robin `actor`,
- * and the most recent `lastRoll`. Dragging a token sends { type:'move', id, x,
- * y }; the server clamps and rebroadcasts the authoritative scene, so what we
- * render always comes back from the server. SVG nodes are built with
+ * and the most recent `lastRoll`. Each token is drawn as its character's
+ * PORTRAIT — the same uploaded image or procedural crest as the roster, reused
+ * via the roster's portrait descriptor + portraitSVG — with a name label; PCs
+ * and NPCs get distinct rings and the acting token glows with the candle motif.
+ *
+ * Shared table: anyone may drag ANY token (there is no per-owner lock). A drag
+ * sends a throttled { type:'move', id, x, y } and a final frame on drop; the
+ * server clamps to 0..1 and rebroadcasts the authoritative scene, so what we
+ * render always comes back from the server. Every node is built with
  * createElementNS and every label lands via textContent — XSS-safe. */
 const SVGNS = 'http://www.w3.org/2000/svg';
+const TOKEN_R = 9; // token radius in the 0..100 board viewBox
 const clamp01n = (n) => (n < 0 ? 0 : n > 1 ? 1 : n);
 const svgEl = (tag, attrs) => {
   const e = document.createElementNS(SVGNS, tag);
@@ -427,33 +434,98 @@ let lastMoveSent = 0;    // throttle stamp for outbound 'move' frames
 function onScene(f) {
   state.scene.tokens = Array.isArray(f.tokens) ? f.tokens : [];
   state.scene.actor = typeof f.actor === 'string' ? f.actor : null;
-  state.scene.lastRoll = f.lastRoll && typeof f.lastRoll === 'object' ? f.lastRoll : null;
+  const roll = f.lastRoll && typeof f.lastRoll === 'object' ? f.lastRoll : null;
+  state.scene.lastRoll = roll;
   renderBoard();
+  // Pop the freshest roll near the roller's token — but only ONCE per new roll.
+  // The scene rebroadcasts on every move, so an unchanged lastRoll must not
+  // re-pop; we fingerprint it and fire only on a change.
+  const sig = roll ? `${roll.actor}|${roll.notation}|${roll.total}|${roll.note || ''}` : '';
+  if (sig && sig !== state.scene.lastRollSig) showRollPop(roll);
+  state.scene.lastRollSig = sig;
+}
+
+/** A roster seat by userId — the source of a pc token's portrait descriptor. */
+function rosterById(userId) {
+  return state.roster.find((u) => u && u.userId === userId);
+}
+
+/* The portrait a token should wear: a pc token borrows its seat's descriptor
+ * (uploaded image or preset crest) from the enriched roster; an npc token (and
+ * any seat whose roster we haven't seen yet) falls back to a crest seeded on
+ * its name. Mirrors makePortrait, but resolves to a descriptor the board can
+ * turn into SVG nodes. */
+function portraitForToken(t, kind) {
+  if (kind === 'pc' && typeof t.id === 'string' && t.id.startsWith('pc:')) {
+    const u = rosterById(t.id.slice(3));
+    if (u) {
+      const seed = charName(u) || u.userName || t.who || '';
+      const p = u.portrait;
+      if (p && p.kind === 'image' && typeof p.url === 'string') return { kind: 'image', url: p.url, seed };
+      if (p && p.kind === 'preset' && typeof p.id === 'string') return { kind: 'preset', preset: p.id, seed };
+      return { seed };
+    }
+  }
+  return { seed: typeof t.who === 'string' ? t.who : '' };
+}
+
+/** A procedural crest as a nested <svg>, sized to fill a token circle. */
+function crestNode(seed, preset) {
+  const svg = portraitSVG(seed, preset ? { preset } : {});
+  svg.setAttribute('x', String(-TOKEN_R));
+  svg.setAttribute('y', String(-TOKEN_R));
+  svg.setAttribute('width', String(TOKEN_R * 2));
+  svg.setAttribute('height', String(TOKEN_R * 2));
+  svg.setAttribute('preserveAspectRatio', 'xMidYMid slice');
+  return svg;
+}
+
+/* The portrait node for one token: a same-origin <image> (with a procedural
+ * crest as its onerror fallback), else the deterministic crest. */
+function tokenPortrait(t, kind) {
+  const desc = portraitForToken(t, kind);
+  if (desc.kind === 'image' && typeof desc.url === 'string') {
+    const img = svgEl('image', {
+      x: -TOKEN_R, y: -TOKEN_R, width: TOKEN_R * 2, height: TOKEN_R * 2,
+      preserveAspectRatio: 'xMidYMid slice',
+    });
+    img.setAttribute('href', desc.url); // same-origin /portrait/... URL — never an external host
+    img.addEventListener('error', () => img.replaceWith(crestNode(desc.seed, '')));
+    return img;
+  }
+  return crestNode(desc.seed, desc.preset);
 }
 
 function renderBoard() {
   const svg = $('board-svg');
   if (!svg) return;
   svg.replaceChildren();
+  // One shared circular clip — evaluated in each translated token's own space,
+  // so a circle at the origin clips the portrait to that token's disc.
+  const defs = svgEl('defs', {});
+  const clip = svgEl('clipPath', { id: 'tok-clip' });
+  clip.append(svgEl('circle', { r: TOKEN_R }));
+  defs.append(clip);
+  svg.append(defs);
   for (const t of state.scene.tokens) {
     if (!t || typeof t.id !== 'string') continue;
     const x = Number.isFinite(t.x) ? clamp01n(t.x) : 0.5;
     const y = Number.isFinite(t.y) ? clamp01n(t.y) : 0.5;
     const who = typeof t.who === 'string' ? t.who : '';
+    const kind = t.kind === 'npc' ? 'npc' : 'pc';
     const isActor = Boolean(state.scene.actor && who && state.scene.actor.toLowerCase() === who.toLowerCase());
-    const g = svgEl('g', { class: `token ${t.kind === 'npc' ? 'npc' : 'pc'}${isActor ? ' actor' : ''}`, transform: `translate(${x * 100} ${y * 100})` });
-    g.append(svgEl('circle', {
-      r: 7, fill: hueFor(who),
-      stroke: isActor ? '#f5c453' : 'rgba(0,0,0,.55)', 'stroke-width': isActor ? 2 : 1,
-    }));
-    const label = svgEl('text', { y: 14, 'text-anchor': 'middle', class: 'token-label' });
-    label.textContent = who.slice(0, 14);
+    const g = svgEl('g', {
+      class: `token ${kind}${isActor ? ' actor' : ''}`,
+      transform: `translate(${(x * 100).toFixed(2)} ${(y * 100).toFixed(2)})`,
+    });
+    g.append(svgEl('circle', { r: TOKEN_R, class: 'token-disc' })); // opaque backing behind the crest
+    const clipped = svgEl('g', { 'clip-path': 'url(#tok-clip)' });
+    clipped.append(tokenPortrait(t, kind));
+    g.append(clipped);
+    g.append(svgEl('circle', { r: TOKEN_R, class: 'token-ring', fill: 'none' }));
+    const label = svgEl('text', { y: TOKEN_R + 7, 'text-anchor': 'middle', class: 'token-label' });
+    label.textContent = who.slice(0, 16);
     g.append(label);
-    if (isActor && state.scene.lastRoll && Number.isFinite(state.scene.lastRoll.total)) {
-      const pop = svgEl('text', { y: -10, 'text-anchor': 'middle', class: 'token-pop' });
-      pop.textContent = `🎲 ${state.scene.lastRoll.total}`;
-      g.append(pop);
-    }
     g.addEventListener('pointerdown', (e) => {
       e.preventDefault();
       drag = { id: t.id };
@@ -461,6 +533,29 @@ function renderBoard() {
     });
     svg.append(g);
   }
+}
+
+/* A dice result pops over the roller's token and fades, complementing the
+ * felt-tray roller in the log. It lives in the board container (not the SVG
+ * that re-renders on every move), so a concurrent drag can't tear it, and it
+ * self-removes on animation end / a timer (the reduced-motion path). */
+function showRollPop(roll) {
+  const board = $('board');
+  if (!board) return;
+  const name = String(roll.actor || state.scene.actor || '').toLowerCase();
+  const tok = state.scene.tokens.find((t) => t && typeof t.who === 'string' && name && t.who.toLowerCase() === name);
+  const x = tok && Number.isFinite(tok.x) ? clamp01n(tok.x) : 0.5;
+  const y = tok && Number.isFinite(tok.y) ? clamp01n(tok.y) : 0.5;
+  const pop = el('div', 'board-pop');
+  if (/nat 20|critical/i.test(roll.note || '')) pop.classList.add('crit');
+  else if (/nat 1|fumble/i.test(roll.note || '')) pop.classList.add('fumble');
+  pop.textContent = `🎲 ${Number.isFinite(roll.total) ? roll.total : ''}`;
+  pop.style.left = `${(x * 100).toFixed(1)}%`;
+  pop.style.top = `${(y * 100).toFixed(1)}%`;
+  board.append(pop);
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  pop.addEventListener('animationend', () => pop.remove());
+  setTimeout(() => pop.remove(), reduce ? 1500 : 2600); // reduced-motion path + safety net
 }
 
 function boardNorm(evt) {
@@ -482,15 +577,29 @@ function sendMove(id, x, y) {
     svg.addEventListener('pointermove', (e) => {
       if (!drag) return;
       const now = Date.now();
-      if (now - lastMoveSent < 45) return; // stay well under the server's move allowance
+      if (now - lastMoveSent < 45) return; // throttle: stay well under the server's move allowance
       lastMoveSent = now;
       const { x, y } = boardNorm(e);
       sendMove(drag.id, x, y);
     });
-    const end = () => { drag = null; };
+    const end = (e) => {
+      if (!drag) return;
+      const { x, y } = boardNorm(e); // always send the final resting position on drop
+      sendMove(drag.id, x, y);
+      drag = null;
+    };
     svg.addEventListener('pointerup', end);
     svg.addEventListener('pointercancel', end);
   }
+  // "Map" toggle — collapse the board without disturbing the chat/roster/composer.
+  $('board-toggle')?.addEventListener('click', () => {
+    const board = $('board');
+    const btn = $('board-toggle');
+    const hide = !board.hidden;
+    board.hidden = hide;
+    btn.textContent = hide ? 'Show map' : 'Hide map';
+    btn.setAttribute('aria-expanded', String(!hide));
+  });
 }
 
 /* ── Join screen / status ────────────────────────────────────────────────── */
@@ -504,8 +613,9 @@ function showJoin(error) {
   $('join-error').textContent = error;
   state.roster = [];
   state.turnName = null;
-  state.scene = { tokens: [], actor: null, lastRoll: null };
+  state.scene = { tokens: [], actor: null, lastRoll: null, lastRollSig: '' };
   $('board-svg')?.replaceChildren();
+  $('board')?.querySelectorAll('.board-pop').forEach((p) => p.remove());
 }
 
 $('join-form').addEventListener('submit', (e) => {
