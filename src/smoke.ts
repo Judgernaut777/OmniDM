@@ -9,8 +9,9 @@
  * persistence, the SessionStorage seam (a full scenario on MemoryStorage),
  * the Slack, Matrix and Mattermost adapters' offline surface (module load +
  * config guard), and the web adapter end-to-end over loopback sockets on an
- * ephemeral port (static client, hello/roster protocol, broadcast, fog
- * whispers, password, malformed frames, rate limit).
+ * ephemeral port (static client with sane content-types and no external
+ * origins, hello/roster protocol, broadcast, fog whispers, password,
+ * malformed frames, rate limit).
  *
  * Run:  npx tsx src/smoke.ts
  */
@@ -628,6 +629,21 @@ async function main() {
     const page = await fetch(`http://127.0.0.1:${port}/`);
     check('web: static client served at /', page.ok && (await page.text()).includes('OmniDM'));
     check('web: missing static file is a 404, not a crash', (await fetch(`http://127.0.0.1:${port}/nope.js`)).status === 404);
+
+    // The browser UI ships as three plain files; each must arrive with a sane
+    // content-type, and the HTML must be self-contained (no external origins —
+    // players and the LLM are untrusted, and Capacitor will wrap this offline).
+    const [htmlRes, jsRes, cssRes] = await Promise.all(
+      ['index.html', 'app.js', 'style.css'].map((f) => fetch(`http://127.0.0.1:${port}/${f}`)),
+    );
+    check('web-ui: index.html served as text/html', htmlRes.ok && Boolean(htmlRes.headers.get('content-type')?.startsWith('text/html')));
+    check('web-ui: app.js served as text/javascript', jsRes.ok && Boolean(jsRes.headers.get('content-type')?.startsWith('text/javascript')));
+    check('web-ui: style.css served as text/css', cssRes.ok && Boolean(cssRes.headers.get('content-type')?.startsWith('text/css')));
+    const html = await htmlRes.text();
+    check('web-ui: HTML wires up app.js and style.css', html.includes('src="app.js"') && html.includes('href="style.css"'));
+    const srcHrefs = [...html.matchAll(/(?:src|href)\s*=\s*"([^"]*)"/gi)].map((m) => m[1]);
+    check('web-ui: no src/href attribute points at an external origin',
+      srcHrefs.length >= 3 && srcHrefs.every((v) => !/^(?:https?:)?\/\//i.test(v)));
 
     const bad = new WsClient(url);
     await bad.open();
