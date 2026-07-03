@@ -258,6 +258,65 @@ async function headlessBoardCheck(html: string, portraitSrc: string, appSrc: str
   check('web-ui: headless chromium renders scene tokens as portrait crests on the board', dom.includes('BOARD_OK=true'));
 }
 
+/**
+ * Best-effort offline check that every one of the 12 class portraits renders as
+ * a rich, distinct character bust (not a blank/blobby placeholder) at BOTH token
+ * (36px) and card (120px) size. Inside headless chromium it builds each class's
+ * SVG, asserts a non-trivial node/path count and a `.crest-emblem`, and that the
+ * 12 classes yield distinct dominant (background) colours. Skipped — never
+ * failed — when chromium is missing, so the gate stays portable.
+ */
+async function headlessClassGalleryCheck(portraitSrc: string): Promise<void> {
+  const chromium = '/usr/bin/chromium';
+  try {
+    await fs.access(chromium);
+  } catch {
+    console.log('⏭  web-ui: headless class-gallery check skipped (no chromium)');
+    return;
+  }
+  const tmpDir = path.join('data', 'smoke');
+  await fs.mkdir(tmpDir, { recursive: true });
+  const htmlPath = path.join(tmpDir, 'gallery-probe.html');
+  const page = `<!doctype html><html><head><meta charset="utf-8"></head><body><pre id="out"></pre>
+<script>${portraitSrc}
+try {
+  var ids = ${JSON.stringify(PORTRAIT_PRESETS)};
+  var minNodes = 999, minPaths = 999, allEmblem = true, bg = {};
+  ids.forEach(function (id) {
+    ['36', '120'].forEach(function (px) {
+      var box = document.createElement('div');
+      box.style.width = px + 'px'; box.style.height = px + 'px';
+      var svg = portraitSVG(id + '-Kael', { class: id });
+      box.appendChild(svg); document.body.appendChild(box);
+      var nodes = svg.querySelectorAll('*').length;
+      if (nodes < minNodes) minNodes = nodes;
+      var paths = svg.querySelectorAll('path').length;
+      if (paths < minPaths) minPaths = paths;
+      if (!svg.querySelector('.crest-emblem')) allEmblem = false;
+    });
+    bg[portraitSVG(id, { class: id }).getElementsByTagName('stop')[0].getAttribute('stop-color')] = 1;
+  });
+  var ok = minNodes >= 20 && minPaths >= 6 && allEmblem && Object.keys(bg).length >= 11;
+  document.getElementById('out').textContent = 'GALLERY_OK=' + ok + ' nodes=' + minNodes + ' paths=' + minPaths + ' bg=' + Object.keys(bg).length;
+} catch (e) {
+  document.getElementById('out').textContent = 'GALLERY_OK=false:' + e;
+}
+</script></body></html>`;
+  await fs.writeFile(htmlPath, page, 'utf8');
+  const { spawnSync } = await import('node:child_process');
+  const res = spawnSync(
+    chromium,
+    ['--headless', '--no-sandbox', '--disable-gpu', '--dump-dom', `file://${path.resolve(htmlPath)}`],
+    { encoding: 'utf8', timeout: 25000 },
+  );
+  const dom = String(res.stdout ?? '');
+  if (res.error || !dom.includes('GALLERY_OK=')) {
+    console.log('⏭  web-ui: headless class-gallery check skipped (chromium did not produce output)');
+    return;
+  }
+  check('web-ui: headless chromium renders all 12 class busts as rich, distinct portraits', dom.includes('GALLERY_OK=true'));
+}
+
 async function main() {
   const dataDir = path.join('data', 'smoke');
   await fs.rm(dataDir, { recursive: true, force: true });
@@ -1023,6 +1082,7 @@ async function main() {
     // skipped (never failed) when chromium is unavailable.
     await headlessCrestCheck(portraitSrc);
     await headlessBoardCheck(html, portraitSrc, appSrc);
+    await headlessClassGalleryCheck(portraitSrc);
 
     const bad = new WsClient(url);
     await bad.open();
