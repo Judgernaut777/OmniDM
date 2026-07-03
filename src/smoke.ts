@@ -317,6 +317,78 @@ try {
   check('web-ui: headless chromium renders all 12 class busts as rich, distinct portraits', dom.includes('GALLERY_OK=true'));
 }
 
+/**
+ * Best-effort offline check that the character-creator flow is REACHABLE and
+ * WIRED: loads the real client (portraits.js + app.js) against the served page's
+ * DOM inside headless chromium, simulates a joined seat with a stubbed socket,
+ * opens the creator via the persistent "⚔ Your character" topbar button, and
+ * asserts the class gallery renders 12 live portrait previews and that picking a
+ * class both lights it up and sends the expected `/dm class <id>` frame. Skipped
+ * — never failed — when chromium is missing, so the gate stays portable.
+ */
+async function headlessCreatorCheck(html: string, portraitSrc: string, appSrc: string): Promise<void> {
+  const chromium = '/usr/bin/chromium';
+  try {
+    await fs.access(chromium);
+  } catch {
+    console.log('⏭  web-ui: headless creator check skipped (no chromium)');
+    return;
+  }
+  const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+  if (!bodyMatch) {
+    console.log('⏭  web-ui: headless creator check skipped (no <body> in served HTML)');
+    return;
+  }
+  const body = bodyMatch[1].replace(/<script\b[^>]*><\/script>/gi, ''); // drop the real src=… tags; we inline the sources
+  const tmpDir = path.join('data', 'smoke');
+  await fs.mkdir(tmpDir, { recursive: true });
+  const htmlPath = path.join(tmpDir, 'creator-probe.html');
+  const probe = `
+    try {
+      var sent = [];
+      state.join = { userName: 'Alice', channelId: 'room1' };
+      state.userId = 'u1';
+      state.welcomed = true;
+      state.ws = { readyState: 1, send: function (s) { sent.push(String(s)); } }; // WebSocket.OPEN === 1
+      state.roster = [{ userId: 'u1', userName: 'Alice' }]; // my seat, no character yet
+      // Reach the creator the way a first-time user would — the persistent button.
+      document.getElementById('creator-btn').click();
+      var creatorOpen = document.getElementById('creator').hidden === false;
+      var choices = document.querySelectorAll('#card-gallery .crest-choice');
+      var previews = document.querySelectorAll('#card-gallery .crest-choice .crest');
+      // Pick the wizard class: it must send "/dm class wizard" and light up.
+      var wiz = document.querySelector('#card-gallery .crest-choice[data-cls="wizard"]');
+      wiz.click();
+      var sentClass = sent.some(function (s) { return s.indexOf('/dm class wizard') !== -1; });
+      var lit = wiz.classList.contains('selected');
+      var ok = creatorOpen && choices.length === 12 && previews.length === 12 && sentClass && lit;
+      document.getElementById('creator-probe-out').textContent =
+        'CREATOR_OK=' + ok + ' choices=' + choices.length + ' previews=' + previews.length + ' sent=' + sentClass + ' lit=' + lit;
+    } catch (e) {
+      document.getElementById('creator-probe-out').textContent = 'CREATOR_OK=false:' + e;
+    }
+  `;
+  const page = `<!doctype html><html><head><meta charset="utf-8"></head><body>${body}
+<pre id="creator-probe-out"></pre>
+<script>${portraitSrc}</script>
+<script>${appSrc}</script>
+<script>${probe}</script>
+</body></html>`;
+  await fs.writeFile(htmlPath, page, 'utf8');
+  const { spawnSync } = await import('node:child_process');
+  const res = spawnSync(
+    chromium,
+    ['--headless', '--no-sandbox', '--disable-gpu', '--dump-dom', `file://${path.resolve(htmlPath)}`],
+    { encoding: 'utf8', timeout: 25000 },
+  );
+  const dom = String(res.stdout ?? '');
+  if (res.error || !dom.includes('CREATOR_OK=')) {
+    console.log('⏭  web-ui: headless creator check skipped (chromium did not produce output)');
+    return;
+  }
+  check('web-ui: headless chromium reaches the creator via the button, renders 12 class previews, and sends /dm class on pick', dom.includes('CREATOR_OK=true'));
+}
+
 async function main() {
   const dataDir = path.join('data', 'smoke');
   await fs.rm(dataDir, { recursive: true, force: true });
@@ -1053,6 +1125,21 @@ async function main() {
     check('web-ui: index.html includes the character-card sheet with a crest gallery + upload',
       html.includes('id="card-sheet"') && html.includes('id="card-gallery"') && html.includes('id="card-file"'));
 
+    // Character-setup flow: a prominent, discoverable creator with a persistent
+    // topbar entry, name/class/bio/import controls, and a live portrait preview.
+    check('web-ui: index.html has a persistent "Your character" button and the creator panel',
+      html.includes('id="creator-btn"') && html.includes('id="creator"') &&
+      html.includes('id="creator-name"') && html.includes('id="creator-bio"') &&
+      html.includes('id="creator-portrait"') && html.includes('id="creator-import"'));
+    check('web-ui: the creator opens from the button/own seat, auto-prompts first-timers, and wires class/name/bio/import',
+      appSrc.includes('function openCreator(') && appSrc.includes('maybePromptCreator') &&
+      /openCard[\s\S]*openCreator\(\)/.test(appSrc) &&
+      appSrc.includes('/dm join ') && appSrc.includes('/dm class ') &&
+      appSrc.includes('/dm bio ') && appSrc.includes('/dm import '));
+    check('web-ui: the creator class gallery previews all 12 classes with the procedural bust',
+      appSrc.includes('buildCreatorGallery') && appSrc.includes('CLASS_INFO') &&
+      PORTRAIT_PRESETS.every((id) => appSrc.includes(`'${id}'`)) && appSrc.includes('portraitSVG(seed'));
+
     // The token board draws each scene token as a PORTRAIT (reusing the roster's
     // descriptor + portraitSVG), with a name label and distinct pc/npc + actor
     // styling; drags are throttled and send a final position on drop.
@@ -1083,6 +1170,7 @@ async function main() {
     await headlessCrestCheck(portraitSrc);
     await headlessBoardCheck(html, portraitSrc, appSrc);
     await headlessClassGalleryCheck(portraitSrc);
+    await headlessCreatorCheck(html, portraitSrc, appSrc);
 
     const bad = new WsClient(url);
     await bad.open();

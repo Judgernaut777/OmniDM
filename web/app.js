@@ -30,6 +30,8 @@ const state = {
   roster: [],          // [{ userId, userName }] — sockets in the room
   chars: new Map(),    // userName → characterName (parsed from relayed /dm join lines)
   turnName: null,      // round-robin: whose turn, parsed from DM notices
+  creatorPrompted: false, // auto-opened the creator once this connection (first-time setup)
+  creator: { pendingClass: null }, // optimistic class pick, for an instant preview before the roster confirms
   // lastRollSeen: the scene's rollSeq we last acted on. null until the first
   // scene frame, whose roll (if any) predates us and is adopted, never popped.
   scene: { tokens: [], actor: null, lastRoll: null, lastRollSeen: null }, // the shared token board
@@ -90,7 +92,7 @@ function onFrame(f) {
     const mine = state.chars.get(state.join.userName);
     addLine('sys', '', state.welcomedOnce
       ? `Reconnected.${mine ? ` Re-claim your seat with /dm join ${mine}.` : ''}`
-      : 'You take a seat at the table. Start with /dm new, then /dm join <character name> — or open the ⚔ command menu.');
+      : 'You take a seat at the table. Tap ⚔ Your character to create your hero, or start a campaign from the ⚔ command menu with /dm new.');
     state.welcomedOnce = true;
     $('say').focus();
   } else if (f.type === 'roster') {
@@ -299,6 +301,10 @@ function renderRoster() {
     box.append(seat);
   }
   $('turn-line').textContent = state.turnName ? `⚔ ${state.turnName} acts` : '';
+  // Keep the live creator preview in step with server state, and offer the
+  // first-time setup prompt once my own seat has arrived.
+  if (!$('creator').hidden) updateCreator();
+  maybePromptCreator();
 }
 
 /** A seat's character name: server-enriched roster first, then the relay map. */
@@ -333,33 +339,41 @@ function hueFor(name) {
   return `hsl(${h} 45% 62%)`;
 }
 
-/* ── Character card sheet ─────────────────────────────────────────────────────
- * Clicking a roster seat opens a sheet with the large portrait, the character
- * name, and the bounded card summary (all via textContent — the card text is
- * untrusted). For your OWN seat it also offers a crest gallery (each choice
- * sends "/dm portrait <id>") and an upload control that POSTs the chosen image
- * to /portrait/<channel>/<user>; the server then rebroadcasts the roster. */
-let galleryBuilt = false;
+/* ── Character sheet (read-only) + creator (editable) ─────────────────────────
+ * Two coherent surfaces share the roster's portrait descriptors:
+ *  • Clicking ANOTHER player's seat opens the READ-ONLY card sheet — their
+ *    portrait, name and bounded card/bio summary (all via textContent, since
+ *    the card text is untrusted).
+ *  • Clicking YOUR OWN seat, the topbar "⚔ Your character" button, or joining a
+ *    room without a character yet, opens the CREATOR: set a name (/dm join),
+ *    pick a class from a visual gallery of the 12 D&D 5e classes (/dm class),
+ *    write a short bio (/dm bio), upload a portrait (POST /portrait) or import a
+ *    Character Card (/dm import). A big live preview reflects the choices.
+ * The whole flow is discoverable without knowing a single slash command. */
 
-function buildGallery() {
-  if (galleryBuilt) return;
-  galleryBuilt = true;
-  const g = $('card-gallery');
-  for (const id of PORTRAIT_PRESETS) {
-    const btn = el('button', 'crest-choice');
-    btn.type = 'button';
-    btn.title = id;
-    btn.setAttribute('role', 'listitem');
-    btn.append(portraitSVG(id, { preset: id }));
-    const cap = el('span', 'crest-cap');
-    cap.textContent = id;
-    btn.append(cap);
-    btn.addEventListener('click', () => { sendSay(`/dm portrait ${id}`); closeCard(); });
-    g.append(btn);
-  }
-}
+/* Class metadata — mirrors src/core/portraits.ts (the 12 D&D 5e classes) so the
+ * gallery can show each class's name + flavor beside its procedural bust. */
+const CLASS_INFO = [
+  { id: 'barbarian', name: 'Barbarian', flavor: 'A raging warrior of primal fury.' },
+  { id: 'bard', name: 'Bard', flavor: 'A silver-tongued weaver of song and magic.' },
+  { id: 'cleric', name: 'Cleric', flavor: "A divine channeler of a god's power." },
+  { id: 'druid', name: 'Druid', flavor: 'A shapeshifting guardian of the wild.' },
+  { id: 'fighter', name: 'Fighter', flavor: 'A master of martial weapons and tactics.' },
+  { id: 'monk', name: 'Monk', flavor: 'A disciplined martial artist channeling inner ki.' },
+  { id: 'paladin', name: 'Paladin', flavor: 'A holy warrior bound by a sacred oath.' },
+  { id: 'ranger', name: 'Ranger', flavor: 'A wilderness hunter and unerring tracker.' },
+  { id: 'rogue', name: 'Rogue', flavor: 'A stealthy expert in guile and precision strikes.' },
+  { id: 'sorcerer', name: 'Sorcerer', flavor: 'An innate wielder of raw arcane power.' },
+  { id: 'warlock', name: 'Warlock', flavor: 'A caster empowered by an otherworldly pact.' },
+  { id: 'wizard', name: 'Wizard', flavor: 'A robed scholar of the arcane.' },
+];
+const CLASS_BY_ID = new Map(CLASS_INFO.map((c) => [c.id, c]));
+
+/* ── Read-only card sheet (other players) ─────────────────────────────────── */
 
 function openCard(u) {
+  if (!u) return;
+  if (u.userId === state.userId) return openCreator(); // your own seat → editable creator
   $('card-portrait').replaceChildren(makePortrait(u));
   const name = charName(u) || u.userName || 'Adventurer';
   $('card-name').textContent = name;
@@ -371,11 +385,6 @@ function openCard(u) {
   const bio = u && typeof u.bio === 'string' ? u.bio.trim() : '';
   const desc = u && u.card && typeof u.card.description === 'string' ? u.card.description.trim() : '';
   $('card-desc').textContent = desc || bio || 'No character card imported yet.';
-  const mine = u.userId === state.userId;
-  const picker = $('card-picker');
-  picker.hidden = !mine;
-  if (mine) buildGallery();
-  $('card-upload-status').textContent = '';
   $('card-sheet').hidden = false;
 }
 
@@ -384,7 +393,142 @@ function closeCard() { $('card-sheet').hidden = true; }
 $('card-close').addEventListener('click', closeCard);
 $('card-sheet').addEventListener('click', (e) => { if (e.target === $('card-sheet')) closeCard(); });
 
-$('card-file').addEventListener('change', async (e) => {
+/* ── Character creator (your own seat) ────────────────────────────────────── */
+
+/** My own enriched roster seat, if the roster has arrived. */
+function mySeat() { return state.roster.find((u) => u && u.userId === state.userId); }
+/** My character name from the SERVER-enriched roster (not the relay heuristic). */
+function myCharacterName() { const u = mySeat(); return (u && typeof u.characterName === 'string' && u.characterName.trim()) || ''; }
+/** True once I've actually done `/dm join <name>` (a server-confirmed character). */
+function characterIsSet() { return myCharacterName() !== ''; }
+
+/** The class id currently in effect for me: the server's, else my optimistic pick. */
+function currentClassId() {
+  const u = mySeat();
+  const raw = (u && typeof u.class === 'string' && u.class) || state.creator.pendingClass || '';
+  return raw ? raw.trim().toLowerCase() : '';
+}
+
+/**
+ * A seat-like object for the live preview: my roster seat, with an optimistic
+ * class selection standing in for its portrait so a pick previews instantly —
+ * but never over an uploaded/card IMAGE, which always wins (mirrors the server).
+ */
+function creatorPreviewSeat() {
+  const u = mySeat();
+  const seat = u ? Object.assign({}, u) : { userId: state.userId, userName: (state.join && state.join.userName) || '' };
+  const hasImage = seat.portrait && seat.portrait.kind === 'image';
+  if (state.creator.pendingClass && !hasImage) seat.portrait = { kind: 'preset', id: state.creator.pendingClass };
+  return seat;
+}
+
+let creatorGalleryBuilt = false;
+function buildCreatorGallery() {
+  if (creatorGalleryBuilt) return;
+  creatorGalleryBuilt = true;
+  const g = $('card-gallery');
+  const seed = myCharacterName() || (state.join && state.join.userName) || 'Adventurer';
+  for (const info of CLASS_INFO) {
+    const btn = el('button', 'crest-choice class-choice');
+    btn.type = 'button';
+    btn.dataset.cls = info.id;
+    btn.title = info.flavor;
+    btn.setAttribute('role', 'listitem');
+    btn.setAttribute('aria-pressed', 'false');
+    btn.append(portraitSVG(seed, { class: info.id }));
+    const cap = el('span', 'crest-cap');
+    cap.textContent = info.name;
+    btn.append(cap);
+    btn.addEventListener('click', () => {
+      state.creator.pendingClass = info.id;
+      sendSay(`/dm class ${info.id}`);
+      updateCreator();
+    });
+    g.append(btn);
+  }
+}
+
+/** Refresh the parts of the creator that reflect server/optimistic state — the
+ * live portrait, the selected-class highlight, and the class name/flavor. Never
+ * touches the name/bio inputs, so a background roster update can't clobber typing. */
+function updateCreator() {
+  $('creator-portrait').replaceChildren(makePortrait(creatorPreviewSeat()));
+  const cls = currentClassId();
+  for (const btn of $('card-gallery').querySelectorAll('.crest-choice')) {
+    const on = btn.dataset.cls === cls;
+    btn.classList.toggle('selected', on);
+    btn.setAttribute('aria-pressed', String(on));
+  }
+  const info = cls ? CLASS_BY_ID.get(cls) : null;
+  $('creator-classname').textContent = info ? info.name : 'No class chosen yet';
+  $('creator-flavor').textContent = info ? info.flavor : 'Pick a class below to theme your portrait.';
+}
+
+function updateBioCount() {
+  const n = $('creator-bio').value.length;
+  $('creator-bio-count').textContent = `${n} / 500`;
+}
+
+function openCreator() {
+  closeCard();
+  buildCreatorGallery();
+  const u = mySeat();
+  state.creator.pendingClass = null;
+  $('creator-name').value = myCharacterName();
+  $('creator-bio').value = (u && typeof u.bio === 'string') ? u.bio : '';
+  updateBioCount();
+  $('creator-name-status').textContent = '';
+  $('creator-import').value = '';
+  $('creator-import-status').textContent = '';
+  $('card-upload-status').textContent = '';
+  updateCreator();
+  $('creator').hidden = false;
+  $('creator-name').focus();
+}
+
+function closeCreator() { $('creator').hidden = true; }
+
+/** After joining, if I have no character yet, open the creator once — the
+ * first-time, no-slash-command path to setting up. */
+function maybePromptCreator() {
+  if (!state.welcomed || state.creatorPrompted) return;
+  if (!mySeat()) return; // wait until my own seat is in the roster
+  state.creatorPrompted = true;
+  if (!characterIsSet()) openCreator();
+}
+
+$('creator-btn')?.addEventListener('click', openCreator);
+$('creator-close')?.addEventListener('click', closeCreator);
+$('creator')?.addEventListener('click', (e) => { if (e.target === $('creator')) closeCreator(); });
+
+$('creator-name-form')?.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const name = $('creator-name').value.trim();
+  if (!name) return;
+  sendSay(`/dm join ${name}`); // also renames if already joined
+  $('creator-name-status').textContent = `Saved. The party knows you as “${name}”.`;
+});
+
+$('creator-bio')?.addEventListener('input', updateBioCount);
+$('creator-bio-form')?.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const text = $('creator-bio').value.trim();
+  if (!text) return;
+  sendSay(`/dm bio ${text}`);
+});
+
+$('creator-import-form')?.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const src = $('creator-import').value.trim();
+  if (!src) return;
+  sendSay(`/dm import ${src}`);
+  $('creator-import-status').textContent = 'Importing… watch the log for the result.';
+});
+
+/* Upload your own portrait image → POST /portrait (bytes go over HTTP, never a
+ * WS frame). The per-seat upload token — not the room password — authorizes
+ * writing MY OWN portrait. An uploaded image overrides the class portrait. */
+$('card-file')?.addEventListener('change', async (e) => {
   const file = e.target.files && e.target.files[0];
   e.target.value = ''; // let the same file be re-picked after a failure
   if (!file || !state.join || !state.userId) return;
@@ -405,15 +549,14 @@ $('card-file').addEventListener('change', async (e) => {
     if (!res.ok) {
       status.textContent = res.status === 401
         ? 'Upload refused — you can only set your own portrait.'
-        : res.status === 409 ? 'Join the party first (/dm join <name>) to set a portrait.'
+        : res.status === 409 ? 'Join the party first (save a name above) to set a portrait.'
         : res.status === 413 ? 'That image is too large.'
         : res.status === 415 ? 'That file type is not allowed (use PNG, JPEG, GIF or WebP).'
         : `Upload failed (${res.status}).`;
       return;
     }
-    // The server broadcasts a fresh roster, which re-renders the token for us.
+    // The server broadcasts a fresh roster, which re-renders the live preview.
     status.textContent = 'Portrait updated.';
-    setTimeout(closeCard, 700);
   } catch {
     status.textContent = 'Upload failed — connection error.';
   }
@@ -636,6 +779,10 @@ function setStatus(text) { $('status').textContent = text; }
 function showJoin(error) {
   $('table').hidden = true;
   $('palette').hidden = true;
+  $('creator').hidden = true;
+  $('card-sheet').hidden = true;
+  state.creatorPrompted = false;
+  state.creator.pendingClass = null;
   $('join-screen').hidden = false;
   $('join-error').textContent = error;
   state.roster = [];
@@ -743,4 +890,4 @@ const COMMANDS = [
 
 $('palette-btn').addEventListener('click', () => { $('palette').hidden = !$('palette').hidden; });
 $('palette').addEventListener('click', (e) => { if (e.target === $('palette')) $('palette').hidden = true; });
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { $('palette').hidden = true; closeCard(); } });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { $('palette').hidden = true; closeCard(); closeCreator(); } });

@@ -43,6 +43,7 @@
     <h1>🎲 OmniDM</h1>
     <span id="room-label" class="room"></span>
     <span id="status" class="status"></span>
+    <button id="creator-btn" type="button" class="creator-btn" title="Create or edit your character">⚔ Your character</button>
     <button id="leave-btn" type="button" title="Leave the table">Leave</button>
   </header>
   <main>
@@ -84,8 +85,8 @@
   </div>
 </div>
 
-<!-- Character card sheet: a seat's portrait, name, card summary, and (for your
-     own seat) a crest picker + upload-your-own control -->
+<!-- Character card sheet: a READ-ONLY view of another seat's portrait, name and
+     card summary. Clicking YOUR OWN seat opens the editable creator instead. -->
 <div id="card-sheet" hidden>
   <div id="card-sheet-inner" role="dialog" aria-modal="true" aria-label="Character card">
     <button id="card-close" type="button" aria-label="Close">✕</button>
@@ -93,14 +94,64 @@
     <h2 id="card-name" class="card-name"></h2>
     <div id="card-sub" class="card-sub"></div>
     <p id="card-desc" class="card-desc"></p>
-    <div id="card-picker" class="card-picker" hidden>
-      <h3>Choose your crest</h3>
-      <div id="card-gallery" class="card-gallery" role="list"></div>
+  </div>
+</div>
+
+<!-- Character creator: the prominent, discoverable "create your character" flow
+     for YOUR OWN seat. Set a name (/dm join), pick a class from a visual gallery
+     of the 12 D&D 5e classes (/dm class), write a short bio (/dm bio), upload a
+     portrait (POST /portrait) or import a Character Card (/dm import). A big live
+     portrait preview reflects the current choices. -->
+<div id="creator" hidden>
+  <div id="creator-inner" role="dialog" aria-modal="true" aria-label="Create your character">
+    <button id="creator-close" type="button" aria-label="Close">✕</button>
+    <h2 class="creator-title">⚔ Create your character</h2>
+    <div class="creator-grid">
+      <div class="creator-preview">
+        <div id="creator-portrait" class="card-portrait" aria-hidden="true"></div>
+        <div id="creator-classname" class="creator-classname"></div>
+        <div id="creator-flavor" class="creator-flavor"></div>
+      </div>
+      <div class="creator-fields">
+        <form id="creator-name-form" class="creator-row">
+          <label for="creator-name">Character name</label>
+          <div class="creator-inline">
+            <input id="creator-name" maxlength="40" placeholder="e.g. Thorin the Bold" autocomplete="off">
+            <button type="submit" class="btn-gold creator-save">Save</button>
+          </div>
+          <div id="creator-name-status" class="creator-hint" role="status" aria-live="polite"></div>
+        </form>
+        <form id="creator-bio-form" class="creator-row">
+          <label for="creator-bio">Bio <small>a short persona — optional</small></label>
+          <textarea id="creator-bio" maxlength="500" rows="3" placeholder="A wandering scholar chasing a lost spellbook…"></textarea>
+          <div class="creator-inline creator-inline-end">
+            <span id="creator-bio-count" class="creator-hint">0 / 500</span>
+            <button type="submit" class="btn-gold creator-save">Save bio</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div class="creator-section">
+      <h3>Choose your class</h3>
+      <div id="card-gallery" class="card-gallery class-gallery" role="list"></div>
+    </div>
+
+    <div class="creator-section">
+      <h3>Portrait <small>overrides the class art</small></h3>
       <label class="card-upload">
-        <span>Upload your own portrait</span>
+        <span>Upload your own image</span>
         <input id="card-file" type="file" accept="image/png,image/jpeg,image/gif,image/webp">
       </label>
       <div id="card-upload-status" class="card-upload-status" role="status" aria-live="polite"></div>
+      <form id="creator-import-form" class="creator-import">
+        <label for="creator-import">…or import a Character Card <small>URL or server file path</small></label>
+        <div class="creator-inline">
+          <input id="creator-import" maxlength="400" placeholder="https://… or data/…card.png" autocomplete="off">
+          <button type="submit" class="btn-gold creator-save">Import</button>
+        </div>
+        <div id="creator-import-status" class="card-upload-status" role="status" aria-live="polite"></div>
+      </form>
     </div>
   </div>
 </div>
