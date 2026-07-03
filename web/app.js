@@ -428,7 +428,9 @@ $('card-file').addEventListener('change', async (e) => {
  * render always comes back from the server. Every node is built with
  * createElementNS and every label lands via textContent — XSS-safe. */
 const SVGNS = 'http://www.w3.org/2000/svg';
-const TOKEN_R = 9; // token radius in the 0..100 board viewBox
+const TOKEN_R = 8; // token radius in the 0..100 board viewBox
+// Keep a whole token — plus its label below — inside the 0..100 board.
+const clampView = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 const clamp01n = (n) => (n < 0 ? 0 : n > 1 ? 1 : n);
 const svgEl = (tag, attrs) => {
   const e = document.createElementNS(SVGNS, tag);
@@ -529,17 +531,22 @@ function renderBoard() {
     const who = typeof t.who === 'string' ? t.who : '';
     const kind = t.kind === 'npc' ? 'npc' : 'pc';
     const isActor = Boolean(state.scene.actor && who && state.scene.actor.toLowerCase() === who.toLowerCase());
+    // Positions stay normalized (server-authoritative); only the DISPLAY is inset
+    // so a token near an edge — and its label below — never clips the board.
+    const cx = clampView(x * 100, TOKEN_R + 1, 100 - TOKEN_R - 1);
+    const cy = clampView(y * 100, TOKEN_R + 1, 100 - TOKEN_R - 10);
     const g = svgEl('g', {
       class: `token ${kind}${isActor ? ' actor' : ''}`,
-      transform: `translate(${(x * 100).toFixed(2)} ${(y * 100).toFixed(2)})`,
+      transform: `translate(${cx.toFixed(2)} ${cy.toFixed(2)})`,
     });
     g.append(svgEl('circle', { r: TOKEN_R, class: 'token-disc' })); // opaque backing behind the crest
     const clipped = svgEl('g', { 'clip-path': 'url(#tok-clip)' });
     clipped.append(tokenPortrait(t, kind));
     g.append(clipped);
     g.append(svgEl('circle', { r: TOKEN_R, class: 'token-ring', fill: 'none' }));
-    const label = svgEl('text', { y: TOKEN_R + 7, 'text-anchor': 'middle', class: 'token-label' });
-    label.textContent = who.slice(0, 16);
+    const label = svgEl('text', { y: TOKEN_R + 6, 'text-anchor': 'middle', class: 'token-label' });
+    // Just the first name keeps adjacent tokens' labels from colliding.
+    label.textContent = (who.split(' ')[0] || who).slice(0, 12);
     g.append(label);
     g.addEventListener('pointerdown', (e) => {
       e.preventDefault();

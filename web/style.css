@@ -325,7 +325,7 @@ main { flex: 1; display: flex; min-height: 0; }
   0%, 100% { filter: drop-shadow(0 0 2px #f5c45366); }
   50%      { filter: drop-shadow(0 0 6px #f5c453cc); }
 }
-.token-label { fill: #e9ddc7; font: 600 6px var(--ui); paint-order: stroke; stroke: #000a; stroke-width: 1.6px; pointer-events: none; }
+.token-label { fill: #e9ddc7; font: 600 5px var(--ui); paint-order: stroke; stroke: #000c; stroke-width: 1.8px; pointer-events: none; }
 
 /* A dice total popping over the acting token, then rising and fading away. */
 .board-pop {

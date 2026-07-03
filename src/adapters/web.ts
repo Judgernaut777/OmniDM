@@ -700,10 +700,13 @@ function sceneTokens(session: GameSession | null): { id: string; who: string; ki
 function spawnPos(kind: TokenKind, existing: Map<string, Token>): { x: number; y: number } {
   let same = 0;
   for (const t of existing.values()) if (t.kind === kind) same++;
-  const col = same % 6;
-  const row = Math.floor(same / 6);
-  const x = clamp01(0.12 + col * 0.152);
-  const y = kind === 'pc' ? clamp01(0.8 - row * 0.1) : clamp01(0.2 + row * 0.1);
+  const perRow = 4;
+  const col = same % perRow;
+  const row = Math.floor(same / perRow);
+  // Spread across the width with generous clearance so neither the token discs
+  // nor their name labels collide; PCs on the lower half, NPCs on the upper.
+  const x = clamp01(0.16 + col * 0.24);
+  const y = kind === 'pc' ? clamp01(0.64 - row * 0.18) : clamp01(0.26 + row * 0.18);
   return { x, y };
 }
 
