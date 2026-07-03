@@ -113,11 +113,17 @@ unless you've uploaded your own. Add a short persona with `/dm bio <text>`; the
 class and bio are woven into the DM's prompt so it plays you accordingly. Each
 seat and each map token is drawn as a portrait: the class preset crest (or set
 one directly with `/dm portrait <preset>`), rendered as procedural heraldic
-avatars entirely client-side — or click your own seat to open a **character-card
-panel** (large portrait, name, class, bio, card summary) and upload your own
-picture (png/jpeg/gif/webp, served same-origin with `nosniff`). On the map, PCs
-get a gold rim, NPCs a dashed steel rim, and whoever's turn it is glows with the
-candle motif; an imported card's embedded PNG becomes its portrait automatically.
+avatars entirely client-side. In the browser this all lives behind one obvious
+door: a **⚔ Your character** button in the topbar (and an auto-prompt the first
+time you join without a character) opens a **character creator** that sets it all
+in one place — your name, your class from a visual gallery of all twelve classes
+each drawn with its own live procedural portrait, your bio, an uploaded picture
+(png/jpeg/gif/webp, served same-origin with `nosniff`) or an imported Character
+Card, with a large live preview of the result. An upload or card art overrides
+the class crest. Clicking *another* player's seat opens a read-only character
+sheet (portrait, name, class, bio, card summary). On the map, PCs get a gold rim,
+NPCs a dashed steel rim, and whoever's turn it is glows with the candle motif; an
+imported card's embedded PNG becomes its portrait automatically.
 
 The adapter itself speaks a small JSON-over-WebSocket protocol (`msg`, `roll`,
 `scene`, `move`, and roster frames) that desktop/mobile UIs can reuse; portrait
@@ -227,7 +233,7 @@ providers/
 rules/
   dnd5e/system.md       ← swappable rules module
 web/               ← browser client served by the web adapter (no build step)
-  index.html / app.js / style.css   ← table UI: log, roster, battle map, dice tray, card panel
+  index.html / app.js / style.css   ← table UI: log, roster, battle map, dice tray, character creator + card sheet
   portraits.js     ← procedural heraldic crest portraits, shared by roster + token board
 ```
 
@@ -244,6 +250,21 @@ message-converter pattern as a pure function plus a thin fetch wrapper.
 
 Shipped since the initial scaffold (newest first):
 
+- **D&D 5e classes, bios & a character creator** — the portrait catalog is now
+  the twelve official D&D 5e classes (`barbarian`, `bard`, `cleric`, `druid`,
+  `fighter`, `monk`, `paladin`, `ranger`, `rogue`, `sorcerer`, `warlock`,
+  `wizard`), each drawn as its own procedural class portrait. `/dm class <name>`
+  sets your class (and defaults your portrait to the matching crest unless you've
+  uploaded a picture or imported card art); `/dm bio <text>` sets a short,
+  bounded persona. Class and bio ride along on the `Player`, survive a reconnect
+  seat re-claim, and are woven into the DM prompt as a one-line character sheet so
+  it plays each PC true to their class and bio. In the browser a prominent
+  **⚔ Your character** topbar button (plus an auto-prompt the first time you join
+  without a character) opens a **character creator** that sets name, class (a
+  visual gallery of all twelve classes each rendered with its live procedural
+  portrait), bio, an uploaded portrait and a Character Card import in one place,
+  with a large live preview; clicking another player's seat opens a read-only
+  sheet. XSS-safe (`createElementNS` / `textContent`), reduced-motion aware
 - **Shared token board (VTT-lite)** — the browser table has a battle map where
   every party member and imported NPC is a draggable token drawn as its own
   portrait (the same uploaded image or procedural crest as the roster), with a
