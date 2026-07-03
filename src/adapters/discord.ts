@@ -38,15 +38,20 @@ export class DiscordAdapter implements PlatformAdapter {
     });
 
     this.client.on(Events.MessageCreate, async (message) => {
-      if (message.author.bot) return;
-      await this.handler?.({
-        platform: 'discord',
-        channelId: message.channelId,
-        userId: message.author.id,
-        userName: message.member?.displayName || message.author.username,
-        text: message.content,
-        raw: message,
-      });
+      // discord.js discards this promise — a rejection must not kill the process.
+      try {
+        if (message.author.bot) return;
+        await this.handler?.({
+          platform: 'discord',
+          channelId: message.channelId,
+          userId: message.author.id,
+          userName: message.member?.displayName || message.author.username,
+          text: message.content,
+          raw: message,
+        });
+      } catch (err) {
+        console.error('[discord] message handling failed:', (err as Error)?.message ?? err);
+      }
     });
 
     await this.client.login(this.token);
@@ -57,20 +62,21 @@ export class DiscordAdapter implements PlatformAdapter {
   }
 
   async send(msg: OutgoingMessage): Promise<void> {
-    // Private (fog-of-war) delivery: DM the user; if their DMs are closed,
-    // fall back to the channel behind a spoiler tag addressed to them.
+    // Private (fog-of-war) delivery: DM the user. If their DMs are closed,
+    // NEVER post the secret in the channel — spoiler tags are presentation,
+    // not access control (any member can click to reveal). Post a content-free
+    // notice instead so the player knows to open their DMs.
     if (msg.targetUserId) {
       try {
         const user = await this.client.users.fetch(msg.targetUserId);
         for (const chunk of chunkText(msg.text, 1900)) await user.send(chunk);
-        return;
       } catch {
-        // Wrap each chunk so spoiler markers stay balanced across the cap.
-        for (const chunk of chunkText(msg.text, 1800)) {
-          await this.sendToChannel(msg.channelId, `🌫️ <@${msg.targetUserId}> only: ||${chunk}||`);
-        }
-        return;
+        await this.sendToChannel(
+          msg.channelId,
+          `🌫️ <@${msg.targetUserId}> the DM has a private detail for you, but your DMs are closed — enable direct messages from server members and act again.`,
+        );
       }
+      return;
     }
     await this.sendToChannel(msg.channelId, msg.text);
   }

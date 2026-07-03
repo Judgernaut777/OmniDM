@@ -45,18 +45,24 @@ export class MatrixAdapter implements PlatformAdapter {
     this.startedAt = Date.now();
 
     this.client.on('room.message', async (roomId: string, event: MatrixMessageEvent) => {
-      if (event.sender === this.selfId) return; // ignore the bot's own messages
-      if (event.content?.msgtype !== 'm.text' || !event.content.body) return;
-      // Skip messages from before this run (a fresh sync store replays history).
-      if ((event.origin_server_ts ?? Date.now()) < this.startedAt - 5000) return;
-      await this.handler?.({
-        platform: 'matrix',
-        channelId: roomId,
-        userId: event.sender,
-        userName: await this.userName(event.sender),
-        text: event.content.body,
-        raw: event,
-      });
+      // The SDK's EventEmitter discards this promise, so a rejection (e.g. the
+      // bot's own error-notice send failing) would otherwise kill the process.
+      try {
+        if (event.sender === this.selfId) return; // ignore the bot's own messages
+        if (event.content?.msgtype !== 'm.text' || !event.content.body) return;
+        // Skip messages from before this run (a fresh sync store replays history).
+        if ((event.origin_server_ts ?? Date.now()) < this.startedAt - 5000) return;
+        await this.handler?.({
+          platform: 'matrix',
+          channelId: roomId,
+          userId: event.sender,
+          userName: await this.userName(event.sender),
+          text: event.content.body,
+          raw: event,
+        });
+      } catch (err) {
+        console.error('[matrix] message handling failed:', (err as Error)?.message ?? err);
+      }
     });
 
     await this.client.start();

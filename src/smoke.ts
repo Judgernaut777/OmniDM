@@ -1,23 +1,29 @@
 /**
  * Smoke test — drives the full bot pipeline with a mock provider (no network,
  * no API key). Proves: command routing, multiplayer join, deterministic dice,
- * turn pipeline, narration wiring, character-card import, lorebook injection,
- * fog-of-war private narration, vector-memory recall, disk persistence, and
- * the Slack, Matrix and Mattermost adapters' offline surface (module load +
- * config guard).
+ * turn pipeline, narration wiring, character-card import (plus its hardening
+ * against hostile sources), lorebook injection, fog-of-war private narration
+ * (including malformed markers), round-robin turn integrity under concurrent
+ * sends and mid-wrap joins, vector-memory recall (mixed backends, cap, compact
+ * persistence), session-model migration across providers, campaign end, disk
+ * persistence, and the Slack, Matrix and Mattermost adapters' offline surface
+ * (module load + config guard).
  *
  * Run:  npx tsx src/smoke.ts
  */
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { deflateSync } from 'node:zlib';
 import type { Config } from './config.js';
 import type { CompletionRequest, GameSession, IncomingMessage, LLMProvider, ModelInfo, OutgoingMessage, TurnRecord } from './core/types.js';
 import { Bot } from './core/bot.js';
 import { roll, extractRolls } from './core/engine/dice.js';
+import { SessionManager } from './core/session/session-manager.js';
 import { SessionStore } from './core/session/store.js';
-import { renderCard } from './core/cards/card.js';
+import { loadCard, MAX_CARD_BYTES, renderCard } from './core/cards/card.js';
 import { buildWorldInfo, makeEntry } from './core/lore/lorebook.js';
-import { cosine, MemoryRetriever } from './core/memory/retrieval.js';
+import { splitFog } from './core/narrator/fog.js';
+import { cosine, MAX_MEMORIES, MemoryRetriever } from './core/memory/retrieval.js';
 import { AnthropicProvider, convertToAnthropic } from './providers/anthropic.js';
 import { OpenAICompatibleProvider } from './providers/openai-compatible.js';
 import { SlackAdapter } from './adapters/slack.js';
@@ -174,6 +180,35 @@ async function main() {
   await bot.handle(from('u1', 'Alice', '/dm turn'), send);
   check('turn: pointer persisted as Thorin', out.at(-1)!.text.includes('Thorin'));
 
+  // ── Round-robin: a double-send racing the in-flight turn must not consume Bob's turn ──
+  out.length = 0;
+  await Promise.all([
+    bot.handle(from('u1', 'Alice', 'I swing my axe'), send),
+    bot.handle(from('u1', 'Alice', 'I swing again, twice as hard'), send),
+  ]);
+  check('round-robin: concurrent double-send resolves exactly one turn',
+    out.filter((m) => m.speaker === 'Dungeon Master').length === 1);
+  check('round-robin: the queued duplicate is rejected inside the lock',
+    out.some((m) => m.text.includes("It's Elaria's turn")));
+  out.length = 0;
+  await bot.handle(from('u2', 'Bob', '/dm turn'), send);
+  check("round-robin: after the double-send it is Elaria's turn, not skipped", out.at(-1)!.text.includes('Elaria'));
+
+  // ── Round-robin: the pointer stays normalized, so a join at the wrap point can't steal the turn ──
+  {
+    const mgr = new SessionManager(new SessionStore(dataDir), 'mock/free-model');
+    const wm = (userId: string, userName: string): IncomingMessage => ({ platform: 'cli', channelId: 'wrap', userId, userName, text: '' });
+    const s = await mgr.create(wm('a', 'A'));
+    await mgr.join(s, wm('a', 'A'));
+    await mgr.join(s, wm('b', 'B'));
+    await mgr.join(s, wm('c', 'C'));
+    for (let i = 0; i < 3; i++) await mgr.advanceTurn(s); // full round — C acts last, wraps to A
+    check('round-robin: pointer normalizes to 0 on wrap', s.turnIndex === 0);
+    await mgr.join(s, wm('d', 'D'));
+    check('round-robin: joining at the wrap point does not steal the announced turn',
+      mgr.currentPlayer(s)?.userId === 'a');
+  }
+
   // ── Character Card import (V2 JSON → player persona) ──
   await bot.handle(from('u1', 'Alice', '/dm mode immediate'), send);
   const v2Path = path.join(dataDir, 'zara.card.json');
@@ -268,6 +303,40 @@ async function main() {
   check('persistence: lorebook saved with the session',
     Array.isArray(savedLore.lorebook) && savedLore.lorebook.some((e: { name: string }) => e.name === 'Grimble'));
 
+  // ── Card import hardening: /dm import sources are untrusted channel input ──
+  out.length = 0;
+  await bot.handle(from('u3', 'Carol', '/dm import /etc/hostname'), send);
+  check('import: local paths outside the data dir are refused',
+    out.at(-1)!.text.includes('Could not import') && out.at(-1)!.text.includes('must live under'));
+
+  const notesPath = path.join(dataDir, 'notes.txt');
+  await fs.writeFile(notesPath, 'root:x:0:0:secret-token-abc123', 'utf8');
+  out.length = 0;
+  await bot.handle(from('u3', 'Carol', `/dm import ${notesPath}`), send);
+  check('import: parse failure never echoes file contents back to the channel',
+    out.at(-1)!.text.includes('Could not import') && !out.at(-1)!.text.includes('root:x') && !out.at(-1)!.text.includes('secret-token'));
+
+  const rejects = async (src: string) => { try { await loadCard(src, dataDir); return false; } catch { return true; } };
+  check('import: loopback URL is refused (SSRF guard)', await rejects('http://127.0.0.1:8080/card.json'));
+  check('import: cloud-metadata URL is refused (SSRF guard)', await rejects('http://169.254.169.254/latest/meta-data/'));
+  check('import: localhost hostname is refused (SSRF guard)', await rejects('http://localhost/card.json'));
+  check('import: IPv6 loopback is refused (SSRF guard)', await rejects('http://[::1]/card.json'));
+  check('import: non-http scheme is refused', await rejects('ftp://example.com/card.json'));
+
+  const bombPath = path.join(dataDir, 'bomb.card.png');
+  const bomb = deflateSync(Buffer.alloc(8 * 1024 * 1024)); // a few KB compressed → 8 MB inflated
+  await fs.writeFile(bombPath, Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk('IHDR', Buffer.alloc(13)),
+    pngChunk('zTXt', Buffer.concat([Buffer.from('chara\0\0', 'latin1'), bomb])),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]));
+  check('import: zTXt decompression bomb is rejected, not inflated', await rejects(bombPath));
+
+  const bigPath = path.join(dataDir, 'big.card.json');
+  await fs.writeFile(bigPath, Buffer.alloc(MAX_CARD_BYTES + 1, 0x7b));
+  check('import: oversized card file is refused', await rejects(bigPath));
+
   // ── Fog of war: per-player private narration (fresh channel) ──
   const fogFrom = (userId: string, userName: string, text: string) => from(userId, userName, text, 'chan2');
   await bot.handle(fogFrom('u1', 'Alice', '/dm new'), send);
@@ -299,6 +368,36 @@ async function main() {
   await bot.handle(fogFrom('u2', 'Bob', 'I listen at the door'), send);
   check('fog: unknown character name in a marker is dropped silently',
     !out.some((m) => m.targetUserId) && !out.some((m) => m.text.includes('Balrog')));
+
+  // Token-cap truncation: the model opens a private section but the completion
+  // ends before [/PRIVATE]. The secret must be whispered, never broadcast.
+  provider.narration = 'The seal cracks open. [PRIVATE:Elaria]The rune spells your true name';
+  out.length = 0;
+  await bot.handle(fogFrom('u1', 'Alice', 'I pry at the seal'), send);
+  const truncPub = out.find((m) => m.speaker === 'Dungeon Master' && !m.targetUserId);
+  const truncWhisper = out.find((m) => m.targetUserId);
+  check('fog: truncated (unclosed) private section is whispered, never broadcast',
+    Boolean(truncPub) && truncPub!.text.includes('seal cracks') && !truncPub!.text.includes('rune') &&
+    truncWhisper?.targetUserId === 'u2' && truncWhisper.text.includes('rune'));
+
+  // splitFog is fail-closed against every malformed-marker shape (pure).
+  {
+    const trunc = splitFog('The party rests. [PRIVATE:Alice] the innkeeper is the assassin');
+    check('fog: unclosed marker keeps the tail private (fail-closed)',
+      trunc.publicText === 'The party rests.' && trunc.privates.length === 1 &&
+      trunc.privates[0].characterName === 'Alice' && trunc.privates[0].content.includes('assassin'));
+
+    const nested = splitFog('[PRIVATE:A]x[PRIVATE:B]y[/PRIVATE]z[/PRIVATE]w');
+    const forA = nested.privates.filter((p) => p.characterName === 'A').map((p) => p.content).join(' ');
+    const forB = nested.privates.filter((p) => p.characterName === 'B').map((p) => p.content).join(' ');
+    check('fog: nested markers route each section to its own character, nothing leaks',
+      forA === 'x z' && forB === 'y' && nested.publicText === 'w');
+
+    const stray = splitFog('All quiet. [/PRIVATE] Nothing stirs.');
+    check('fog: stray closer is dropped from the public text',
+      !stray.publicText.includes('[/PRIVATE]') && stray.publicText.includes('All quiet.') &&
+      stray.publicText.includes('Nothing stirs.') && stray.privates.length === 0);
+  }
 
   provider.narration = 'The tavern falls silent as you act. (mock narration)';
   out.length = 0;
@@ -364,6 +463,47 @@ async function main() {
     check('memory: remember() stores the embedding vector with the record',
       fake.memories.length === 3 && fake.memories[2].vector?.[0] === 1);
     check('memory: cosine similarity is sane', cosine([1, 0], [1, 0]) === 1 && cosine([1, 0], [0, 1]) === 0);
+
+    // Mixed backends: memories stored BEFORE embeddings were enabled have no
+    // vector and score on the (much smaller) Jaccard scale. They must still be
+    // retrievable — per-backend ranking, not one mixed sort.
+    const mixed = {
+      history: [],
+      memories: [
+        { turn: 0, text: 'Thorin: I pocket the obsidian amulet from the altar → It hums', ts: 1 }, // pre-embeddings
+        { turn: 1, text: 'Thorin: we share stew by the goblin fire → cozy', vector: [1, 0], ts: 2 },
+        { turn: 2, text: 'Thorin: the goblin scout flees north → uneventful', vector: [1, 0], ts: 3 },
+        { turn: 3, text: 'Thorin: we sleep near the goblin cave → quiet night', vector: [1, 0], ts: 4 },
+      ],
+    } as unknown as GameSession;
+    const mixedHits = await retriever.retrieve(mixed, 'the goblin amulet from the altar', 3);
+    check('memory: vectorless pre-embeddings record is still retrievable after embeddings are enabled',
+      mixedHits.some((h) => h.turn === 0));
+  }
+
+  // ── Vector memory: bounded growth + compact persistence ──
+  {
+    const retriever = new MemoryRetriever(provider);
+    const fake = { history: [], memories: [] } as unknown as GameSession;
+    for (let i = 0; i < MAX_MEMORIES + 25; i++)
+      await retriever.remember(fake, { actions: [{ name: 'T', text: `turn ${i}` }], rolls: [], narration: 'ok', ts: i });
+    check('memory: stored records are capped', fake.memories.length === MAX_MEMORIES);
+    check('memory: turn ids keep counting past pruning', fake.memories.at(-1)!.turn === MAX_MEMORIES + 24);
+  }
+  {
+    const vecStore = new SessionStore(dataDir);
+    const vecSession: GameSession = {
+      id: 'v1', platform: 'cli', channelId: 'vec', systemId: 'dnd5e', model: 'mock/free-model',
+      players: {}, npcs: [], lorebook: [], history: [], summary: '',
+      memories: [{ turn: 0, text: 'x', vector: Array.from({ length: 64 }, (_, i) => i / 64), ts: 1 }],
+      turnMode: 'immediate', turnIndex: 0, fogOfWar: false, createdAt: 1,
+    };
+    await vecStore.save('cli:vec', vecSession);
+    const rawVec = await fs.readFile(path.join(dataDir, 'session_cli_vec.json'), 'utf8');
+    check('persistence: embedding vectors serialize on one line, not one element per line',
+      /"vector": \[[^\n]*\]/.test(rawVec) && rawVec.split('\n').length < 40);
+    const roundTrip = await new SessionStore(dataDir).load('cli:vec');
+    check('persistence: inlined vectors round-trip through load', roundTrip?.memories[0]?.vector?.length === 64);
   }
   check('memory: embeddings are off by default and opt-in via EMBEDDINGS_MODEL',
     new OpenAICompatibleProvider({ baseUrl: 'http://mock', apiKey: 'x' }).embed === undefined &&
@@ -404,6 +544,34 @@ async function main() {
       typeof mm.start === 'function' && typeof mm.stop === 'function' &&
       typeof mm.send === 'function' && typeof mm.onMessage === 'function');
   }
+
+  // ── Provider switch: a persisted foreign model id must not brick old campaigns ──
+  {
+    const anthropic = new AnthropicProvider({ apiKey: 'x' });
+    check('provider: anthropic declares which model ids it can serve',
+      anthropic.supportsModel('claude-sonnet-5') && anthropic.supportsModel('claude-haiku-4-5-20251001') &&
+      !anthropic.supportsModel('meta-llama/llama-3.3-70b-instruct:free'));
+    await fs.writeFile(path.join(dataDir, 'session_cli_oldmodel.json'), JSON.stringify({
+      id: 'old2', platform: 'cli', channelId: 'oldmodel', systemId: 'dnd5e',
+      model: 'meta-llama/llama-3.3-70b-instruct:free', players: {}, history: [], summary: '', createdAt: 1,
+    }), 'utf8');
+    const mgr = new SessionManager(new SessionStore(dataDir), 'meta-llama/llama-3.3-70b-instruct:free', anthropic);
+    const migrated = await mgr.get({ platform: 'cli', channelId: 'oldmodel', userId: 'u', userName: 'U', text: '' });
+    check('provider: persisted OpenRouter model id remaps to a servable Claude default',
+      migrated?.model === 'claude-sonnet-5');
+    check('provider: new sessions never pin an unservable model',
+      (await mgr.create({ platform: 'cli', channelId: 'oldmodel2', userId: 'u', userName: 'U', text: '' })).model === 'claude-sonnet-5');
+  }
+
+  // ── /dm end must evict the live session cache, not just delete the file ──
+  out.length = 0;
+  await bot.handle(from('u1', 'Alice', '/dm end'), send);
+  check('end: campaign ends', out.at(-1)!.text.includes('Campaign ended'));
+  out.length = 0;
+  await bot.handle(from('u1', 'Alice', 'I knock on the tavern door'), send);
+  check('end: ended campaign does not resurrect from the live session cache',
+    out.at(-1)!.text.includes('No game in this channel'));
+  check('end: session file stays deleted', !(await fs.readdir(dataDir)).includes(sessionFile!));
 
   // ── Backward compatibility: session saved before turnMode/npcs existed ──
   await fs.writeFile(

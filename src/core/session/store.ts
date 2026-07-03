@@ -10,6 +10,25 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { GameSession } from '../types.js';
 
+/**
+ * Pretty-print the session, but keep all-number arrays (embedding vectors,
+ * dice rolls) on one line each: `JSON.stringify(…, 2)` would otherwise emit an
+ * embedding as ~1500 lines, bloating a file that's rewritten every turn.
+ */
+function stringifySession(session: GameSession): string {
+  const nonce = Math.random().toString(36).slice(2); // so player text can't fake a placeholder
+  const inlined: string[] = [];
+  const json = JSON.stringify(
+    session,
+    (_key, value) =>
+      Array.isArray(value) && value.length > 0 && value.every((v) => typeof v === 'number')
+        ? `@arr:${nonce}:${inlined.push(JSON.stringify(value)) - 1}@`
+        : value,
+    2,
+  );
+  return json.replace(new RegExp(`"@arr:${nonce}:(\\d+)@"`, 'g'), (_m, i: string) => inlined[Number(i)]);
+}
+
 export class SessionStore {
   private cache = new Map<string, GameSession>();
 
@@ -43,7 +62,7 @@ export class SessionStore {
   async save(key: string, session: GameSession): Promise<void> {
     this.cache.set(key, session);
     await fs.mkdir(this.dataDir, { recursive: true });
-    await fs.writeFile(this.file(key), JSON.stringify(session, null, 2), 'utf8');
+    await fs.writeFile(this.file(key), stringifySession(session), 'utf8');
   }
 
   async delete(key: string): Promise<void> {

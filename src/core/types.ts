@@ -45,8 +45,8 @@ export interface PlatformAdapter {
   stop(): Promise<void>;
   /**
    * Deliver a message. When `msg.targetUserId` is set, deliver it privately
-   * to that user (CLI: a "(whisper to …)" line; Discord: a DM, falling back
-   * to a spoiler-tagged channel message if DMs are closed).
+   * to that user (CLI: a "(whisper to …)" line; Discord: a DM — if the DM is
+   * refused, adapters must post a content-free notice, never the secret).
    */
   send(msg: OutgoingMessage): Promise<void>;
   /** Register the single handler the bot core uses to receive messages. */
@@ -80,6 +80,14 @@ export interface LLMProvider {
   /** Powers the in-app model dropdown. May return [] if the backend can't list. */
   listModels(): Promise<ModelInfo[]>;
   complete(req: CompletionRequest): Promise<string>;
+  /**
+   * Optional: whether this backend can serve a model id. Undefined = accepts
+   * any id. Lets the session layer remap models persisted under a different
+   * backend (e.g. an OpenRouter id after switching to the Anthropic provider).
+   */
+  supportsModel?(modelId: string): boolean;
+  /** Optional: this backend's own fallback model for the remap above. */
+  defaultModel?: string;
   /**
    * Optional embeddings backend (OpenAI-compatible /embeddings endpoint).
    * Left undefined when not configured — callers feature-detect it and fall

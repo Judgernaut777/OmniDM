@@ -82,6 +82,14 @@ export class AnthropicProvider implements LLMProvider {
     return MODELS;
   }
 
+  /** Session-model fallback when a save carries an id from another backend. */
+  readonly defaultModel = MODELS[0].id;
+
+  /** Anthropic serves claude-* ids only (incl. dated variants beyond MODELS). */
+  supportsModel(modelId: string): boolean {
+    return /^claude-/.test(modelId);
+  }
+
   async complete(req: CompletionRequest): Promise<string> {
     const { system, messages } = convertToAnthropic(req.messages);
     const res = await fetch(`${this.baseUrl}/v1/messages`, {

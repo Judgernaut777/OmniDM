@@ -22,18 +22,40 @@ export interface PrivateSection {
   content: string;
 }
 
-const MARKER = /\[PRIVATE:([^\]]+)\]([\s\S]*?)\[\/PRIVATE\]/g;
+const TOKEN = /\[PRIVATE:([^\]]*)\]|\[\/PRIVATE\]/g;
 
-/** Split a completion into the public remainder and its private sections. */
+/**
+ * Split a completion into the public remainder and its private sections.
+ *
+ * Fail-closed by design: models malform markers (truncated completions leave a
+ * dangling opener; some nest sections), and anything that slips through here is
+ * broadcast to the whole channel. So this is a linear scan with a stack, not a
+ * pair-matching regex: an unclosed `[PRIVATE:...]` keeps everything to the end
+ * of the text private, nested sections each go to their own character, and a
+ * stray `[/PRIVATE]` in public text is dropped rather than echoed.
+ */
 export function splitFog(narration: string): { publicText: string; privates: PrivateSection[] } {
   const privates: PrivateSection[] = [];
-  const publicText = narration
-    .replace(MARKER, (_m, name: string, content: string) => {
-      const characterName = name.trim();
-      if (characterName && content.trim()) privates.push({ characterName, content: content.trim() });
-      return '';
-    })
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
+  const publicParts: string[] = [];
+  const stack: string[] = []; // enclosing private sections' character names, innermost last
+  let cursor = 0;
+
+  const flush = (end: number) => {
+    const segment = narration.slice(cursor, end);
+    const owner = stack.at(-1);
+    if (owner === undefined) publicParts.push(segment);
+    else if (owner && segment.trim()) privates.push({ characterName: owner, content: segment.trim() });
+    // owner === '' (nameless marker): undeliverable — dropped, never public.
+  };
+
+  for (const match of narration.matchAll(TOKEN)) {
+    flush(match.index);
+    cursor = match.index + match[0].length;
+    if (match[1] !== undefined) stack.push(match[1].trim());
+    else stack.pop(); // closer; a stray one in public text pops nothing
+  }
+  flush(narration.length); // unclosed opener → the tail stays private
+
+  const publicText = publicParts.join('').replace(/\n{3,}/g, '\n\n').trim();
   return { publicText, privates };
 }

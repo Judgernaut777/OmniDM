@@ -4,7 +4,7 @@
   "description": "A multi-platform, multi-player, model-agnostic AI Dungeon Master.",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "cli": "tsx src/index.ts --adapter cli",

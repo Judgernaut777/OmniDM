@@ -26,7 +26,7 @@ export class Bot {
     private provider: LLMProvider,
   ) {
     const store = new SessionStore(config.dataDir);
-    this.sessions = new SessionManager(store, config.llm.model);
+    this.sessions = new SessionManager(store, config.llm.model, provider);
     const narrator = new Narrator(provider);
     this.pipeline = new TurnPipeline(this.sessions, narrator, provider);
   }
@@ -60,21 +60,19 @@ export class Bot {
     }
   }
 
-  /** A player takes an action: enforce round-robin order, run the turn, advance. */
+  /**
+   * A player takes an action. Round-robin order is checked (and advanced) by
+   * the pipeline inside the channel lock, so a double-send from the current
+   * player can't race the in-flight turn and consume someone else's.
+   */
   private async playAction(session: GameSession, msg: IncomingMessage, text: string, send: Send): Promise<void> {
-    if (session.turnMode === 'round-robin') {
-      const current = this.sessions.currentPlayer(session);
-      if (current && current.userId !== msg.userId) {
-        return await send({ channelId: msg.channelId, text: `⏳ It's ${name(current)}'s turn — yours is coming up.` });
-      }
-    }
     const player = session.players[msg.userId];
-    const record = await this.pipeline.processTurn(session, { actorName: name(player), text });
-    await this.broadcast(session, record.narration, send);
-    if (session.turnMode === 'round-robin') {
-      const next = await this.sessions.advanceTurn(session);
-      if (next) await send({ channelId: msg.channelId, text: `➡️ Next up: ${name(next)}.` });
+    const result = await this.pipeline.processTurn(session, { actorName: name(player), text }, msg.userId);
+    if (result.notYourTurn) {
+      return await send({ channelId: msg.channelId, text: `⏳ It's ${name(result.notYourTurn)}'s turn — yours is coming up.` });
     }
+    await this.broadcast(session, result.record!.narration, send);
+    if (result.next) await send({ channelId: msg.channelId, text: `➡️ Next up: ${name(result.next)}.` });
   }
 
   /**
@@ -140,10 +138,10 @@ export class Bot {
       case 'import': {
         const session = await this.sessions.get(msg);
         if (!session) return reply('No game here yet — `/dm new` first.');
-        if (!rest) return reply('Usage: `/dm import <file-path-or-URL>` — a Character Card V2/V3 JSON or card PNG.');
+        if (!rest) return reply('Usage: `/dm import <file-path-or-URL>` — a Character Card V2/V3 JSON or card PNG (local files must live under the data dir).');
         let card;
         try {
-          card = await loadCard(rest);
+          card = await loadCard(rest, this.config.dataDir);
         } catch (err) {
           return reply(`⚠️ Could not import that card: ${(err as Error).message}`);
         }
@@ -212,6 +210,8 @@ export class Bot {
         const session = await this.sessions.get(msg);
         if (!session) return reply('No game here yet — `/dm new` first.');
         if (!rest) return reply(`Current model: \`${session.model}\`. Change with \`/dm model <id>\` (see \`/dm models\`).`);
+        if (this.provider.supportsModel && !this.provider.supportsModel(rest))
+          return reply(`⚠️ The active provider (\`${this.provider.id}\`) can't serve \`${rest}\` — see \`/dm models\`.`);
         session.model = rest;
         await this.sessions.save(session);
         return reply(`🤖 Model set to \`${rest}\` for this game.`);
@@ -263,16 +263,19 @@ export class Bot {
         if (!session || !this.sessions.isPlayer(session, msg.userId))
           return reply('Join a game first with `/dm new` or `/dm join <name>`.');
         if (session.turnMode !== 'round-robin') return reply('Nothing to pass — turn mode is `immediate`.');
-        const current = this.sessions.currentPlayer(session);
-        if (current && current.userId !== msg.userId) return reply(`⏳ It's ${name(current)}'s turn, not yours.`);
-        const next = await this.sessions.advanceTurn(session);
-        return reply(`⏭️ ${name(session.players[msg.userId])} passes.${next ? ` Next up: ${name(next)}.` : ''}`);
+        // Check-and-advance runs in the pipeline's channel lock so a pass can't
+        // double-advance the pointer while a turn is resolving.
+        const result = await this.pipeline.pass(session, msg.userId);
+        if (result.notYourTurn) return reply(`⏳ It's ${name(result.notYourTurn)}'s turn, not yours.`);
+        return reply(`⏭️ ${name(session.players[msg.userId])} passes.${result.next ? ` Next up: ${name(result.next)}.` : ''}`);
       }
 
       case 'end': {
         const session = await this.sessions.get(msg);
         if (!session) return reply('No game here to end.');
-        await new SessionStore(this.config.dataDir).delete(this.sessions.key(msg));
+        // Must go through the shared manager/store: deleting via a fresh store
+        // leaves the live cache populated and the next message resurrects the game.
+        await this.sessions.end(msg);
         return reply('🏁 Campaign ended and saved out. `/dm new` to start fresh.');
       }
 

@@ -15,6 +15,9 @@
  *     default, works fully offline.
  * Records missing a vector (written while embeddings were off) fall back to
  * lexical scoring, so toggling the backend never invalidates old memories.
+ * Cosine and Jaccard live on different scales (unrelated cosine ≈ 0.5+, a good
+ * Jaccard hit ≈ 0.2), so the two rankings are never sorted against each other:
+ * retrieve() ranks per backend and interleaves the winners.
  */
 import type { GameSession, LLMProvider, TurnRecord } from '../types.js';
 
@@ -22,6 +25,9 @@ import type { GameSession, LLMProvider, TurnRecord } from '../types.js';
 export const HISTORY_WINDOW = 6;
 /** How many past-event records to inject per turn. */
 export const TOP_K = 3;
+/** Cap on stored records — the session JSON is rewritten every turn, and an
+ * embedding per record would otherwise grow it (and re-scoring) without bound. */
+export const MAX_MEMORIES = 400;
 
 export interface MemoryRecord {
   turn: number;      // global turn number — memories outlive history compaction
@@ -78,7 +84,8 @@ export class MemoryRetriever {
   /** Store a resolved turn as a memory record, embedding it if the backend is on (best-effort). */
   async remember(session: GameSession, record: TurnRecord): Promise<void> {
     session.memories ??= [];
-    const mem: MemoryRecord = { turn: session.memories.length, text: memoryText(record), ts: record.ts };
+    // Turn numbers keep counting past pruning, so they stay unique ids.
+    const mem: MemoryRecord = { turn: (session.memories.at(-1)?.turn ?? -1) + 1, text: memoryText(record), ts: record.ts };
     if (this.provider.embed) {
       try {
         [mem.vector] = await this.provider.embed([mem.text]);
@@ -87,6 +94,7 @@ export class MemoryRetriever {
       }
     }
     session.memories.push(mem);
+    if (session.memories.length > MAX_MEMORIES) session.memories.splice(0, session.memories.length - MAX_MEMORIES);
   }
 
   /** Top-k records relevant to the current action, from OUTSIDE the recent-history window. */
@@ -104,12 +112,30 @@ export class MemoryRetriever {
         console.warn('[memory] query embedding failed; falling back to lexical:', (err as Error).message);
       }
     }
+    // Score each candidate on the backend it supports, then rank the two
+    // backends SEPARATELY — cosine and Jaccard scales aren't comparable, and a
+    // mixed sort would bury every pre-embeddings (vectorless) record under
+    // unrelated-but-embedded ones. Winners are interleaved, cosine first.
     const queryTokens = tokenize(queryText);
-    return candidates
-      .map((m) => ({ m, score: queryVec && m.vector ? cosine(queryVec, m.vector) : lexicalScore(queryTokens, m.text) }))
+    const scored = candidates
+      .map((m) =>
+        queryVec && m.vector
+          ? { m, backend: 'cosine' as const, score: cosine(queryVec, m.vector) }
+          : { m, backend: 'lexical' as const, score: lexicalScore(queryTokens, m.text) },
+      )
       .filter((s) => s.score > 0)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, k)
-      .map((s) => s.m);
+      .sort((a, b) => b.score - a.score);
+    const ranked = {
+      cosine: scored.filter((s) => s.backend === 'cosine'),
+      lexical: scored.filter((s) => s.backend === 'lexical'),
+    };
+    const out: MemoryRecord[] = [];
+    for (let i = 0; out.length < k && (ranked.cosine[i] || ranked.lexical[i]); i++) {
+      for (const backend of ['cosine', 'lexical'] as const) {
+        const s = ranked[backend][i];
+        if (s && out.length < k) out.push(s.m);
+      }
+    }
+    return out;
   }
 }

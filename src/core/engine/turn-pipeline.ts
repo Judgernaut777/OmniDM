@@ -9,10 +9,12 @@
  *
  * The default "immediate" turn mode treats each player message as a turn.
  * Because the session history is shared, it's genuinely multiplayer. Turn
- * sequencing (`session.turnMode`, e.g. round-robin) is enforced by the bot
- * router before actions reach this pipeline.
+ * sequencing (`session.turnMode`, e.g. round-robin) is enforced HERE, inside
+ * the channel lock: checking whose turn it is (and advancing the pointer)
+ * outside the critical section would let a double-send from the current
+ * player race the in-flight LLM call and consume other players' turns.
  */
-import type { GameSession, LLMProvider, RollResult, TurnRecord } from '../types.js';
+import type { GameSession, LLMProvider, Player, RollResult, TurnRecord } from '../types.js';
 import { MemoryRetriever } from '../memory/retrieval.js';
 import { Narrator } from '../narrator/narrator.js';
 import { SessionManager } from '../session/session-manager.js';
@@ -37,6 +39,15 @@ export interface TurnInput {
   text: string;
 }
 
+export interface TurnResult {
+  /** The resolved turn; absent when round-robin rejected the action. */
+  record?: TurnRecord;
+  /** Set instead of `record` when it wasn't the actor's turn: whose turn it is. */
+  notYourTurn?: Player;
+  /** The next player up, after a round-robin advance. */
+  next?: Player | null;
+}
+
 export class TurnPipeline {
   private locks = new ChannelLock();
   private memory: MemoryRetriever;
@@ -49,9 +60,19 @@ export class TurnPipeline {
     this.memory = new MemoryRetriever(provider);
   }
 
-  async processTurn(session: GameSession, input: TurnInput): Promise<TurnRecord> {
-    const lockKey = `${session.platform}:${session.channelId}`;
-    return this.locks.run(lockKey, async () => {
+  private lockKey(session: GameSession): string {
+    return `${session.platform}:${session.channelId}`;
+  }
+
+  async processTurn(session: GameSession, input: TurnInput, actorUserId?: string): Promise<TurnResult> {
+    return this.locks.run(this.lockKey(session), async () => {
+      // 0. SEQUENCING (inside the lock — a queued duplicate from the same
+      // player must see the pointer already advanced by the turn before it)
+      if (session.turnMode === 'round-robin' && actorUserId) {
+        const current = this.sessions.currentPlayer(session);
+        if (current && current.userId !== actorUserId) return { notYourTurn: current };
+      }
+
       // 1. INTENT + 2. RESOLUTION (pure, deterministic dice)
       const rolls: RollResult[] = extractRolls(input.text).map((n) => roll(n, input.actorName));
 
@@ -68,7 +89,17 @@ export class TurnPipeline {
       await this.maybeCompact(session);
       await this.sessions.save(session);
 
-      return record;
+      const next = session.turnMode === 'round-robin' ? await this.sessions.advanceTurn(session) : undefined;
+      return { record, next };
+    });
+  }
+
+  /** Skip the current player's round-robin turn — same critical section as turns. */
+  async pass(session: GameSession, userId: string): Promise<TurnResult> {
+    return this.locks.run(this.lockKey(session), async () => {
+      const current = this.sessions.currentPlayer(session);
+      if (current && current.userId !== userId) return { notYourTurn: current };
+      return { next: await this.sessions.advanceTurn(session) };
     });
   }
 

@@ -77,7 +77,9 @@ export class MattermostAdapter implements PlatformAdapter {
       let post: MattermostPost;
       try { post = JSON.parse(event.data.post); } catch { return; }
       if (post.user_id === this.selfId || !post.message) return; // ignore the bot's own posts
-      void this.dispatch(post);
+      // A rejection here (e.g. the bot's own error-notice post failing) must
+      // not become an unhandledRejection that kills the process.
+      this.dispatch(post).catch((err) => console.error('[mattermost] message handling failed:', (err as Error)?.message ?? err));
     });
 
     ws.addEventListener('close', () => {

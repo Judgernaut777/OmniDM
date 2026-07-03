@@ -126,6 +126,9 @@ Anything that isn't a command is treated as your character's action.
 with the embedded `chara`/`ccv3` chunk). If you've already joined, the card
 becomes **your persona**; otherwise it becomes an **NPC** the DM portrays.
 A card's `character_book` is imported into the session lorebook automatically.
+Because anyone in the channel can run it, sources are restricted: local paths
+must live under `DATA_DIR`, URLs must be public http(s) (no loopback/private
+addresses, no redirects), and downloads are size-capped.
 
 `/dm lore` entries are keyword-triggered world info (SillyTavern's World Info
 pattern): when an entry's keyword appears in the current action or recent
@@ -135,10 +138,10 @@ block. Entries with no keywords are always injected.
 `/dm fog on` (daicer's `player_perspectives`) lets the DM append
 `[PRIVATE:<CharacterName>] … [/PRIVATE]` sections to its narration. The public
 remainder is broadcast to the channel; each private section is delivered only
-to that character's player (the CLI prints a whisper; Discord sends a DM,
-falling back to a spoiler-tagged channel message if DMs are closed; Slack
-posts an ephemeral message; Matrix and Mattermost use a direct-message
-channel with that player).
+to that character's player (the CLI prints a whisper; Discord sends a DM — if
+the player's DMs are closed it posts a content-free notice in the channel,
+never the secret; Slack posts an ephemeral message; Matrix and Mattermost use
+a direct-message channel with that player).
 
 ## Architecture
 
