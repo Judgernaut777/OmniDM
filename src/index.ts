@@ -12,6 +12,7 @@
 import { loadConfig } from './config.js';
 import { createProvider } from './providers/index.js';
 import { Bot } from './core/bot.js';
+import { NodeFileStorage } from './core/session/store.js';
 import { CliAdapter } from './adapters/cli.js';
 import { DiscordAdapter } from './adapters/discord.js';
 import { SlackAdapter } from './adapters/slack.js';
@@ -49,7 +50,7 @@ async function main() {
   }
 
   const provider = createProvider(config);
-  const bot = new Bot(config, provider);
+  const bot = new Bot(config, provider, new NodeFileStorage(config.dataDir));
   const adapter = pickAdapter(adapterArg, config);
 
   adapter.onMessage((msg) => bot.handle(msg, (out) => adapter.send(out)));

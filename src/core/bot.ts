@@ -8,7 +8,7 @@
 import type { Config } from '../config.js';
 import type { GameSession, IncomingMessage, LLMProvider, OutgoingMessage, Player } from './types.js';
 import { SessionManager } from './session/session-manager.js';
-import { SessionStore } from './session/store.js';
+import type { SessionStorage } from './session/storage.js';
 import { Narrator } from './narrator/narrator.js';
 import { loadCard } from './cards/card.js';
 import { findEntry, importCardBook, makeEntry } from './lore/lorebook.js';
@@ -24,9 +24,9 @@ export class Bot {
   constructor(
     private config: Config,
     private provider: LLMProvider,
+    storage: SessionStorage, // injected at the composition root so the core stays Node-free
   ) {
-    const store = new SessionStore(config.dataDir);
-    this.sessions = new SessionManager(store, config.llm.model, provider);
+    this.sessions = new SessionManager(storage, config.llm.model, provider);
     const narrator = new Narrator(provider);
     this.pipeline = new TurnPipeline(this.sessions, narrator, provider);
   }

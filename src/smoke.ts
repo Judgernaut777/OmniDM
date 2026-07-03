@@ -6,8 +6,9 @@
  * (including malformed markers), round-robin turn integrity under concurrent
  * sends and mid-wrap joins, vector-memory recall (mixed backends, cap, compact
  * persistence), session-model migration across providers, campaign end, disk
- * persistence, and the Slack, Matrix and Mattermost adapters' offline surface
- * (module load + config guard).
+ * persistence, the SessionStorage seam (a full scenario on MemoryStorage), and
+ * the Slack, Matrix and Mattermost adapters' offline surface (module load +
+ * config guard).
  *
  * Run:  npx tsx src/smoke.ts
  */
@@ -19,7 +20,8 @@ import type { CompletionRequest, GameSession, IncomingMessage, LLMProvider, Mode
 import { Bot } from './core/bot.js';
 import { roll, extractRolls } from './core/engine/dice.js';
 import { SessionManager } from './core/session/session-manager.js';
-import { SessionStore } from './core/session/store.js';
+import { NodeFileStorage } from './core/session/store.js';
+import { MemoryStorage } from './core/session/storage.js';
 import { loadCard, MAX_CARD_BYTES, renderCard } from './core/cards/card.js';
 import { buildWorldInfo, makeEntry } from './core/lore/lorebook.js';
 import { splitFog } from './core/narrator/fog.js';
@@ -64,7 +66,7 @@ async function main() {
     dataDir,
   };
   const provider = new MockProvider();
-  const bot = new Bot(config, provider);
+  const bot = new Bot(config, provider, new NodeFileStorage(dataDir));
 
   const out: OutgoingMessage[] = [];
   const send = async (m: OutgoingMessage) => void out.push(m);
@@ -196,7 +198,7 @@ async function main() {
 
   // ── Round-robin: the pointer stays normalized, so a join at the wrap point can't steal the turn ──
   {
-    const mgr = new SessionManager(new SessionStore(dataDir), 'mock/free-model');
+    const mgr = new SessionManager(new NodeFileStorage(dataDir), 'mock/free-model');
     const wm = (userId: string, userName: string): IncomingMessage => ({ platform: 'cli', channelId: 'wrap', userId, userName, text: '' });
     const s = await mgr.create(wm('a', 'A'));
     await mgr.join(s, wm('a', 'A'));
@@ -224,7 +226,7 @@ async function main() {
   check('import: persona card fields reach the prompt',
     provider.lastPrompt.includes('Imported characters') && provider.lastPrompt.includes('cunning tiefling rogue') && provider.lastPrompt.includes('Sly, loyal'));
   await bot.handle(from('u1', 'Alice', '/dm join Zara the Second'), send);
-  const store = new SessionStore(dataDir);
+  const store = new NodeFileStorage(dataDir);
   check('import: re-joining keeps the imported persona', (await store.load('cli:chan1'))?.players.u1?.card?.name === 'Zara');
 
   // ── Character Card import (V3 JSON from a spectator → NPC) ──
@@ -491,7 +493,7 @@ async function main() {
     check('memory: turn ids keep counting past pruning', fake.memories.at(-1)!.turn === MAX_MEMORIES + 24);
   }
   {
-    const vecStore = new SessionStore(dataDir);
+    const vecStore = new NodeFileStorage(dataDir);
     const vecSession: GameSession = {
       id: 'v1', platform: 'cli', channelId: 'vec', systemId: 'dnd5e', model: 'mock/free-model',
       players: {}, npcs: [], lorebook: [], history: [], summary: '',
@@ -502,7 +504,7 @@ async function main() {
     const rawVec = await fs.readFile(path.join(dataDir, 'session_cli_vec.json'), 'utf8');
     check('persistence: embedding vectors serialize on one line, not one element per line',
       /"vector": \[[^\n]*\]/.test(rawVec) && rawVec.split('\n').length < 40);
-    const roundTrip = await new SessionStore(dataDir).load('cli:vec');
+    const roundTrip = await new NodeFileStorage(dataDir).load('cli:vec');
     check('persistence: inlined vectors round-trip through load', roundTrip?.memories[0]?.vector?.length === 64);
   }
   check('memory: embeddings are off by default and opt-in via EMBEDDINGS_MODEL',
@@ -555,7 +557,7 @@ async function main() {
       id: 'old2', platform: 'cli', channelId: 'oldmodel', systemId: 'dnd5e',
       model: 'meta-llama/llama-3.3-70b-instruct:free', players: {}, history: [], summary: '', createdAt: 1,
     }), 'utf8');
-    const mgr = new SessionManager(new SessionStore(dataDir), 'meta-llama/llama-3.3-70b-instruct:free', anthropic);
+    const mgr = new SessionManager(new NodeFileStorage(dataDir), 'meta-llama/llama-3.3-70b-instruct:free', anthropic);
     const migrated = await mgr.get({ platform: 'cli', channelId: 'oldmodel', userId: 'u', userName: 'U', text: '' });
     check('provider: persisted OpenRouter model id remaps to a servable Claude default',
       migrated?.model === 'claude-sonnet-5');
@@ -572,6 +574,30 @@ async function main() {
   check('end: ended campaign does not resurrect from the live session cache',
     out.at(-1)!.text.includes('No game in this channel'));
   check('end: session file stays deleted', !(await fs.readdir(dataDir)).includes(sessionFile!));
+
+  // ── Storage seam: the same bot pipeline runs unchanged on MemoryStorage ──
+  {
+    const memBot = new Bot(config, provider, new MemoryStorage());
+    const memOut: OutgoingMessage[] = [];
+    const memSend = async (m: OutgoingMessage) => void memOut.push(m);
+    const mem = (userId: string, userName: string, text: string): IncomingMessage =>
+      ({ platform: 'cli', channelId: 'memchan', userId, userName, text });
+    await memBot.handle(mem('u1', 'Alice', '/dm new'), memSend);
+    await memBot.handle(mem('u1', 'Alice', '/dm join Thorin'), memSend);
+    await memBot.handle(mem('u2', 'Bob', '/dm join Elaria'), memSend);
+    memOut.length = 0;
+    await memBot.handle(mem('u1', 'Alice', 'I attack the goblin with my d20+5 sword'), memSend);
+    check('storage: full turn (dice → narration) resolves against MemoryStorage',
+      memOut.at(-1)!.speaker === 'Dungeon Master' && /RESOLVED ROLLS/.test(provider.lastPrompt) && /d20\+5/.test(provider.lastPrompt));
+    memOut.length = 0;
+    await memBot.handle(mem('u1', 'Alice', '/dm who'), memSend);
+    check('storage: party persists across turns in MemoryStorage', memOut.at(-1)!.text.includes('Thorin') && memOut.at(-1)!.text.includes('Elaria'));
+    check('storage: MemoryStorage writes nothing to disk', !(await fs.readdir(dataDir)).some((f) => f.includes('memchan')));
+    await memBot.handle(mem('u1', 'Alice', '/dm end'), memSend);
+    memOut.length = 0;
+    await memBot.handle(mem('u1', 'Alice', 'I knock on the tavern door'), memSend);
+    check('storage: /dm end deletes through MemoryStorage — no resurrection', memOut.at(-1)!.text.includes('No game in this channel'));
+  }
 
   // ── Backward compatibility: session saved before turnMode/npcs existed ──
   await fs.writeFile(

@@ -5,11 +5,11 @@
  */
 import { nanoid } from 'nanoid';
 import type { GameSession, IncomingMessage, LLMProvider, Player } from '../types.js';
-import { SessionStore } from './store.js';
+import type { SessionStorage } from './storage.js';
 
 export class SessionManager {
   constructor(
-    private store: SessionStore,
+    private store: SessionStorage,
     private defaultModel: string,
     private provider?: LLMProvider,
   ) {}

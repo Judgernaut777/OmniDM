@@ -1,14 +1,15 @@
 /**
- * Session persistence.
+ * Session persistence — the Node implementation of SessionStorage.
  *
  * Following the "plain files as truth" approach from open-tabletop-gm and
  * NarrativeEngine-P: each session is a JSON file under DATA_DIR. Simple,
- * inspectable, git-friendly. Swap this class for a DB-backed one later without
- * touching the engine — it only depends on the async interface.
+ * inspectable, git-friendly. Swap this class for a DB- or browser-backed one
+ * at the composition root — the engine only depends on the interface.
  */
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { GameSession } from '../types.js';
+import type { SessionStorage } from './storage.js';
 
 /**
  * Pretty-print the session, but keep all-number arrays (embedding vectors,
@@ -29,7 +30,7 @@ function stringifySession(session: GameSession): string {
   return json.replace(new RegExp(`"@arr:${nonce}:(\\d+)@"`, 'g'), (_m, i: string) => inlined[Number(i)]);
 }
 
-export class SessionStore {
+export class NodeFileStorage implements SessionStorage {
   private cache = new Map<string, GameSession>();
 
   constructor(private dataDir: string) {}
