@@ -21,6 +21,7 @@ const state = {
   ws: null,
   join: null,          // { userName, channelId, password? } — preserved across reconnects
   wantReconnect: false,
+  retryTimer: null,    // pending reconnect timeout — cancelled by Leave
   welcomedOnce: false, // distinguishes first join from a reconnect
   welcomed: false,     // this connection completed the hello handshake
   backoff: 1000,       // ms, doubles to BACKOFF_MAX, resets on welcome
@@ -50,12 +51,17 @@ function connect() {
 }
 
 function onClose() {
-  if (!state.wantReconnect) return showJoin('');
+  if (!state.wantReconnect) {
+    // A refused hello (or Leave) already showed the join screen — don't let
+    // this trailing close event wipe the error message it is displaying.
+    if ($('join-screen').hidden) showJoin('');
+    return;
+  }
   const wait = state.backoff;
   state.backoff = Math.min(state.backoff * 2, BACKOFF_MAX);
   setStatus(`reconnecting in ${Math.round(wait / 1000)}s…`);
   addLine('sys', '', `Connection lost — retrying in ${Math.round(wait / 1000)}s…`);
-  setTimeout(() => { if (state.wantReconnect) connect(); }, wait);
+  state.retryTimer = setTimeout(() => { if (state.wantReconnect) connect(); }, wait);
 }
 
 function sendSay(text) {
@@ -245,8 +251,13 @@ try {
 } catch { /* first visit */ }
 
 $('leave-btn').addEventListener('click', () => {
+  // Leave must not depend on a close event: during a reconnect backoff the
+  // socket is already CLOSED and close() fires nothing — cancel the pending
+  // retry and go back to the join screen directly.
   state.wantReconnect = false;
+  clearTimeout(state.retryTimer);
   state.ws?.close();
+  showJoin('');
 });
 
 /* ── Composer, dice tray ─────────────────────────────────────────────────── */

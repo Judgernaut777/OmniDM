@@ -4,18 +4,22 @@
  * turn pipeline, narration wiring, character-card import (plus its hardening
  * against hostile sources), lorebook injection, fog-of-war private narration
  * (including malformed markers), round-robin turn integrity under concurrent
- * sends and mid-wrap joins, vector-memory recall (mixed backends, cap, compact
- * persistence), session-model migration across providers, campaign end, disk
- * persistence, the SessionStorage seam (a full scenario on MemoryStorage),
- * the Slack, Matrix and Mattermost adapters' offline surface (module load +
- * config guard), and the web adapter end-to-end over loopback sockets on an
+ * sends and mid-wrap joins, reconnect seat re-claims (a fresh userId re-joining
+ * as an existing character migrates the seat instead of ghosting the party),
+ * vector-memory recall (mixed backends, cap, compact persistence),
+ * session-model migration across providers, campaign end, disk persistence,
+ * the SessionStorage seam (a full scenario on MemoryStorage), the Slack,
+ * Matrix and Mattermost adapters' offline surface (module load + config
+ * guard), and the web adapter end-to-end over loopback sockets on an
  * ephemeral port (static client with sane content-types and no external
  * origins, hello/roster protocol, broadcast, fog whispers, password,
- * malformed frames, rate limit).
+ * malformed frames and request-targets, rate limit, frame/field size caps,
+ * connection cap, pre-hello flood drop, hello deadline).
  *
  * Run:  npx tsx src/smoke.ts
  */
 import { promises as fs } from 'node:fs';
+import { connect } from 'node:net';
 import path from 'node:path';
 import { deflateSync } from 'node:zlib';
 import type { Config } from './config.js';
@@ -34,7 +38,7 @@ import { OpenAICompatibleProvider } from './providers/openai-compatible.js';
 import { SlackAdapter } from './adapters/slack.js';
 import { MatrixAdapter } from './adapters/matrix.js';
 import { MattermostAdapter } from './adapters/mattermost.js';
-import { WebAdapter, RATE_LIMIT_PER_SEC } from './adapters/web.js';
+import { MAX_FRAME_BYTES, MAX_NAME_CHARS, MAX_TEXT_CHARS, RATE_LIMIT_PER_SEC, UNJOINED_FRAMES_PER_SEC, WebAdapter } from './adapters/web.js';
 
 let failures = 0;
 function check(label: string, cond: boolean) {
@@ -69,10 +73,12 @@ class WsClient {
   readonly all: Frame[] = [];
   private pending: Frame[] = [];
   private waiter?: { pred: (f: Frame) => boolean; resolve: (f: Frame | undefined) => void };
+  private isClosed = false;
   private ws: WebSocket;
 
   constructor(url: string) {
     this.ws = new WebSocket(url);
+    this.ws.addEventListener('close', () => { this.isClosed = true; });
     this.ws.addEventListener('message', (ev) => {
       const frame = JSON.parse(String(ev.data)) as Frame;
       this.all.push(frame);
@@ -112,8 +118,18 @@ class WsClient {
     return this.all.some((f) => typeof f.text === 'string' && f.text.includes(text));
   }
 
+  /** Resolves when the socket closes — immediately if it already has. */
   closed(): Promise<void> {
+    if (this.isClosed) return Promise.resolve();
     return new Promise((resolve) => this.ws.addEventListener('close', () => resolve()));
+  }
+
+  /** True if the socket closed within `timeoutMs` (for "the server dropped me" checks). */
+  closedWithin(timeoutMs = 3000): Promise<boolean> {
+    return Promise.race([
+      this.closed().then(() => true),
+      new Promise<boolean>((r) => setTimeout(() => r(false), timeoutMs)),
+    ]);
   }
 
   close(): void {
@@ -278,6 +294,56 @@ async function main() {
     await mgr.join(s, wm('d', 'D'));
     check('round-robin: joining at the wrap point does not steal the announced turn',
       mgr.currentPlayer(s)?.userId === 'a');
+  }
+
+  // ── Seat re-claim: a fresh userId re-joining as an existing character migrates the seat ──
+  // (The web adapter mints a new userId per connection; without this, a
+  // reconnect + `/dm join <name>` ghosts the party: round-robin deadlocks on
+  // the dead entry and fog whispers target a userId with no socket.)
+  {
+    const mgr = new SessionManager(new MemoryStorage(), 'mock/free-model');
+    const rm = (userId: string, userName: string): IncomingMessage => ({ platform: 'web', channelId: 'reclaim', userId, userName, text: '' });
+    const s = await mgr.create(rm('w1', 'Alice'));
+    await mgr.join(s, rm('w1', 'Alice'), 'Thorin');
+    await mgr.join(s, rm('w2', 'Bob'), 'Elaria');
+    s.players.w1.hp = 3;
+    await mgr.join(s, rm('w9', 'Alice'), 'thorin'); // reconnected: new userId, same character (case-insensitive)
+    check('reclaim: migrated seat keeps hp and its join-order slot, dead userId is gone',
+      !s.players.w1 && s.players.w9?.hp === 3 && Object.keys(s.players).join(',') === 'w9,w2');
+    await mgr.join(s, rm('w2', 'Bob'), 'Thorin'); // a member renaming to a taken name is NOT a takeover
+    check('reclaim: an existing member renaming keeps their own seat',
+      Boolean(s.players.w9) && s.players.w2?.characterName === 'Thorin' && Object.keys(s.players).length === 2);
+  }
+  {
+    const rcBot = new Bot(config, provider, new MemoryStorage());
+    const rcOut: OutgoingMessage[] = [];
+    const rcSend = async (m: OutgoingMessage) => void rcOut.push(m);
+    const rc = (userId: string, userName: string, text: string): IncomingMessage =>
+      ({ platform: 'web', channelId: 'rc', userId, userName, text });
+    await rcBot.handle(rc('web-a1', 'Alice', '/dm new'), rcSend);
+    await rcBot.handle(rc('web-a1', 'Alice', '/dm join Thorin'), rcSend);
+    await rcBot.handle(rc('web-b1', 'Bob', '/dm join Elaria'), rcSend);
+    await rcBot.handle(rc('web-a1', 'Alice', '/dm mode round-robin'), rcSend);
+    // Bob's browser reconnects: new userId, and he re-claims as the client instructs.
+    await rcBot.handle(rc('web-b2', 'Bob', '/dm join Elaria'), rcSend);
+    rcOut.length = 0;
+    await rcBot.handle(rc('web-b2', 'Bob', '/dm who'), rcSend);
+    check('reclaim: re-joining after a reconnect does not duplicate the character',
+      (rcOut.at(-1)!.text.match(/Elaria/g) ?? []).length === 1);
+    rcOut.length = 0;
+    await rcBot.handle(rc('web-a1', 'Alice', 'I advance'), rcSend);
+    check('reclaim: after Thorin acts the turn reaches the re-claimed seat', rcOut.at(-1)!.text.includes('Elaria'));
+    rcOut.length = 0;
+    await rcBot.handle(rc('web-b2', 'Bob', 'I loose an arrow'), rcSend);
+    check('reclaim: the reconnected userId can act on its turn — no ghost deadlock',
+      rcOut.some((m) => m.speaker === 'Dungeon Master'));
+    await rcBot.handle(rc('web-a1', 'Alice', '/dm fog on'), rcSend);
+    provider.narration = 'Shadows shift. [PRIVATE:Elaria]You spot a tripwire.[/PRIVATE]';
+    rcOut.length = 0;
+    await rcBot.handle(rc('web-a1', 'Alice', 'I press on'), rcSend);
+    check('reclaim: fog whisper targets the live reconnected userId, not the dead one',
+      rcOut.find((m) => m.targetUserId)?.targetUserId === 'web-b2');
+    provider.narration = 'The tavern falls silent as you act. (mock narration)';
   }
 
   // ── Character Card import (V2 JSON → player persona) ──
@@ -630,6 +696,20 @@ async function main() {
     check('web: static client served at /', page.ok && (await page.text()).includes('OmniDM'));
     check('web: missing static file is a 404, not a crash', (await fetch(`http://127.0.0.1:${port}/nope.js`)).status === 404);
 
+    // Node's HTTP parser accepts request-targets the WHATWG URL parser throws
+    // on (e.g. "//["); an uncaught throw there would kill the whole process.
+    const rawHttp = (payload: string) => new Promise<string>((resolve) => {
+      const sock = connect(port, '127.0.0.1', () => sock.write(payload));
+      let buf = '';
+      sock.on('data', (d) => { buf += d; });
+      sock.on('close', () => resolve(buf));
+      sock.on('error', () => resolve(buf));
+      sock.setTimeout(3000, () => sock.destroy());
+    });
+    const evil = await rawHttp('GET //[ HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n');
+    check('web: malformed request-target answers 400 instead of crashing the server', evil.startsWith('HTTP/1.1 400'));
+    check('web: the server still serves after the malformed request-target', (await fetch(`http://127.0.0.1:${port}/`)).ok);
+
     // The browser UI ships as three plain files; each must arrive with a sane
     // content-type, and the HTML must be self-contained (no external origins —
     // players and the LLM are untrusted, and Capacitor will wrap this offline).
@@ -644,6 +724,14 @@ async function main() {
     const srcHrefs = [...html.matchAll(/(?:src|href)\s*=\s*"([^"]*)"/gi)].map((m) => m[1]);
     check('web-ui: no src/href attribute points at an external origin',
       srcHrefs.length >= 3 && srcHrefs.every((v) => !/^(?:https?:)?\/\//i.test(v)));
+    // The client is DOM code smoke can't execute, so pin its two reconnect-UX
+    // fixes statically: Leave must not depend on a close event (a CLOSED socket
+    // fires none), and a trailing close must not wipe a shown join error.
+    const appSrc = await jsRes.text();
+    check('web-ui: Leave cancels the retry timer and shows the join screen directly',
+      /'leave-btn'\)[^]*?clearTimeout\(state\.retryTimer\)[^]*?showJoin\(''\)/.test(appSrc));
+    check('web-ui: a close event after a refused hello cannot wipe the join-screen error',
+      /if \(\$\('join-screen'\)\.hidden\) showJoin\(''\)/.test(appSrc));
 
     const bad = new WsClient(url);
     await bad.open();
@@ -712,6 +800,27 @@ async function main() {
     const limited = await c.next((f) => f.type === 'error' && String(f.error).includes('Rate limit'));
     check(`web: message ${RATE_LIMIT_PER_SEC + 1} inside one second is rate-limited`, Boolean(limited));
 
+    // Size caps: the rate limit bounds frequency, these bound bytes — the
+    // client's maxlength attributes are trivially bypassed by a raw socket.
+    a.send({ type: 'say', text: 'x'.repeat(MAX_TEXT_CHARS + 1) });
+    const tooLong = await a.next((f) => f.type === 'error' && String(f.error).includes('too long'));
+    check('web: over-length say text is refused server-side', Boolean(tooLong));
+    check('web: the oversized text was never relayed to the room', !b.sawText('x'.repeat(50)));
+    const d = new WsClient(url);
+    await d.open();
+    d.send({ type: 'hello', userName: 'x'.repeat(MAX_NAME_CHARS + 1), channelId: 'room1', password: 'hunter2' });
+    const longName = await d.next((f) => f.type === 'error' && String(f.error).includes('too long'));
+    check('web: over-length hello userName is refused server-side', Boolean(longName));
+    d.send('z'.repeat(MAX_FRAME_BYTES + 1024));
+    check('web: a frame above MAX_FRAME_BYTES drops the connection (ws maxPayload)', await d.closedWithin());
+
+    // A socket that never says hello has no seat-level limiter — its frame
+    // budget must drop it instead of answering a flood frame-for-frame.
+    const flood = new WsClient(url);
+    await flood.open();
+    for (let i = 0; i < UNJOINED_FRAMES_PER_SEC + 3; i++) flood.send({ type: 'wibble' });
+    check('web: a pre-hello frame flood drops the socket', await flood.closedWithin());
+
     b.close();
     const shrunk = await a.next((f) => f.type === 'roster' && (f.users as unknown[]).length === 1);
     check('web: a closing socket leaves the roster', (shrunk?.users as { userName: string }[])?.[0]?.userName === 'Alice');
@@ -720,6 +829,30 @@ async function main() {
     c.close();
     await web.stop();
     check('web: stop() releases the port', await fetch(`http://127.0.0.1:${port}/`).then(() => false, () => true));
+  }
+
+  // ── Web adapter: connection cap + hello deadline (tight limits so the test is fast) ──
+  {
+    const tiny = new WebAdapter('127.0.0.1', 0, '', 2, 800); // cap: 2 sockets, 800 ms to complete hello
+    await tiny.start();
+    const turl = `ws://127.0.0.1:${tiny.port}/ws`;
+    const s1 = new WsClient(turl);
+    await s1.open(); // never says hello — the reaper's prey
+    const s2 = new WsClient(turl);
+    await s2.open();
+    s2.send({ type: 'hello', userName: 'Kept', channelId: 'keep' });
+    await s2.next((f) => f.type === 'welcome');
+    const s3 = new WsClient(turl);
+    await s3.open();
+    const full = await s3.next((f) => f.type === 'error' && String(f.error).includes('full'));
+    check('web: a connection beyond the cap is refused with an error frame', Boolean(full));
+    check('web: the refused connection does not stay open', await s3.closedWithin());
+    check('web: a socket that never completes hello is reaped after the deadline', await s1.closedWithin(4000));
+    s2.send({ type: 'say', text: 'still here' }); // no bot wired — the room relay alone proves the socket lives
+    check('web: a joined socket outlives the hello deadline',
+      Boolean(await s2.next((f) => f.type === 'msg' && String(f.text).includes('still here'))));
+    s2.close();
+    await tiny.stop();
   }
 
   // ── Provider switch: a persisted foreign model id must not brick old campaigns ──

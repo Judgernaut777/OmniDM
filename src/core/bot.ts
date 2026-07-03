@@ -87,7 +87,10 @@ export class Bot {
     const { publicText, privates } = splitFog(narration);
     if (publicText) await send({ channelId: session.channelId, text: publicText, speaker: 'Dungeon Master' });
     for (const p of privates) {
-      const player = Object.values(session.players).find((pl) => name(pl).toLowerCase() === p.characterName.toLowerCase());
+      // Latest matching join wins: seat re-claims (session-manager) keep names
+      // unique, but if they ever collide the most recent joiner is the live one
+      // — the first match could be a dead userId whose whisper goes nowhere.
+      const player = Object.values(session.players).reverse().find((pl) => name(pl).toLowerCase() === p.characterName.toLowerCase());
       if (!player) continue;
       await send({
         channelId: session.channelId,

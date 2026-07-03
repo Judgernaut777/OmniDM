@@ -73,20 +73,43 @@ export class SessionManager {
     await this.store.delete(this.key(msg));
   }
 
-  /** Add or update a player in the party. */
+  /**
+   * Add or update a player in the party. A join from a userId NOT yet in the
+   * party whose character name matches an existing member is a seat RE-CLAIM
+   * (the web adapter mints a fresh userId per connection, so a reconnect +
+   * `/dm join <name>` would otherwise leave a ghost entry that deadlocks
+   * round-robin and swallows fog whispers): the old entry migrates to the new
+   * userId in its original join-order slot, keeping hp/card and the turn
+   * pointer intact. A member already in the party renaming themselves never
+   * takes over someone else's seat.
+   */
   async join(session: GameSession, msg: IncomingMessage, characterName?: string): Promise<Player> {
-    const existing = session.players[msg.userId];
+    const prior = session.players[msg.userId] ?? (characterName ? this.reclaimable(session, characterName) : undefined);
     const player: Player = {
       userId: msg.userId,
       userName: msg.userName,
-      characterName: characterName ?? existing?.characterName,
-      hp: existing?.hp ?? 10,
-      maxHp: existing?.maxHp ?? 10,
-      card: existing?.card,
+      characterName: characterName ?? prior?.characterName,
+      hp: prior?.hp ?? 10,
+      maxHp: prior?.maxHp ?? 10,
+      card: prior?.card,
     };
-    session.players[msg.userId] = player;
+    if (prior && prior.userId !== msg.userId) {
+      // Re-key the migrated seat in place — join order (and with it the
+      // round-robin pointer) must not shift.
+      session.players = Object.fromEntries(
+        Object.entries(session.players).map(([k, p]): [string, Player] => (p === prior ? [msg.userId, player] : [k, p])),
+      );
+    } else {
+      session.players[msg.userId] = player;
+    }
     await this.save(session);
     return player;
+  }
+
+  /** The party member a fresh userId may re-claim by character name, if any. */
+  private reclaimable(session: GameSession, characterName: string): Player | undefined {
+    const wanted = characterName.toLowerCase();
+    return Object.values(session.players).find((p) => (p.characterName || p.userName).toLowerCase() === wanted);
   }
 
   isPlayer(session: GameSession, userId: string): boolean {

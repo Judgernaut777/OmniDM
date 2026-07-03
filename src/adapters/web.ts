@@ -13,6 +13,9 @@
  * `channelId` is a room code, so multiple parties can share one server; each
  * connection gets a fresh stable userId, and fog-of-war whispers
  * (`targetUserId`) go only to that user's socket(s), flagged `private:true`.
+ * After a reconnect, `/dm join <name>` re-claims the old party seat under the
+ * new userId (session-manager migrates the entry), so round-robin and
+ * whispers keep working.
  *
  * Binds to loopback by default ON PURPOSE: there is no TLS and (unless
  * WEB_PASSWORD is set) no auth. To expose it beyond localhost, put a reverse
@@ -20,7 +23,11 @@
  *
  * Robustness: malformed frames get an { type:'error' } reply, never a crash;
  * a closing socket leaves the roster; a per-connection rate limit
- * (RATE_LIMIT_PER_SEC) keeps one client from spamming the LLM.
+ * (RATE_LIMIT_PER_SEC) keeps one client from spamming the LLM. Abuse limits
+ * hold even against raw sockets: frames are size-capped (MAX_FRAME_BYTES),
+ * fields are length-capped server-side, connections are counted against a cap,
+ * a socket that never completes hello is reaped after a deadline, and a
+ * pre-hello frame flood drops the socket instead of being answered forever.
  */
 import { createServer, type IncomingMessage as HttpRequest, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -31,8 +38,16 @@ import { nanoid } from 'nanoid';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../core/types.js';
 
-/** Max `say` frames per connection per rolling second; excess gets an error frame. */
+/** Max `say` frames per joined connection per rolling second; excess gets an error frame. */
 export const RATE_LIMIT_PER_SEC = 5;
+/** Frames tolerated per rolling second from a socket that has not completed hello; excess drops it (replying would amplify a flood). */
+export const UNJOINED_FRAMES_PER_SEC = 10;
+/** Hard cap on any single WebSocket frame (`ws` maxPayload — its default is 100 MB). */
+export const MAX_FRAME_BYTES = 32 * 1024;
+/** Server-side field caps — the client's maxlength attributes are advisory only. */
+export const MAX_NAME_CHARS = 40;
+export const MAX_ROOM_CHARS = 64;
+export const MAX_TEXT_CHARS = 4000;
 
 const WEB_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'web');
 const MIME: Record<string, string> = {
@@ -65,6 +80,8 @@ export class WebAdapter implements PlatformAdapter {
     private readonly host = '127.0.0.1',
     private readonly configuredPort = 8787,
     private readonly password = '',
+    private readonly maxConnections = 128,
+    private readonly helloTimeoutMs = 10_000,
   ) {}
 
   /** The actual bound port — differs from the configured one when it was 0 (ephemeral). */
@@ -78,11 +95,19 @@ export class WebAdapter implements PlatformAdapter {
   }
 
   async start(): Promise<void> {
-    this.http = createServer((req, res) => void this.serveStatic(req, res));
-    this.wss = new WebSocketServer({ server: this.http, path: '/ws' });
+    this.http = createServer((req, res) => this.serveStatic(req, res).catch(() => res.destroy()));
+    this.wss = new WebSocketServer({ server: this.http, path: '/ws', maxPayload: MAX_FRAME_BYTES });
     this.wss.on('connection', (ws) => {
-      ws.on('message', (data) => this.onFrame(ws, String(data)));
-      ws.on('close', () => this.dropSeat(ws));
+      if (this.wss!.clients.size > this.maxConnections) {
+        this.error(ws, 'Server full — try again later.');
+        return ws.close();
+      }
+      // Reap a socket that never completes hello — it is bound by no seat-level
+      // limit and would otherwise be held open forever, for free.
+      const reaper = setTimeout(() => { if (!this.seats.has(ws)) ws.terminate(); }, this.helloTimeoutMs);
+      const preHello: number[] = []; // frame timestamps before a seat exists
+      ws.on('message', (data) => this.onFrame(ws, String(data), preHello));
+      ws.on('close', () => { clearTimeout(reaper); this.dropSeat(ws); });
       ws.on('error', () => ws.close());
     });
     await new Promise<void>((resolve, reject) => {
@@ -117,7 +142,14 @@ export class WebAdapter implements PlatformAdapter {
   }
 
   /** One inbound frame. Every failure mode answers with an error frame — never a crash. */
-  private onFrame(ws: WebSocket, raw: string): void {
+  private onFrame(ws: WebSocket, raw: string, preHello: number[]): void {
+    if (!this.seats.has(ws)) {
+      // No seat yet, so no seat-level rate limit applies: give un-joined
+      // sockets a small frame budget and drop them beyond it.
+      const now = Date.now();
+      while (preHello.length && now - preHello[0] >= 1000) preHello.shift();
+      if (preHello.push(now) > UNJOINED_FRAMES_PER_SEC) return ws.terminate();
+    }
     let frame: { type?: unknown; userName?: unknown; channelId?: unknown; password?: unknown; text?: unknown };
     try {
       frame = JSON.parse(raw);
@@ -138,6 +170,8 @@ export class WebAdapter implements PlatformAdapter {
     const userName = typeof frame.userName === 'string' ? frame.userName.trim() : '';
     const channelId = typeof frame.channelId === 'string' ? frame.channelId.trim() : '';
     if (!userName || !channelId) return this.error(ws, 'hello needs a non-empty userName and channelId.');
+    if (userName.length > MAX_NAME_CHARS || channelId.length > MAX_ROOM_CHARS)
+      return this.error(ws, `hello fields too long (userName ≤ ${MAX_NAME_CHARS}, channelId ≤ ${MAX_ROOM_CHARS} chars).`);
     if (this.seats.has(ws)) return this.error(ws, 'Already joined — one hello per connection.');
     const seat: Seat = { ws, userId: `web-${nanoid(8)}`, userName, channelId, saidAt: [] };
     this.seats.set(ws, seat);
@@ -151,6 +185,7 @@ export class WebAdapter implements PlatformAdapter {
     if (!seat) return this.error(ws, 'Say hello first: { type:"hello", userName, channelId }.');
     const text = typeof frame.text === 'string' ? frame.text.trim() : '';
     if (!text) return this.error(ws, 'say needs a non-empty text.');
+    if (text.length > MAX_TEXT_CHARS) return this.error(ws, `say text too long (max ${MAX_TEXT_CHARS} chars).`);
     const now = Date.now();
     seat.saidAt = seat.saidAt.filter((t) => now - t < 1000);
     if (seat.saidAt.length >= RATE_LIMIT_PER_SEC) return this.error(ws, 'Rate limit: slow down (5 messages/second).');
@@ -187,7 +222,12 @@ export class WebAdapter implements PlatformAdapter {
     if (req.method !== 'GET' && req.method !== 'HEAD') {
       return void res.writeHead(405, { Allow: 'GET, HEAD' }).end();
     }
-    const pathname = new URL(req.url ?? '/', 'http://x').pathname;
+    let pathname: string;
+    try {
+      pathname = new URL(req.url ?? '/', 'http://x').pathname;
+    } catch {
+      return void res.writeHead(400).end(); // Node's parser accepts request-targets WHATWG URL rejects (e.g. "//[")
+    }
     const file = path.normalize(path.join(WEB_ROOT, pathname === '/' ? 'index.html' : pathname));
     if (!file.startsWith(WEB_ROOT + path.sep)) return void res.writeHead(403).end();
     try {

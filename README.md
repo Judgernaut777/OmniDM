@@ -206,9 +206,11 @@ Shipped since the initial scaffold (newest first):
 
 - **Web adapter** — `npm run web`; serves a zero-build browser client plus a
   JSON-over-WebSocket protocol (the seam for desktop/mobile UIs); room codes
-  so multiple parties share one server, optional `WEB_PASSWORD`, per-connection
-  rate limit, loopback-only by default; fog-of-war whispers go only to the
-  target player's socket
+  so multiple parties share one server, optional `WEB_PASSWORD`, loopback-only
+  by default; abuse limits that hold against raw sockets (per-connection rate
+  limit, frame/field size caps, connection cap, hello deadline); fog-of-war
+  whispers go only to the target player's socket, and after a reconnect
+  `/dm join <name>` re-claims the old seat (HP, persona and turn slot intact)
 - **Mattermost adapter** — `npm run mattermost`; dependency-free (REST API v4 +
   events WebSocket); fog-of-war whispers via direct-message channels
 - **Matrix adapter** — `npm run matrix` (matrix-bot-sdk); fog-of-war whispers
