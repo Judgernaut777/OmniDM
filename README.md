@@ -81,6 +81,20 @@ same dropdown includes Claude, GPT, Gemini, and local models.
    `/dm new`. Fog-of-war whispers arrive as direct messages. No SDK needed —
    the adapter speaks REST API v4 and the events WebSocket directly.
 
+### Run in the browser
+
+1. `npm run web`, then open <http://127.0.0.1:8787>. No tokens needed.
+2. Pick a name and a **room code** — everyone who enters the same room code
+   shares one party, so multiple groups can play on one server.
+3. `/dm new`, as usual. Fog-of-war whispers appear only on the target player's
+   screen, marked as private.
+
+The server binds to loopback **on purpose**: there is no TLS and, unless you
+set `WEB_PASSWORD`, no auth. To let remote players in, put a reverse proxy
+with HTTPS and auth in front of it and set `WEB_HOST=0.0.0.0` deliberately.
+The bundled client (`web/index.html`) is a minimal reference UI — the adapter
+speaks a small JSON-over-WebSocket protocol that desktop/mobile UIs can reuse.
+
 ## Using whatever model you want
 
 Everything goes through one OpenAI-compatible endpoint, so you change backends by
@@ -152,6 +166,7 @@ adapters/        ← PlatformAdapter implementations (cli, discord, slack, matri
   slack.ts
   matrix.ts
   mattermost.ts
+  web.ts         ← browser seam: HTTP + WebSocket server (static client in web/)
 core/
   bot.ts         ← platform-agnostic router (commands + turns)
   types.ts       ← canonical Message / Session / Provider contracts
@@ -189,6 +204,11 @@ message-converter pattern as a pure function plus a thin fetch wrapper.
 
 Shipped since the initial scaffold (newest first):
 
+- **Web adapter** — `npm run web`; serves a zero-build browser client plus a
+  JSON-over-WebSocket protocol (the seam for desktop/mobile UIs); room codes
+  so multiple parties share one server, optional `WEB_PASSWORD`, per-connection
+  rate limit, loopback-only by default; fog-of-war whispers go only to the
+  target player's socket
 - **Mattermost adapter** — `npm run mattermost`; dependency-free (REST API v4 +
   events WebSocket); fog-of-war whispers via direct-message channels
 - **Matrix adapter** — `npm run matrix` (matrix-bot-sdk); fog-of-war whispers

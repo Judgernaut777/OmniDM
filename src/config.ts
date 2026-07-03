@@ -26,6 +26,13 @@ export interface Config {
     url: string;
     token: string;
   };
+  web: {
+    /** Bind address. Loopback by default — expose only behind a reverse proxy with auth. */
+    host: string;
+    port: number;
+    /** Optional shared password checked on the WebSocket hello; '' = open. */
+    password: string;
+  };
   dataDir: string;
 }
 
@@ -53,6 +60,11 @@ export function loadConfig(): Config {
     mattermost: {
       url: process.env.MATTERMOST_URL || '',
       token: process.env.MATTERMOST_TOKEN || '',
+    },
+    web: {
+      host: process.env.WEB_HOST || '127.0.0.1',
+      port: Number(process.env.WEB_PORT) || 8787,
+      password: process.env.WEB_PASSWORD || '',
     },
     dataDir: process.env.DATA_DIR || './data',
   };

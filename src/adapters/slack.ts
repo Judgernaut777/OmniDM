@@ -26,7 +26,10 @@ export class SlackAdapter implements PlatformAdapter {
         'SLACK_BOT_TOKEN and SLACK_APP_TOKEN must both be set for the Slack adapter (Socket Mode). See .env.example.',
       );
     }
-    this.app = new App({ token: botToken, appToken, socketMode: true, logLevel: LogLevel.WARN });
+    // deferInitialization keeps the constructor offline: without it, Bolt fires
+    // an auth.test immediately as a floating promise, and a bad token becomes an
+    // unhandled rejection that kills the process instead of failing in start().
+    this.app = new App({ token: botToken, appToken, socketMode: true, logLevel: LogLevel.WARN, deferInitialization: true });
   }
 
   onMessage(handler: (msg: IncomingMessage) => void | Promise<void>): void {
@@ -34,6 +37,7 @@ export class SlackAdapter implements PlatformAdapter {
   }
 
   async start(): Promise<void> {
+    await this.app.init(); // deferred from the constructor — a bad token fails here, loudly
     this.app.message(async ({ message }) => {
       // Plain user messages only — subtypes cover bot posts, edits, joins, etc.
       if (message.subtype !== undefined || !message.user || !message.text) return;

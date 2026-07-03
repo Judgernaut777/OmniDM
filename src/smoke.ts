@@ -6,9 +6,11 @@
  * (including malformed markers), round-robin turn integrity under concurrent
  * sends and mid-wrap joins, vector-memory recall (mixed backends, cap, compact
  * persistence), session-model migration across providers, campaign end, disk
- * persistence, the SessionStorage seam (a full scenario on MemoryStorage), and
+ * persistence, the SessionStorage seam (a full scenario on MemoryStorage),
  * the Slack, Matrix and Mattermost adapters' offline surface (module load +
- * config guard).
+ * config guard), and the web adapter end-to-end over loopback sockets on an
+ * ephemeral port (static client, hello/roster protocol, broadcast, fog
+ * whispers, password, malformed frames, rate limit).
  *
  * Run:  npx tsx src/smoke.ts
  */
@@ -31,6 +33,7 @@ import { OpenAICompatibleProvider } from './providers/openai-compatible.js';
 import { SlackAdapter } from './adapters/slack.js';
 import { MatrixAdapter } from './adapters/matrix.js';
 import { MattermostAdapter } from './adapters/mattermost.js';
+import { WebAdapter, RATE_LIMIT_PER_SEC } from './adapters/web.js';
 
 let failures = 0;
 function check(label: string, cond: boolean) {
@@ -53,6 +56,70 @@ class MockProvider implements LLMProvider {
   }
 }
 
+/** A JSON frame from the web adapter, loosely typed for assertions. */
+type Frame = { type: string; [k: string]: unknown };
+
+/**
+ * Test client for the web adapter, on Node 22's built-in (client) WebSocket.
+ * Frames queue up until consumed by `next(pred)`; `all` keeps every frame ever
+ * received so "this was NEVER delivered here" can be asserted.
+ */
+class WsClient {
+  readonly all: Frame[] = [];
+  private pending: Frame[] = [];
+  private waiter?: { pred: (f: Frame) => boolean; resolve: (f: Frame | undefined) => void };
+  private ws: WebSocket;
+
+  constructor(url: string) {
+    this.ws = new WebSocket(url);
+    this.ws.addEventListener('message', (ev) => {
+      const frame = JSON.parse(String(ev.data)) as Frame;
+      this.all.push(frame);
+      if (this.waiter?.pred(frame)) {
+        const w = this.waiter;
+        this.waiter = undefined;
+        w.resolve(frame);
+      } else {
+        this.pending.push(frame);
+      }
+    });
+  }
+
+  open(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.ws.addEventListener('open', () => resolve());
+      this.ws.addEventListener('error', () => reject(new Error('ws connect failed')));
+    });
+  }
+
+  send(frame: unknown): void {
+    this.ws.send(typeof frame === 'string' ? frame : JSON.stringify(frame));
+  }
+
+  /** The next frame matching `pred` (buffered or future); undefined on timeout. */
+  next(pred: (f: Frame) => boolean, timeoutMs = 3000): Promise<Frame | undefined> {
+    const i = this.pending.findIndex(pred);
+    if (i !== -1) return Promise.resolve(this.pending.splice(i, 1)[0]);
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => { this.waiter = undefined; resolve(undefined); }, timeoutMs);
+      this.waiter = { pred, resolve: (f) => { clearTimeout(timer); resolve(f); } };
+    });
+  }
+
+  /** True if any frame ever received here contains `text`. */
+  sawText(text: string): boolean {
+    return this.all.some((f) => typeof f.text === 'string' && f.text.includes(text));
+  }
+
+  closed(): Promise<void> {
+    return new Promise((resolve) => this.ws.addEventListener('close', () => resolve()));
+  }
+
+  close(): void {
+    this.ws.close();
+  }
+}
+
 async function main() {
   const dataDir = path.join('data', 'smoke');
   await fs.rm(dataDir, { recursive: true, force: true });
@@ -63,6 +130,7 @@ async function main() {
     slack: { botToken: '', appToken: '' },
     matrix: { homeserverUrl: '', accessToken: '' },
     mattermost: { url: '', token: '' },
+    web: { host: '127.0.0.1', port: 0, password: '' },
     dataDir,
   };
   const provider = new MockProvider();
@@ -545,6 +613,97 @@ async function main() {
     check('mattermost: adapter exposes the PlatformAdapter surface', mm.name === 'mattermost' &&
       typeof mm.start === 'function' && typeof mm.stop === 'function' &&
       typeof mm.send === 'function' && typeof mm.onMessage === 'function');
+  }
+
+  // ── Web adapter: real loopback round-trip on an ephemeral port ──
+  {
+    const webBot = new Bot(config, provider, new MemoryStorage());
+    const web = new WebAdapter('127.0.0.1', 0, 'hunter2'); // port 0 = ephemeral; password required
+    web.onMessage((m) => webBot.handle(m, (out) => web.send(out)));
+    await web.start();
+    const port = web.port;
+    check('web: server binds an ephemeral port', port > 0);
+    const url = `ws://127.0.0.1:${port}/ws`;
+
+    const page = await fetch(`http://127.0.0.1:${port}/`);
+    check('web: static client served at /', page.ok && (await page.text()).includes('OmniDM'));
+    check('web: missing static file is a 404, not a crash', (await fetch(`http://127.0.0.1:${port}/nope.js`)).status === 404);
+
+    const bad = new WsClient(url);
+    await bad.open();
+    bad.send({ type: 'hello', userName: 'Mallory', channelId: 'room1', password: 'wrong' });
+    const badErr = await bad.next((f) => f.type === 'error');
+    check('web: wrong password is rejected with an error frame', Boolean(badErr?.error && String(badErr.error).includes('password')));
+    await bad.closed(); // the server hangs up on a failed password — closed() resolving proves it
+
+    const a = new WsClient(url);
+    await a.open();
+    a.send({ type: 'hello', userName: 'Alice', channelId: 'room1', password: 'hunter2' });
+    const welcome = await a.next((f) => f.type === 'welcome');
+    check('web: hello is answered with a welcome carrying an assigned userId',
+      typeof welcome?.userId === 'string' && (welcome.userId as string).startsWith('web-'));
+    await a.next((f) => f.type === 'roster'); // consume the initial 1-user roster
+
+    const b = new WsClient(url);
+    await b.open();
+    b.send({ type: 'hello', userName: 'Bob', channelId: 'room1', password: 'hunter2' });
+    await b.next((f) => f.type === 'welcome');
+    const roster = await a.next((f) => f.type === 'roster');
+    check('web: a join broadcasts the updated roster to existing members',
+      Array.isArray(roster?.users) && (roster!.users as { userName: string }[]).map((u) => u.userName).join(',') === 'Alice,Bob');
+
+    a.send({ type: 'say', text: '/dm new' });
+    const newA = await a.next((f) => f.type === 'msg' && String(f.text).includes('new campaign'));
+    const newB = await b.next((f) => f.type === 'msg' && String(f.text).includes('new campaign'));
+    check('web: bot reply broadcasts to every client in the room', Boolean(newA) && Boolean(newB));
+    check('web: player lines are relayed to the room', b.sawText('/dm new'));
+
+    a.send({ type: 'say', text: '/dm join Thorin' });
+    await a.next((f) => f.type === 'msg' && String(f.text).includes('Thorin joins'));
+    b.send({ type: 'say', text: '/dm join Elaria' });
+    await b.next((f) => f.type === 'msg' && String(f.text).includes('Elaria joins'));
+    a.send({ type: 'say', text: '/dm fog on' });
+    await a.next((f) => f.type === 'msg' && String(f.text).includes('Fog of war ON'));
+
+    provider.narration = 'Torchlight flickers over the walls. [PRIVATE:Elaria]A hidden lever glints beside you.[/PRIVATE]';
+    await new Promise((r) => setTimeout(r, 1100)); // let the rate-limit window drain before the turn
+    a.send({ type: 'say', text: 'I scan the walls' });
+    const pubA = await a.next((f) => f.type === 'msg' && String(f.text).includes('Torchlight'));
+    const pubB = await b.next((f) => f.type === 'msg' && String(f.text).includes('Torchlight'));
+    check('web: public narration reaches both clients, unflagged', Boolean(pubA) && Boolean(pubB) && !pubA!.private && !pubB!.private);
+    const whisper = await b.next((f) => f.type === 'msg' && f.private === true);
+    check('web: fog whisper reaches its target flagged private', Boolean(whisper?.text && String(whisper.text).includes('hidden lever')));
+    a.send({ type: 'say', text: '/dm who' });
+    await a.next((f) => f.type === 'msg' && String(f.text).includes('party')); // per-socket FIFO: a misdelivered whisper would already be buffered
+    check("web: the whisper never reached the other client's socket", !a.sawText('hidden lever'));
+    provider.narration = 'The tavern falls silent as you act. (mock narration)';
+
+    const c = new WsClient(url);
+    await c.open();
+    c.send({ type: 'say', text: 'too eager' });
+    const early = await c.next((f) => f.type === 'error');
+    check('web: say before hello gets an error frame', Boolean(early?.error && String(early.error).includes('hello')));
+    c.send('this is not json {');
+    const malformed = await c.next((f) => f.type === 'error' && String(f.error).includes('JSON'));
+    check('web: malformed frame gets an error frame', Boolean(malformed));
+    c.send({ type: 'wibble' });
+    const unknown = await c.next((f) => f.type === 'error' && String(f.error).includes('Unknown frame type'));
+    check('web: unknown frame type gets an error frame — server still up', Boolean(unknown));
+
+    c.send({ type: 'hello', userName: 'Carl', channelId: 'spam', password: 'hunter2' });
+    await c.next((f) => f.type === 'welcome');
+    for (let i = 0; i <= RATE_LIMIT_PER_SEC; i++) c.send({ type: 'say', text: `spam ${i}` });
+    const limited = await c.next((f) => f.type === 'error' && String(f.error).includes('Rate limit'));
+    check(`web: message ${RATE_LIMIT_PER_SEC + 1} inside one second is rate-limited`, Boolean(limited));
+
+    b.close();
+    const shrunk = await a.next((f) => f.type === 'roster' && (f.users as unknown[]).length === 1);
+    check('web: a closing socket leaves the roster', (shrunk?.users as { userName: string }[])?.[0]?.userName === 'Alice');
+
+    a.close();
+    c.close();
+    await web.stop();
+    check('web: stop() releases the port', await fetch(`http://127.0.0.1:${port}/`).then(() => false, () => true));
   }
 
   // ── Provider switch: a persisted foreign model id must not brick old campaigns ──

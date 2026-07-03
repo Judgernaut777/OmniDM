@@ -1,0 +1,90 @@
+<!doctype html>
+<!-- OmniDM web client — a minimal reference UI for the web adapter's JSON-frame
+     protocol (see src/adapters/web.ts). One file, no build step, no deps. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OmniDM</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.5 system-ui, sans-serif; background: #14141c; color: #e8e6e3; height: 100vh; display: flex; flex-direction: column; }
+  header { padding: .6rem 1rem; background: #1d1d29; display: flex; gap: .75rem; align-items: baseline; }
+  header h1 { font-size: 1rem; margin: 0; } header span { color: #8a8896; font-size: .85rem; }
+  main { flex: 1; display: flex; min-height: 0; }
+  #log { flex: 1; overflow-y: auto; padding: 1rem; }
+  #roster { width: 12rem; border-left: 1px solid #2b2b3a; padding: 1rem; font-size: .85rem; color: #b9b7c4; overflow-y: auto; }
+  .line { margin: 0 0 .6rem; white-space: pre-wrap; }
+  .line b { color: #c8b273; }
+  .private { color: #9fc4e8; } .private::before { content: "🌫 "; }
+  .err { color: #e07a7a; } .sys { color: #8a8896; font-style: italic; }
+  form, #bar { display: flex; gap: .5rem; padding: .75rem 1rem; background: #1d1d29; }
+  input, button { font: inherit; border-radius: 6px; border: 1px solid #3a3a4d; background: #14141c; color: inherit; padding: .45rem .7rem; }
+  input:focus { outline: 1px solid #c8b273; } #say { flex: 1; }
+  button { background: #c8b273; color: #14141c; border: 0; cursor: pointer; font-weight: 600; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header><h1>🎲 OmniDM</h1><span id="status">not connected</span></header>
+<main>
+  <div id="log"></div>
+  <div id="roster"></div>
+</main>
+<form id="join">
+  <input id="name" placeholder="Your name" required>
+  <input id="room" placeholder="Room code" value="tavern" required>
+  <input id="pass" type="password" placeholder="Password (if set)">
+  <button>Join</button>
+</form>
+<div id="bar" hidden>
+  <input id="say" placeholder="What do you do? (/dm help for commands)" autocomplete="off">
+  <button id="send">Send</button>
+</div>
+<script>
+  const $ = (id) => document.getElementById(id);
+  let ws;
+
+  function line(text, cls, speaker) {
+    const p = document.createElement('p');
+    p.className = 'line' + (cls ? ' ' + cls : '');
+    if (speaker) { const b = document.createElement('b'); b.textContent = speaker + ': '; p.append(b); }
+    p.append(text);
+    $('log').append(p);
+    $('log').scrollTop = $('log').scrollHeight;
+  }
+
+  $('join').addEventListener('submit', (e) => {
+    e.preventDefault();
+    ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
+    ws.onopen = () => ws.send(JSON.stringify({ type: 'hello', userName: $('name').value, channelId: $('room').value, password: $('pass').value || undefined }));
+    ws.onclose = () => { $('status').textContent = 'disconnected'; $('bar').hidden = true; $('join').hidden = false; line('Disconnected.', 'sys'); };
+    ws.onmessage = (ev) => {
+      let f; try { f = JSON.parse(ev.data); } catch { return; }
+      if (f.type === 'welcome') {
+        $('status').textContent = `room "${f.channelId}"`;
+        $('join').hidden = true; $('bar').hidden = false; $('say').focus();
+        line('Joined. Start a campaign with /dm new, then /dm join <character name>.', 'sys');
+      } else if (f.type === 'msg') {
+        line(f.text, f.private ? 'private' : '', f.speaker);
+      } else if (f.type === 'roster') {
+        $('roster').innerHTML = '<b>In the room</b>';
+        for (const u of f.users) { const d = document.createElement('div'); d.textContent = '• ' + u.userName; $('roster').append(d); }
+      } else if (f.type === 'error') {
+        line(f.error, 'err');
+      }
+    };
+  });
+
+  function say() {
+    const text = $('say').value.trim();
+    if (!text || !ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type: 'say', text }));
+    $('say').value = '';
+  }
+  $('send').addEventListener('click', say);
+  $('say').addEventListener('keydown', (e) => { if (e.key === 'Enter') say(); });
+</script>
+</body>
+</html>

@@ -6,6 +6,7 @@
  *   npm run slack     → Slack adapter (needs SLACK_BOT_TOKEN + SLACK_APP_TOKEN)
  *   npm run matrix    → Matrix adapter (needs MATRIX_HOMESERVER_URL + MATRIX_ACCESS_TOKEN)
  *   npm run mattermost → Mattermost adapter (needs MATTERMOST_URL + MATTERMOST_TOKEN)
+ *   npm run web       → browser adapter (loopback HTTP + WebSocket, zero tokens)
  *
  * Adding a platform = writing one PlatformAdapter and adding a case below.
  */
@@ -18,6 +19,7 @@ import { DiscordAdapter } from './adapters/discord.js';
 import { SlackAdapter } from './adapters/slack.js';
 import { MatrixAdapter } from './adapters/matrix.js';
 import { MattermostAdapter } from './adapters/mattermost.js';
+import { WebAdapter } from './adapters/web.js';
 import type { PlatformAdapter } from './core/types.js';
 
 function pickAdapter(name: string, config: ReturnType<typeof loadConfig>): PlatformAdapter {
@@ -30,6 +32,8 @@ function pickAdapter(name: string, config: ReturnType<typeof loadConfig>): Platf
       return new MatrixAdapter(config.matrix.homeserverUrl, config.matrix.accessToken, config.dataDir);
     case 'mattermost':
       return new MattermostAdapter(config.mattermost.url, config.mattermost.token);
+    case 'web':
+      return new WebAdapter(config.web.host, config.web.port, config.web.password);
     case 'cli':
     default:
       return new CliAdapter();
