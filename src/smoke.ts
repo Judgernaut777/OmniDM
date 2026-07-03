@@ -38,7 +38,8 @@ import { OpenAICompatibleProvider } from './providers/openai-compatible.js';
 import { SlackAdapter } from './adapters/slack.js';
 import { MatrixAdapter } from './adapters/matrix.js';
 import { MattermostAdapter } from './adapters/mattermost.js';
-import { MAX_FRAME_BYTES, MAX_NAME_CHARS, MAX_TEXT_CHARS, RATE_LIMIT_PER_SEC, UNJOINED_FRAMES_PER_SEC, WebAdapter } from './adapters/web.js';
+import { MAX_FRAME_BYTES, MAX_NAME_CHARS, MAX_PORTRAIT_BYTES, MAX_TEXT_CHARS, RATE_LIMIT_PER_SEC, UNJOINED_FRAMES_PER_SEC, WebAdapter } from './adapters/web.js';
+import { PORTRAIT_PRESETS } from './core/portraits.js';
 
 let failures = 0;
 function check(label: string, cond: boolean) {
@@ -406,6 +407,9 @@ async function main() {
   const savedSession = JSON.parse(await fs.readFile(path.join(dataDir, sessionFile!), 'utf8'));
   check('persistence: persona card saved on the player', savedSession.players.u1?.card?.name === 'Zara');
   check('persistence: NPC cards saved on the session', savedSession.npcs?.length === 2 && savedSession.npcs[0].name === 'Grimble');
+  check('portrait: PNG card import keeps the embedded image bytes as the card portrait',
+    savedSession.npcs?.some((n: { name: string; portrait?: { kind: string; mime: string; data: string } }) =>
+      n.name === 'Vex' && n.portrait?.kind === 'image' && n.portrait?.mime === 'image/png' && typeof n.portrait?.data === 'string' && n.portrait.data.length > 0));
 
   // ── Lorebook / world info ──
   out.length = 0;
@@ -473,6 +477,30 @@ async function main() {
   const bigPath = path.join(dataDir, 'big.card.json');
   await fs.writeFile(bigPath, Buffer.alloc(MAX_CARD_BYTES + 1, 0x7b));
   check('import: oversized card file is refused', await rejects(bigPath));
+
+  // ── Portraits: /dm portrait preset catalog + player descriptor ──
+  {
+    const pFrom = (userId: string, userName: string, text: string) => from(userId, userName, text, 'portraits');
+    await bot.handle(pFrom('u1', 'Alice', '/dm new'), send);
+    await bot.handle(pFrom('u1', 'Alice', '/dm join Thorin'), send);
+    out.length = 0;
+    await bot.handle(pFrom('u1', 'Alice', '/dm portrait'), send);
+    check('portrait: bare command lists the preset ids', PORTRAIT_PRESETS.every((id) => out.at(-1)!.text.includes(id)));
+    out.length = 0;
+    await bot.handle(pFrom('u1', 'Alice', '/dm portrait not-a-class'), send);
+    check('portrait: unknown preset id is rejected', out.at(-1)!.text.includes('Unknown preset'));
+    out.length = 0;
+    await bot.handle(pFrom('u2', 'Bob', '/dm portrait fighter'), send);
+    check('portrait: a spectator (non-player) cannot set a portrait', out.at(-1)!.text.includes('Join first'));
+    out.length = 0;
+    await bot.handle(pFrom('u1', 'Alice', '/dm portrait fighter'), send);
+    check('portrait: preset command confirms it is set', out.at(-1)!.text.toLowerCase().includes('fighter'));
+    const pSaved = await new NodeFileStorage(dataDir).load('cli:portraits');
+    check('portrait: preset stored on the player as a {kind:preset,id} descriptor',
+      pSaved?.players.u1?.portrait?.kind === 'preset' &&
+      (pSaved!.players.u1!.portrait as { id: string }).id === 'fighter');
+    check('portrait: setting a preset does not disturb other players', pSaved?.players.u2 === undefined);
+  }
 
   // ── Fog of war: per-player private narration (fresh channel) ──
   const fogFrom = (userId: string, userName: string, text: string) => from(userId, userName, text, 'chan2');
@@ -684,8 +712,9 @@ async function main() {
 
   // ── Web adapter: real loopback round-trip on an ephemeral port ──
   {
-    const webBot = new Bot(config, provider, new MemoryStorage());
-    const web = new WebAdapter('127.0.0.1', 0, 'hunter2'); // port 0 = ephemeral; password required
+    const webStorage = new MemoryStorage();
+    const webBot = new Bot(config, provider, webStorage);
+    const web = new WebAdapter('127.0.0.1', 0, 'hunter2', undefined, undefined, webStorage); // port 0 = ephemeral; password required; shares the bot's storage
     web.onMessage((m) => webBot.handle(m, (out) => web.send(out)));
     await web.start();
     const port = web.port;
@@ -746,12 +775,14 @@ async function main() {
     const welcome = await a.next((f) => f.type === 'welcome');
     check('web: hello is answered with a welcome carrying an assigned userId',
       typeof welcome?.userId === 'string' && (welcome.userId as string).startsWith('web-'));
+    const aliceId = welcome!.userId as string;
     await a.next((f) => f.type === 'roster'); // consume the initial 1-user roster
 
     const b = new WsClient(url);
     await b.open();
     b.send({ type: 'hello', userName: 'Bob', channelId: 'room1', password: 'hunter2' });
-    await b.next((f) => f.type === 'welcome');
+    const bWelcome = await b.next((f) => f.type === 'welcome');
+    const bobId = bWelcome!.userId as string;
     const roster = await a.next((f) => f.type === 'roster');
     check('web: a join broadcasts the updated roster to existing members',
       Array.isArray(roster?.users) && (roster!.users as { userName: string }[]).map((u) => u.userName).join(',') === 'Alice,Bob');
@@ -781,6 +812,63 @@ async function main() {
     await a.next((f) => f.type === 'msg' && String(f.text).includes('party')); // per-socket FIFO: a misdelivered whisper would already be buffered
     check("web: the whisper never reached the other client's socket", !a.sawText('hidden lever'));
     provider.narration = 'The tavern falls silent as you act. (mock narration)';
+
+    // ── Portraits over the web protocol: enriched roster + HTTP upload/serve ──
+    type RosterUser = { userId: string; userName: string; characterName?: string; portrait?: { kind?: string; id?: string; url?: string; data?: string } | null };
+    await new Promise((r) => setTimeout(r, 1100)); // drain the rate-limit window
+    a.send({ type: 'say', text: '/dm portrait ranger' });
+    const presetRoster = await a.next(
+      (f) => f.type === 'roster' && (f.users as RosterUser[]).some((u) => u.userName === 'Alice' && u.portrait?.kind === 'preset'),
+    );
+    const aliceSeat = (presetRoster?.users as RosterUser[] | undefined)?.find((u) => u.userName === 'Alice');
+    check('web: enriched roster carries the character name and a preset portrait descriptor',
+      aliceSeat?.characterName === 'Thorin' && aliceSeat?.portrait?.kind === 'preset' && aliceSeat?.portrait?.id === 'ranger');
+
+    // POST an image upload (with the room password), then GET it back byte-for-byte.
+    const upBody = Buffer.from('\x89PNG\r\n\x1a\nMOCK-PORTRAIT-BYTES', 'latin1');
+    const upRes = await fetch(`http://127.0.0.1:${port}/portrait/room1/${aliceId}?password=hunter2`, {
+      method: 'POST', headers: { 'Content-Type': 'image/png' }, body: upBody,
+    });
+    check('web: POST /portrait accepts an image upload carrying the room password', upRes.ok);
+    const getRes = await fetch(`http://127.0.0.1:${port}/portrait/room1/${aliceId}`);
+    const gotBytes = Buffer.from(await getRes.arrayBuffer());
+    check('web: GET /portrait round-trips the uploaded bytes with an image content-type',
+      getRes.ok && (getRes.headers.get('content-type') ?? '').startsWith('image/') && gotBytes.equals(upBody));
+
+    const noPw = await fetch(`http://127.0.0.1:${port}/portrait/room1/${aliceId}`, {
+      method: 'POST', headers: { 'Content-Type': 'image/png' }, body: upBody,
+    });
+    check('web: POST /portrait without the room password is refused', noPw.status === 401);
+    const badType = await fetch(`http://127.0.0.1:${port}/portrait/room1/${aliceId}?password=hunter2`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    });
+    check('web: POST /portrait rejects a non-image content-type', badType.status === 415);
+    const tooBig = await fetch(`http://127.0.0.1:${port}/portrait/room1/${aliceId}?password=hunter2`, {
+      method: 'POST', headers: { 'Content-Type': 'image/png' }, body: Buffer.alloc(MAX_PORTRAIT_BYTES + 1, 0x61),
+    });
+    check('web: POST /portrait rejects an oversize upload', tooBig.status === 413);
+    const missing = await fetch(`http://127.0.0.1:${port}/portrait/room1/web-nobody`);
+    check('web: GET /portrait for a user with no portrait is a 404', missing.status === 404);
+
+    // A card import over the web: the embedded PNG becomes Bob's portrait,
+    // referenced by URL in the roster and served (bytes) over HTTP — never a WS frame.
+    await new Promise((r) => setTimeout(r, 1100));
+    b.send({ type: 'say', text: `/dm import ${pngPath}` });
+    await b.next((f) => f.type === 'msg' && String(f.text).includes('Vex'));
+    const imgRoster = await b.next(
+      (f) => f.type === 'roster' && (f.users as RosterUser[]).some((u) => u.userName === 'Bob' && u.portrait?.kind === 'image'),
+    );
+    const bobSeat = (imgRoster?.users as RosterUser[] | undefined)?.find((u) => u.userName === 'Bob');
+    check('web: enriched roster references a card image portrait by URL, never inline bytes',
+      bobSeat?.portrait?.kind === 'image' && typeof bobSeat.portrait.url === 'string' &&
+      bobSeat.portrait.url.includes(`/portrait/room1/${bobId}`) && bobSeat.portrait.data === undefined &&
+      JSON.stringify(imgRoster).length < MAX_FRAME_BYTES);
+    const cardImg = await fetch(`http://127.0.0.1:${port}/portrait/room1/${bobId}`);
+    const cardBytes = Buffer.from(await cardImg.arrayBuffer());
+    const PNG_SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    check('web: GET /portrait serves an imported card image (PNG bytes, image content-type)',
+      cardImg.ok && (cardImg.headers.get('content-type') ?? '').startsWith('image/') &&
+      cardBytes.length > 8 && cardBytes.subarray(0, 8).equals(PNG_SIG));
 
     const c = new WsClient(url);
     await c.open();
@@ -919,6 +1007,21 @@ async function main() {
   check('legacy: pre-lorebook session defaults to an empty lorebook', Array.isArray(legacy?.lorebook) && legacy!.lorebook.length === 0);
   check('legacy: pre-fog session defaults to fog of war off', legacy?.fogOfWar === false);
   check('legacy: pre-memory session defaults to no memory records', Array.isArray(legacy?.memories) && legacy!.memories.length === 0);
+
+  // A pre-portrait session with a seated player and an NPC card: both must load
+  // with their portraits simply absent (the fields are optional / absent-safe).
+  await fs.writeFile(
+    path.join(dataDir, 'session_cli_oldp.json'),
+    JSON.stringify({
+      id: 'oldp', platform: 'cli', channelId: 'oldp', systemId: 'dnd5e', model: 'mock/free-model',
+      players: { u1: { userId: 'u1', userName: 'Alice', characterName: 'Thorin', hp: 10, maxHp: 10 } },
+      npcs: [{ specVersion: '2.0', name: 'Grim' }], history: [], summary: '', createdAt: 1,
+    }),
+    'utf8',
+  );
+  const oldp = await store.load('cli:oldp');
+  check('legacy: pre-portrait session loads; player & NPC portraits default to absent',
+    oldp?.players.u1?.characterName === 'Thorin' && oldp!.players.u1!.portrait === undefined && oldp!.npcs[0]?.portrait === undefined);
 
   await fs.rm(dataDir, { recursive: true, force: true });
   console.log(`\n${failures === 0 ? '🎉 all checks passed' : `💥 ${failures} check(s) failed`}`);

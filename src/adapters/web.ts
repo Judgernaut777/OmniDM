@@ -36,7 +36,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { nanoid } from 'nanoid';
 import { WebSocketServer, type WebSocket } from 'ws';
-import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../core/types.js';
+import type { GameSession, IncomingMessage, OutgoingMessage, PlatformAdapter, Player } from '../core/types.js';
+import type { Portrait } from '../core/cards/card.js';
+import type { SessionStorage } from '../core/session/storage.js';
 
 /** Max `say` frames per joined connection per rolling second; excess gets an error frame. */
 export const RATE_LIMIT_PER_SEC = 5;
@@ -48,6 +50,12 @@ export const MAX_FRAME_BYTES = 32 * 1024;
 export const MAX_NAME_CHARS = 40;
 export const MAX_ROOM_CHARS = 64;
 export const MAX_TEXT_CHARS = 4000;
+/** Upload cap for POST /portrait — portraits are small; bytes go over HTTP, never a WS frame. */
+export const MAX_PORTRAIT_BYTES = 256 * 1024;
+/** Web userIds are `web-<nanoid>` (~12 chars); bound the path component anyway. */
+export const MAX_USER_CHARS = 128;
+/** Per-seat card summary length in the enriched roster — keep the frame well under the cap. */
+export const MAX_CARD_SUMMARY_CHARS = 240;
 
 const WEB_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'web');
 const MIME: Record<string, string> = {
@@ -75,6 +83,8 @@ export class WebAdapter implements PlatformAdapter {
   private http?: Server;
   private wss?: WebSocketServer;
   private seats = new Map<WebSocket, Seat>();
+  /** In-memory portrait uploads, keyed by channel+user. Bytes never touch a WS frame. */
+  private uploads = new Map<string, { mime: string; bytes: Buffer }>();
 
   constructor(
     private readonly host = '127.0.0.1',
@@ -82,6 +92,13 @@ export class WebAdapter implements PlatformAdapter {
     private readonly password = '',
     private readonly maxConnections = 128,
     private readonly helloTimeoutMs = 10_000,
+    /**
+     * Shared session storage — the SAME instance the Bot uses, so the adapter
+     * can enrich the roster with each seat's character/portrait and serve
+     * card-embedded portrait bytes. Omitted in bot-less tests; roster then
+     * carries names only and card portraits 404.
+     */
+    private readonly storage?: SessionStorage,
   ) {}
 
   /** The actual bound port — differs from the configured one when it was 0 (ephemeral). */
@@ -95,7 +112,7 @@ export class WebAdapter implements PlatformAdapter {
   }
 
   async start(): Promise<void> {
-    this.http = createServer((req, res) => this.serveStatic(req, res).catch(() => res.destroy()));
+    this.http = createServer((req, res) => this.route(req, res).catch(() => res.destroy()));
     this.wss = new WebSocketServer({ server: this.http, path: '/ws', maxPayload: MAX_FRAME_BYTES });
     this.wss.on('connection', (ws) => {
       if (this.wss!.clients.size > this.maxConnections) {
@@ -176,7 +193,7 @@ export class WebAdapter implements PlatformAdapter {
     const seat: Seat = { ws, userId: `web-${nanoid(8)}`, userName, channelId, saidAt: [] };
     this.seats.set(ws, seat);
     ws.send(JSON.stringify({ type: 'welcome', userId: seat.userId, channelId }));
-    this.broadcastRoster(channelId);
+    void this.broadcastRoster(channelId);
   }
 
   /** A chat line: rate-limit, relay to the room, hand to the bot core. */
@@ -196,7 +213,11 @@ export class WebAdapter implements PlatformAdapter {
     for (const s of this.seats.values()) if (s.channelId === seat.channelId) s.ws.send(relay);
     Promise.resolve(
       this.handler?.({ platform: 'web', channelId: seat.channelId, userId: seat.userId, userName: seat.userName, text }),
-    ).catch((err) => console.error('[web] message handling failed:', (err as Error)?.message ?? err));
+    )
+      .catch((err) => console.error('[web] message handling failed:', (err as Error)?.message ?? err))
+      // The line may have changed character/portrait/persona state (a `/dm`
+      // command or an action); refresh the enriched roster from storage.
+      .finally(() => void this.broadcastRoster(seat.channelId));
   }
 
   /** Remove a closed socket's seat and re-announce its room's roster. */
@@ -204,29 +225,181 @@ export class WebAdapter implements PlatformAdapter {
     const seat = this.seats.get(ws);
     if (!seat) return;
     this.seats.delete(ws);
-    this.broadcastRoster(seat.channelId);
+    void this.broadcastRoster(seat.channelId);
   }
 
-  private broadcastRoster(channelId: string): void {
+  /**
+   * Announce a room's membership, enriched from the shared session: each seat
+   * carries its character name, a portrait DESCRIPTOR (preset id, or an image
+   * referenced by /portrait URL — never inline bytes, to respect the frame
+   * cap), and a bounded card summary when a persona is imported.
+   */
+  private async broadcastRoster(channelId: string): Promise<void> {
     const inRoom = [...this.seats.values()].filter((s) => s.channelId === channelId);
-    const frame = JSON.stringify({ type: 'roster', users: inRoom.map((s) => ({ userId: s.userId, userName: s.userName })) });
+    if (!inRoom.length) return;
+    const session = (await this.storage?.load(sessionKey(channelId)).catch(() => null)) ?? null;
+    const users = inRoom.map((s) => this.describeSeat(s, session));
+    const frame = JSON.stringify({ type: 'roster', users });
     for (const s of inRoom) s.ws.send(frame);
+  }
+
+  /** One roster entry: identity + character + portrait descriptor + bounded card summary. */
+  private describeSeat(seat: Seat, session: GameSession | null): Record<string, unknown> {
+    const player = session?.players?.[seat.userId];
+    const card = player?.card;
+    return {
+      userId: seat.userId,
+      userName: seat.userName,
+      characterName: player?.characterName,
+      portrait: this.portraitDescriptor(seat.channelId, seat.userId, player),
+      ...(card
+        ? {
+            card: {
+              name: card.name,
+              description: clampText(card.description || card.personality || '', MAX_CARD_SUMMARY_CHARS),
+            },
+          }
+        : {}),
+    };
+  }
+
+  /** The portrait descriptor for the roster: an upload wins, then the player/card portrait. */
+  private portraitDescriptor(
+    channelId: string,
+    userId: string,
+    player: Player | undefined,
+  ): { kind: 'preset'; id: string } | { kind: 'image'; url: string } | null {
+    if (this.uploads.has(uploadKey(channelId, userId))) return { kind: 'image', url: portraitUrl(channelId, userId) };
+    const p = player ? effectivePortrait(player) : undefined;
+    if (p?.kind === 'preset') return { kind: 'preset', id: p.id };
+    if (p?.kind === 'image') return { kind: 'image', url: portraitUrl(channelId, userId) };
+    return null;
   }
 
   private error(ws: WebSocket, error: string): void {
     ws.send(JSON.stringify({ type: 'error', error }));
   }
 
-  /** Serve the static client from web/ — GET/HEAD only, no path traversal. */
-  private async serveStatic(req: HttpRequest, res: ServerResponse): Promise<void> {
-    if (req.method !== 'GET' && req.method !== 'HEAD') {
-      return void res.writeHead(405, { Allow: 'GET, HEAD' }).end();
-    }
+  /** Route an HTTP request: /portrait/* endpoints, else the static client. */
+  private async route(req: HttpRequest, res: ServerResponse): Promise<void> {
     let pathname: string;
     try {
       pathname = new URL(req.url ?? '/', 'http://x').pathname;
     } catch {
       return void res.writeHead(400).end(); // Node's parser accepts request-targets WHATWG URL rejects (e.g. "//[")
+    }
+    if (pathname === '/portrait' || pathname.startsWith('/portrait/')) return this.handlePortrait(req, res, pathname);
+    return this.serveStatic(req, res, pathname);
+  }
+
+  /**
+   * Portrait endpoint. GET/HEAD serves a user's portrait image bytes (upload,
+   * else a card-embedded image); POST accepts an image upload to set it.
+   *   /portrait/<channelId>/<userId>
+   * Path components are decoded and guarded (no separators/NUL, bounded): they
+   * key an in-memory store and a channel-scoped session lookup, so a `..` or a
+   * mismatched userId can't traverse the disk or leak another room's portrait.
+   */
+  private async handlePortrait(req: HttpRequest, res: ServerResponse, pathname: string): Promise<void> {
+    const segs = pathname.split('/').filter((s) => s.length > 0); // ['portrait', channelId, userId]
+    if (segs.length !== 3) return void res.writeHead(404, { 'Content-Type': 'text/plain' }).end('Not found');
+    let channelId: string;
+    let userId: string;
+    try {
+      channelId = decodeURIComponent(segs[1]);
+      userId = decodeURIComponent(segs[2]);
+    } catch {
+      return void res.writeHead(400).end();
+    }
+    if (!validPathId(channelId, MAX_ROOM_CHARS) || !validPathId(userId, MAX_USER_CHARS))
+      return void res.writeHead(404, { 'Content-Type': 'text/plain' }).end('Not found');
+    if (req.method === 'GET' || req.method === 'HEAD') return this.getPortrait(req, res, channelId, userId);
+    if (req.method === 'POST') return this.postPortrait(req, res, channelId, userId);
+    return void res.writeHead(405, { Allow: 'GET, HEAD, POST' }).end();
+  }
+
+  /** Serve a user's portrait bytes with an image content-type, or 404. */
+  private async getPortrait(req: HttpRequest, res: ServerResponse, channelId: string, userId: string): Promise<void> {
+    const img = await this.resolvePortrait(channelId, userId);
+    if (!img) return void res.writeHead(404, { 'Content-Type': 'text/plain' }).end('No portrait');
+    res.writeHead(200, {
+      'Content-Type': img.mime,
+      'Content-Length': String(img.bytes.length),
+      'Cache-Control': 'no-store',
+    });
+    res.end(req.method === 'HEAD' ? undefined : img.bytes);
+  }
+
+  /** An uploaded portrait wins; otherwise the player's/card's stored image bytes. */
+  private async resolvePortrait(channelId: string, userId: string): Promise<{ mime: string; bytes: Buffer } | null> {
+    const up = this.uploads.get(uploadKey(channelId, userId));
+    if (up) return up;
+    const session = (await this.storage?.load(sessionKey(channelId)).catch(() => null)) ?? null;
+    const p = session?.players?.[userId] && effectivePortrait(session.players[userId]);
+    if (p?.kind === 'image') {
+      try {
+        const bytes = Buffer.from(p.data, 'base64');
+        if (bytes.length) return { mime: p.mime || 'application/octet-stream', bytes };
+      } catch {
+        /* fall through to 404 */
+      }
+    }
+    return null;
+  }
+
+  /** Accept an `image/*` upload (size-capped; password-gated when the room has one). */
+  private async postPortrait(req: HttpRequest, res: ServerResponse, channelId: string, userId: string): Promise<void> {
+    if (this.password && !this.uploadAuthorized(req)) {
+      return void res.writeHead(401, { 'Content-Type': 'text/plain' }).end('Unauthorized');
+    }
+    const contentType = String(req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase();
+    if (!contentType.startsWith('image/') || contentType === 'image/') {
+      return void res.writeHead(415, { 'Content-Type': 'text/plain' }).end('Content-Type must be image/*');
+    }
+    const declared = Number(req.headers['content-length']);
+    if (Number.isFinite(declared) && declared > MAX_PORTRAIT_BYTES) {
+      res.writeHead(413, { 'Content-Type': 'text/plain' }).end('Portrait too large');
+      return void req.resume(); // discard the incoming body so the socket closes cleanly
+    }
+    const chunks: Buffer[] = [];
+    let total = 0;
+    let over = false;
+    for await (const chunk of req) {
+      const b = chunk as Buffer;
+      total += b.length;
+      if (over) continue; // keep draining, stop buffering
+      if (total > MAX_PORTRAIT_BYTES) {
+        over = true;
+        chunks.length = 0;
+        continue;
+      }
+      chunks.push(b);
+    }
+    if (over) return void res.writeHead(413, { 'Content-Type': 'text/plain' }).end('Portrait too large');
+    const bytes = Buffer.concat(chunks);
+    if (!bytes.length) return void res.writeHead(400, { 'Content-Type': 'text/plain' }).end('Empty body');
+    this.uploads.set(uploadKey(channelId, userId), { mime: contentType, bytes });
+    res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true, url: portraitUrl(channelId, userId) }));
+    void this.broadcastRoster(channelId); // clients pick up the new portrait
+  }
+
+  /** Room-password check for uploads: `?password=` query or `x-web-password` header. */
+  private uploadAuthorized(req: HttpRequest): boolean {
+    let query = '';
+    try {
+      query = new URL(req.url ?? '/', 'http://x').searchParams.get('password') ?? '';
+    } catch {
+      query = '';
+    }
+    const header = req.headers['x-web-password'];
+    const given = (typeof header === 'string' && header) || query || '';
+    return given === this.password;
+  }
+
+  /** Serve the static client from web/ — GET/HEAD only, no path traversal. */
+  private async serveStatic(req: HttpRequest, res: ServerResponse, pathname: string): Promise<void> {
+    if (req.method !== 'GET' && req.method !== 'HEAD') {
+      return void res.writeHead(405, { Allow: 'GET, HEAD' }).end();
     }
     const file = path.normalize(path.join(WEB_ROOT, pathname === '/' ? 'index.html' : pathname));
     if (!file.startsWith(WEB_ROOT + path.sep)) return void res.writeHead(403).end();
@@ -239,3 +412,22 @@ export class WebAdapter implements PlatformAdapter {
     }
   }
 }
+
+/** Storage key for a web room — the web adapter's platform is always 'web'. */
+const sessionKey = (channelId: string) => `web:${channelId}`;
+
+/** In-memory upload key — NUL-joined so it can't collide with real ids. */
+const uploadKey = (channelId: string, userId: string) => `${channelId} ${userId}`;
+
+/** The same-origin URL a portrait is served from (components percent-encoded). */
+const portraitUrl = (channelId: string, userId: string) =>
+  `/portrait/${encodeURIComponent(channelId)}/${encodeURIComponent(userId)}`;
+
+/** A player's live portrait: their own overrides the imported card's. */
+const effectivePortrait = (player: Player): Portrait | undefined => player.portrait ?? player.card?.portrait;
+
+/** A path component safe to key stores/lookups: non-empty, bounded, no separators/NUL. */
+const validPathId = (v: string, max: number): boolean => v.length > 0 && v.length <= max && !/[/\\\0]/.test(v);
+
+/** Clip untrusted card text so an enriched roster frame stays small. */
+const clampText = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n)}…` : s);

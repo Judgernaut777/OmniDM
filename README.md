@@ -128,6 +128,8 @@ for their own usage. Local models are free.
 /dm pass                skip your turn (round-robin)
 /dm fog <on|off>        per-player fog of war: the DM can whisper private
                         details to one character (default off)
+/dm portrait [<preset>] set your portrait to a preset archetype (no arg lists
+                        them); upload your own picture in the browser
 /dm import <src>        import a Character Card V2/V3 (JSON or PNG, path or URL)
 /dm lore add <name> | <keywords> | <content>
                         add world info, injected when a keyword comes up

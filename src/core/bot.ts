@@ -14,6 +14,7 @@ import { loadCard } from './cards/card.js';
 import { findEntry, importCardBook, makeEntry } from './lore/lorebook.js';
 import { splitFog } from './narrator/fog.js';
 import { TurnPipeline } from './engine/turn-pipeline.js';
+import { normalizePresetId, PORTRAIT_PRESETS } from './portraits.js';
 
 type Send = (msg: OutgoingMessage) => Promise<void>;
 
@@ -239,6 +240,26 @@ export class Bot {
         return reply(`🔄 Round-robin mode — players act in join order.${current ? ` It's ${name(current)}'s turn.` : ''}`);
       }
 
+      case 'portrait': {
+        // Listing needs no game; setting one requires a seat (portraits live on
+        // the Player). Image uploads happen out-of-band over HTTP (web adapter).
+        if (!rest) {
+          return reply(
+            `🖼️ **Portrait presets:** ${PORTRAIT_PRESETS.join(', ')}\n` +
+              `Set yours with \`/dm portrait <id>\` (e.g. \`/dm portrait fighter\`), or upload your own picture in the browser.`,
+          );
+        }
+        const session = await this.sessions.get(msg);
+        if (!session) return reply('No game here yet — `/dm new` first.');
+        if (!this.sessions.isPlayer(session, msg.userId))
+          return reply('Join first with `/dm join <name>` to set your portrait.');
+        const id = normalizePresetId(rest);
+        if (!id) return reply(`Unknown preset \`${rest}\`. Choose one of: ${PORTRAIT_PRESETS.join(', ')}.`);
+        session.players[msg.userId].portrait = { kind: 'preset', id };
+        await this.sessions.save(session);
+        return reply(`🖼️ Portrait set to the **${id}** preset.`);
+      }
+
       case 'fog': {
         const session = await this.sessions.get(msg);
         if (!session) return reply('No game here yet — `/dm new` first.');
@@ -298,6 +319,7 @@ const HELP = `**OmniDM — commands**
 \`/dm turn\` — show whose turn it is (round-robin)
 \`/dm fog <on|off>\` — per-player fog of war: the DM can whisper private details to one character
 \`/dm pass\` — skip your turn (round-robin)
+\`/dm portrait [<preset>]\` — set your portrait to a preset archetype (no arg lists them); upload your own picture in the browser
 \`/dm import <file-or-URL>\` — import a Character Card V2/V3 (JSON or PNG): your persona if joined, an NPC otherwise
 \`/dm lore add <name> | <keywords> | <content>\` — world info, injected when a keyword comes up (also \`list\`, \`remove <id-or-name>\`)
 \`/dm models [filter]\` — list models you can use (🆓 = free)

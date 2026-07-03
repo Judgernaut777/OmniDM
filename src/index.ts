@@ -22,7 +22,11 @@ import { MattermostAdapter } from './adapters/mattermost.js';
 import { WebAdapter } from './adapters/web.js';
 import type { PlatformAdapter } from './core/types.js';
 
-function pickAdapter(name: string, config: ReturnType<typeof loadConfig>): PlatformAdapter {
+function pickAdapter(
+  name: string,
+  config: ReturnType<typeof loadConfig>,
+  storage: NodeFileStorage,
+): PlatformAdapter {
   switch (name) {
     case 'discord':
       return new DiscordAdapter(config.discord.token);
@@ -33,7 +37,9 @@ function pickAdapter(name: string, config: ReturnType<typeof loadConfig>): Platf
     case 'mattermost':
       return new MattermostAdapter(config.mattermost.url, config.mattermost.token);
     case 'web':
-      return new WebAdapter(config.web.host, config.web.port, config.web.password);
+      // Share the Bot's storage so the adapter can enrich the roster and serve
+      // card portraits from the same live session state.
+      return new WebAdapter(config.web.host, config.web.port, config.web.password, undefined, undefined, storage);
     case 'cli':
     default:
       return new CliAdapter();
@@ -54,8 +60,9 @@ async function main() {
   }
 
   const provider = createProvider(config);
-  const bot = new Bot(config, provider, new NodeFileStorage(config.dataDir));
-  const adapter = pickAdapter(adapterArg, config);
+  const storage = new NodeFileStorage(config.dataDir);
+  const bot = new Bot(config, provider, storage);
+  const adapter = pickAdapter(adapterArg, config, storage);
 
   adapter.onMessage((msg) => bot.handle(msg, (out) => adapter.send(out)));
 

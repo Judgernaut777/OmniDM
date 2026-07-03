@@ -20,6 +20,17 @@ import { inflateSync } from 'node:zlib';
 /** Cards are small; anything bigger is a mistake or an attack. */
 export const MAX_CARD_BYTES = 2 * 1024 * 1024;
 
+/**
+ * A character portrait: EITHER a preset archetype id (the server stores only
+ * the id; the art is rendered client-side) OR stored image bytes (from a card
+ * PNG's embedded art, or a player upload). Image bytes are base64-encoded so
+ * they serialize into the session JSON; they are served over HTTP by the web
+ * adapter, NEVER inlined into a WebSocket frame (the 32KB frame cap).
+ */
+export type Portrait =
+  | { kind: 'preset'; id: string }
+  | { kind: 'image'; mime: string; data: string };
+
 /** A normalized character card, whatever spec version it came from. */
 export interface CharacterCard {
   specVersion: string;   // '2.0' | '3.0'
@@ -34,6 +45,8 @@ export interface CharacterCard {
   bookEntries?: string[];
   /** Structured `character_book` entries — imported into the session lorebook. */
   book?: CardBookEntry[];
+  /** Portrait art. Set from the embedded image when the card is a PNG. Absent-safe. */
+  portrait?: Portrait;
 }
 
 /** One `character_book` entry, normalized. Shape matches the lorebook's needs. */
@@ -103,7 +116,11 @@ export function extractCardFromPng(buf: Buffer): CharacterCard {
   }
   const b64 = texts.get('ccv3') ?? texts.get('chara');
   if (!b64) throw new Error('PNG has no embedded character card (no chara/ccv3 chunk)');
-  return parseCardJson(parseJson(Buffer.from(b64.toString('latin1'), 'base64'), 'embedded card is not valid JSON'));
+  const card = parseCardJson(parseJson(Buffer.from(b64.toString('latin1'), 'base64'), 'embedded card is not valid JSON'));
+  // The card art IS this PNG — keep the bytes as the character's portrait
+  // (served over HTTP by the web adapter, never inlined into a WS frame).
+  card.portrait = { kind: 'image', mime: 'image/png', data: buf.toString('base64') };
+  return card;
 }
 
 /** JSON.parse without echoing input bytes: Node's SyntaxError embeds a prefix of the input. */

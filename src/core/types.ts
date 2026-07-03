@@ -7,7 +7,7 @@
  * model API wants. Nothing below the adapter layer knows what "Discord" is.
  */
 
-import type { CharacterCard } from './cards/card.js';
+import type { CharacterCard, Portrait } from './cards/card.js';
 import type { LoreEntry } from './lore/lorebook.js';
 import type { MemoryRecord } from './memory/retrieval.js';
 
@@ -106,6 +106,12 @@ export interface Player {
   maxHp?: number;
   /** Imported Character Card persona (`/dm import`), if any. */
   card?: CharacterCard;
+  /**
+   * The player's portrait: a preset id (`/dm portrait <id>`) or stored image
+   * bytes (an upload). Absent-safe — old sessions have none. When unset, the
+   * imported card's own portrait (if any) is used as a fallback.
+   */
+  portrait?: Portrait;
 }
 
 export interface RollResult {
