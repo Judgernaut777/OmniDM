@@ -6,7 +6,7 @@
  * plain text from joined players into the turn pipeline.
  */
 import type { Config } from '../config.js';
-import type { GameSession, IncomingMessage, LLMProvider, OutgoingMessage, Player } from './types.js';
+import type { GameSession, IncomingMessage, LLMProvider, OutgoingMessage, OutgoingRoll, Player, RollResult } from './types.js';
 import { SessionManager } from './session/session-manager.js';
 import type { SessionStorage } from './session/storage.js';
 import { Narrator } from './narrator/narrator.js';
@@ -72,7 +72,7 @@ export class Bot {
     if (result.notYourTurn) {
       return await send({ channelId: msg.channelId, text: `⏳ It's ${name(result.notYourTurn)}'s turn — yours is coming up.` });
     }
-    await this.broadcast(session, result.record!.narration, send);
+    await this.broadcast(session, result.record!.narration, send, result.record!.rolls);
     if (result.next) await send({ channelId: msg.channelId, text: `➡️ Next up: ${name(result.next)}.` });
   }
 
@@ -81,12 +81,15 @@ export class Bot {
    * stripped from the public text and whispered to that character's player
    * (via `targetUserId`); sections for unknown names are dropped silently.
    */
-  private async broadcast(session: GameSession, narration: string, send: Send): Promise<void> {
+  private async broadcast(session: GameSession, narration: string, send: Send, rolls: RollResult[] = []): Promise<void> {
+    // Deterministic rolls resolved this turn ride along on the PUBLIC narration
+    // (never a whisper — dice outcomes are shared facts). Absent when no dice.
+    const rollPayload = rolls.length ? rolls.map(toOutgoingRoll) : undefined;
     if (!session.fogOfWar) {
-      return await send({ channelId: session.channelId, text: narration, speaker: 'Dungeon Master' });
+      return await send({ channelId: session.channelId, text: narration, speaker: 'Dungeon Master', ...(rollPayload ? { rolls: rollPayload } : {}) });
     }
     const { publicText, privates } = splitFog(narration);
-    if (publicText) await send({ channelId: session.channelId, text: publicText, speaker: 'Dungeon Master' });
+    if (publicText) await send({ channelId: session.channelId, text: publicText, speaker: 'Dungeon Master', ...(rollPayload ? { rolls: rollPayload } : {}) });
     for (const p of privates) {
       // Latest matching join wins: seat re-claims (session-manager) keep names
       // unique, but if they ever collide the most recent joiner is the live one
@@ -310,6 +313,24 @@ export class Bot {
 }
 
 const name = (p: Player) => p.characterName || p.userName;
+
+/**
+ * Project an engine `RollResult` onto the wire `OutgoingRoll`. The modifier is
+ * recovered as `total − sum(kept dice)` (the engine folds it into `total`), so
+ * a rich adapter can render dice + modifier without re-deriving or re-rolling.
+ */
+function toOutgoingRoll(r: RollResult): OutgoingRoll {
+  const sum = r.rolls.reduce((s, x) => s + x, 0);
+  const modifier = r.total - sum;
+  return {
+    notation: r.notation,
+    dice: r.rolls,
+    total: r.total,
+    actor: r.by,
+    ...(modifier ? { modifier } : {}),
+    ...(r.note ? { note: r.note } : {}),
+  };
+}
 
 const HELP = `**OmniDM — commands**
 \`/dm new\` — start a campaign in this channel

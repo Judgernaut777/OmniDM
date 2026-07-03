@@ -9,6 +9,8 @@
  *            server → { type:'welcome', userId, channelId }   (your seat)
  *                     { type:'roster', users }                (room membership)
  *                     { type:'msg', speaker?, text, private?: true }
+ *                     { type:'roll', notation, dice, total, actor, modifier?, note? }
+ *                       (one per resolved die roll, sent WITH the public 'msg')
  *                     { type:'error', error }
  * `channelId` is a room code, so multiple parties can share one server; each
  * connection gets a fresh stable userId, and fog-of-war whispers
@@ -151,10 +153,29 @@ export class WebAdapter implements PlatformAdapter {
       text: msg.text,
       ...(msg.targetUserId ? { private: true } : {}),
     });
+    // Structured dice ride ALONGSIDE the narration as separate 'roll' frames so
+    // the transcript still reads normally while the UI can animate real rolls.
+    // Only public narration carries rolls (never a whisper); totals are the
+    // engine's deterministic result, passed through verbatim (no re-rolling).
+    const rollFrames =
+      !msg.targetUserId && msg.rolls?.length
+        ? msg.rolls.map((r) =>
+            JSON.stringify({
+              type: 'roll',
+              notation: r.notation,
+              dice: r.dice,
+              total: r.total,
+              actor: r.actor,
+              ...(r.modifier !== undefined ? { modifier: r.modifier } : {}),
+              ...(r.note ? { note: r.note } : {}),
+            }),
+          )
+        : [];
     for (const seat of this.seats.values()) {
       if (seat.channelId !== msg.channelId) continue;
       if (msg.targetUserId && seat.userId !== msg.targetUserId) continue; // fog-of-war whisper
       seat.ws.send(frame);
+      for (const rf of rollFrames) seat.ws.send(rf);
     }
   }
 

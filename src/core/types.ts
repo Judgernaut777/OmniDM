@@ -23,6 +23,21 @@ export interface IncomingMessage {
   raw?: unknown;          // original platform payload, if an adapter needs it
 }
 
+/**
+ * A resolved dice roll, surfaced to RICH adapters (e.g. web) so a UI can animate
+ * the real roll. Text adapters ignore it entirely — the dice outcome is already
+ * inside `text`. Every value is the engine's deterministic result carried
+ * straight through; adapters MUST NOT re-roll. `total === sum(dice) + modifier`.
+ */
+export interface OutgoingRoll {
+  notation: string;   // "d20+5"
+  dice: number[];     // the individual faces that count toward the total
+  modifier?: number;  // flat modifier folded into the total (total − sum(dice))
+  total: number;      // the engine's authoritative total
+  actor: string;      // who rolled — character or player name
+  note?: string;      // "advantage" | "CRITICAL HIT (nat 20)" | "kept kh3" | …
+}
+
 /** A normalized outbound message. Adapters render this for their platform. */
 export interface OutgoingMessage {
   channelId: string;
@@ -33,6 +48,12 @@ export interface OutgoingMessage {
   targetUserId?: string;
   /** Display name for the target, so adapters can label the whisper. */
   targetUserName?: string;
+  /**
+   * Structured dice this narration resolved, freshest deterministic result from
+   * the turn engine. OPTIONAL and only set on public DM narration that included
+   * a roll; text adapters ignore it, rich adapters emit a roll event per entry.
+   */
+  rolls?: OutgoingRoll[];
 }
 
 /**

@@ -93,6 +93,8 @@ function onFrame(f) {
     renderRoster();
   } else if (f.type === 'msg') {
     onChat(f);
+  } else if (f.type === 'roll') {
+    onRoll(f);
   } else if (f.type === 'error') {
     // An error before welcome means the hello was refused (e.g. bad password):
     // fall back to the join screen instead of hammering the server with retries.
@@ -135,6 +137,56 @@ function parseNotice(text) {
   if (text.includes('Immediate mode') || text.includes('Campaign ended')) state.turnName = null;
   if (text.includes('Campaign ended')) state.chars.clear();
   renderRoster();
+}
+
+/* ── Dice ────────────────────────────────────────────────────────────────── */
+
+/* A structured 'roll' frame (src/adapters/web.ts) rides alongside the DM
+ * narration: the total is the engine's deterministic result, never re-rolled
+ * here. Render each face as a tumbling die that settles on its value. Numbers
+ * only from the socket, and notation/actor land via textContent — XSS-safe. */
+function onRoll(f) {
+  const notation = typeof f.notation === 'string' ? f.notation : '';
+  const actor = typeof f.actor === 'string' ? f.actor : '';
+  const note = typeof f.note === 'string' ? f.note : '';
+  const dice = Array.isArray(f.dice) ? f.dice.filter((n) => Number.isFinite(n)) : [];
+  const total = Number.isFinite(f.total) ? f.total : dice.reduce((s, n) => s + n, 0);
+  const modifier = Number.isFinite(f.modifier) ? f.modifier : total - dice.reduce((s, n) => s + n, 0);
+
+  const log = $('log');
+  const stick = log.scrollHeight - log.scrollTop - log.clientHeight < 80;
+  const art = el('article', 'msg roll');
+  if (/nat 20|critical/i.test(note)) art.classList.add('crit');
+  else if (/nat 1|fumble/i.test(note)) art.classList.add('fumble');
+
+  const head = el('div', 'roll-head');
+  head.textContent = `🎲 ${actor ? `${actor} rolls ` : 'Roll '}${notation}`;
+  art.append(head);
+
+  const tray = el('div', 'roll-dice');
+  for (const face of dice.length ? dice : [total]) {
+    const die = el('span', 'die-face');
+    die.textContent = String(face);
+    die.style.animationDelay = `${Math.floor(Math.random() * 140)}ms`;
+    tray.append(die);
+  }
+  art.append(tray);
+
+  const sum = el('div', 'roll-total');
+  if (modifier) {
+    const mod = el('span', 'roll-mod');
+    mod.textContent = modifier > 0 ? `+${modifier}` : String(modifier);
+    tray.append(mod);
+  }
+  sum.append(document.createTextNode('= '));
+  const strong = el('strong');
+  strong.textContent = String(total);
+  sum.append(strong);
+  if (note) { const n = el('span', 'roll-note'); n.textContent = note; sum.append(n); }
+  art.append(sum);
+
+  log.append(art);
+  if (stick) log.scrollTop = log.scrollHeight;
 }
 
 /* ── Log ─────────────────────────────────────────────────────────────────── */

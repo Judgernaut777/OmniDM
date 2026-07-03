@@ -245,6 +245,33 @@ async function main() {
     check('persistence: roll persisted with the turn', saved.history[0].rolls[0]?.notation === 'd20+5');
   }
 
+  // ── Structured dice events: the DM narration carries the deterministic roll ──
+  out.length = 0;
+  await bot.handle(from('u1', 'Alice', '/dm roll d20+5'), send);
+  const rollMsg = out.find((m) => m.speaker === 'Dungeon Master');
+  check('roll: /dm roll attaches structured roll data to the DM narration',
+    Array.isArray(rollMsg?.rolls) && rollMsg!.rolls!.length === 1 &&
+    rollMsg!.rolls![0].notation === 'd20+5' && rollMsg!.rolls![0].actor === 'Thorin');
+  const rl = rollMsg!.rolls![0];
+  check('roll: total is self-consistent (dice + modifier) and in d20+5 range',
+    rl.total === rl.dice.reduce((s, x) => s + x, 0) + (rl.modifier ?? 0) &&
+    rl.dice.length === 1 && rl.dice[0] >= 1 && rl.dice[0] <= 20 && rl.total >= 6 && rl.total <= 25);
+  const rollPersisted = await new NodeFileStorage(dataDir).load('cli:chan1');
+  check('roll: surfaced total matches the persisted engine roll (no adapter re-roll)',
+    rollPersisted?.history.at(-1)?.rolls[0]?.total === rl.total &&
+    rollPersisted?.history.at(-1)?.rolls[0]?.notation === 'd20+5');
+
+  out.length = 0;
+  await bot.handle(from('u1', 'Alice', 'I swing my d20+3 mace at the goblin'), send);
+  const actRollMsg = out.find((m) => m.speaker === 'Dungeon Master');
+  check('roll: an in-character action with dice notation also carries a roll',
+    Array.isArray(actRollMsg?.rolls) && actRollMsg!.rolls![0].notation === 'd20+3' && actRollMsg!.rolls![0].actor === 'Thorin');
+
+  out.length = 0;
+  await bot.handle(from('u1', 'Alice', 'I gaze thoughtfully across the tavern'), send);
+  const plainMsg = out.find((m) => m.speaker === 'Dungeon Master');
+  check('roll: a plain narration action carries no roll data', Boolean(plainMsg) && plainMsg!.rolls === undefined);
+
   // ── Round-robin turn mode ──
   out.length = 0;
   await bot.handle(from('u1', 'Alice', '/dm mode round-robin'), send);
@@ -812,6 +839,36 @@ async function main() {
     await a.next((f) => f.type === 'msg' && String(f.text).includes('party')); // per-socket FIFO: a misdelivered whisper would already be buffered
     check("web: the whisper never reached the other client's socket", !a.sawText('hidden lever'));
     provider.narration = 'The tavern falls silent as you act. (mock narration)';
+
+    // ── Structured dice over the web protocol: a 'roll' frame alongside 'msg' ──
+    await new Promise((r) => setTimeout(r, 1100)); // drain the rate-limit window
+    a.send({ type: 'say', text: '/dm roll d20+5' });
+    const rollFrame = await a.next((f) => f.type === 'roll');
+    const rfDice = rollFrame?.dice as number[] | undefined;
+    check('web: /dm roll emits a roll frame with the right notation and actor',
+      rollFrame?.notation === 'd20+5' && rollFrame?.actor === 'Thorin');
+    check('web: roll frame total is self-consistent (dice + modifier)',
+      Array.isArray(rfDice) && rfDice.length === 1 && rfDice[0] >= 1 && rfDice[0] <= 20 &&
+      (rollFrame!.total as number) === rfDice[0] + ((rollFrame!.modifier as number) ?? 0));
+    const wsRoom = await webStorage.load('web:room1');
+    check('web: roll frame total matches the deterministic engine roll (no re-roll)',
+      wsRoom?.history.at(-1)?.rolls[0]?.total === rollFrame!.total &&
+      wsRoom?.history.at(-1)?.rolls[0]?.notation === 'd20+5');
+    check('web: the roll also produced a normal msg narration frame (transcript intact)',
+      Boolean(await a.next((f) => f.type === 'msg' && f.speaker === 'Dungeon Master' && String(f.text).includes('tavern'))));
+    const rollFrameB = await b.next((f) => f.type === 'roll');
+    check('web: the roll frame broadcasts to the whole room, unflagged',
+      rollFrameB?.notation === 'd20+5' && !rollFrameB?.private);
+
+    // A plain narration action (no dice) must yield NO roll frame.
+    const rollsSoFar = a.all.filter((f) => f.type === 'roll').length;
+    await new Promise((r) => setTimeout(r, 1100));
+    a.send({ type: 'say', text: 'I ponder the flickering candlelight' });
+    await a.next((f) => f.type === 'msg' && f.speaker === 'Dungeon Master' && String(f.text).includes('tavern'));
+    a.send({ type: 'say', text: '/dm who' });
+    await a.next((f) => f.type === 'msg' && String(f.text).includes('party')); // per-socket FIFO barrier: a stray roll frame would already be buffered
+    check('web: a plain narration action emits no roll frame',
+      a.all.filter((f) => f.type === 'roll').length === rollsSoFar);
 
     // ── Portraits over the web protocol: enriched roster + HTTP upload/serve ──
     type RosterUser = { userId: string; userName: string; characterName?: string; portrait?: { kind?: string; id?: string; url?: string; data?: string } | null };
