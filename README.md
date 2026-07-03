@@ -166,6 +166,7 @@ core/
     retrieval.ts ← vector memory / RAG: per-turn records, embedding or lexical recall
   narrator/
     narrator.ts  ← builds the prompt; LLM narrates resolved turns
+    fog.ts       ← splits [PRIVATE:<Name>]…[/PRIVATE] whispers out of narration
   session/
     session-manager.ts / store.ts  ← channel → game session, party, JSON persistence
 providers/
@@ -184,19 +185,36 @@ message-converter pattern as a pure function plus a thin fetch wrapper.
 
 **Add a game system:** drop a `rules/<system>/system.md`. Set it per session.
 
+## Done
+
+Shipped since the initial scaffold (newest first):
+
+- **Mattermost adapter** — `npm run mattermost`; dependency-free (REST API v4 +
+  events WebSocket); fog-of-war whispers via direct-message channels
+- **Matrix adapter** — `npm run matrix` (matrix-bot-sdk); fog-of-war whispers
+  via DM rooms
+- **Slack adapter** — `npm run slack` (Socket Mode via @slack/bolt);
+  fog-of-war whispers as ephemeral messages
+- **Vector memory / RAG recall** — every resolved turn is stored as a memory
+  record and relevant older turns are recalled into the prompt as
+  `RELEVANT PAST EVENTS`; lexical matching by default (offline, zero config),
+  embeddings + cosine similarity when `EMBEDDINGS_MODEL` is set
+- **Native Anthropic provider** — `LLM_PROVIDER=anthropic`; Messages API via
+  fetch, no SDK
+- **Per-player fog of war** — `/dm fog on|off`; `[PRIVATE:<Name>]` narration
+  sections delivered only to that character's player
+- **Lorebook / world info** — `/dm lore add|list|remove`; keyword-triggered
+  injection; card `character_book`s import automatically
+- **Character Card V2/V3 import** — `/dm import` (JSON or PNG, path or URL);
+  becomes your persona if you've joined, an NPC otherwise; SSRF- and
+  size-guarded
+- **Round-robin turn mode** — `/dm mode round-robin`, `/dm turn`, `/dm pass`
+
 ## Roadmap / not done yet
 
-Vector memory (RAG) is in: every resolved turn is stored as a memory record and
-relevant older turns are recalled into the prompt as `RELEVANT PAST EVENTS` —
-lexical matching by default (offline, zero config), or embeddings + cosine
-similarity when `EMBEDDINGS_MODEL` is set. Still to do:
-
-- Initiative-rolled turn order (round-robin by join order is in: `/dm mode round-robin`)
-- More adapters: Signal (via signal-cli) — Slack is in
-  (`npm run slack`, Socket Mode via @slack/bolt), so is Matrix
-  (`npm run matrix`, via matrix-bot-sdk), and so is Mattermost
-  (`npm run mattermost`, dependency-free: REST API v4 + events WebSocket)
-- More native providers beyond Anthropic (Anthropic is in: `LLM_PROVIDER=anthropic`)
+- Initiative-rolled turn order (round-robin by join order is in)
+- More adapters: Signal (via signal-cli)
+- More native providers beyond Anthropic
 
 ## Prior art studied
 
