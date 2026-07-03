@@ -92,8 +92,13 @@ same dropdown includes Claude, GPT, Gemini, and local models.
 The server binds to loopback **on purpose**: there is no TLS and, unless you
 set `WEB_PASSWORD`, no auth. To let remote players in, put a reverse proxy
 with HTTPS and auth in front of it and set `WEB_HOST=0.0.0.0` deliberately.
-The bundled client (`web/index.html`) is a minimal reference UI — the adapter
-speaks a small JSON-over-WebSocket protocol that desktop/mobile UIs can reuse.
+`WEB_HOST`, `WEB_PORT` (default `8787`) and `WEB_PASSWORD` all live in `.env`.
+
+The bundled client (`web/`) is a dark-fantasy table UI in three plain files —
+no build step, no external origins: a scrolling log with distinct DM / player /
+whisper styling, a party roster with a whose-turn indicator, a dice tray, and
+a command palette covering every `/dm` command. The adapter itself speaks a
+small JSON-over-WebSocket protocol that desktop/mobile UIs can reuse.
 
 ## Using whatever model you want
 
@@ -183,12 +188,16 @@ core/
     narrator.ts  ← builds the prompt; LLM narrates resolved turns
     fog.ts       ← splits [PRIVATE:<Name>]…[/PRIVATE] whispers out of narration
   session/
-    session-manager.ts / store.ts  ← channel → game session, party, JSON persistence
+    session-manager.ts  ← channel → game session, party, seat re-claim after reconnect
+    storage.ts   ← SessionStorage interface + MemoryStorage (the browser/mobile seam)
+    store.ts     ← NodeFileStorage: JSON files under DATA_DIR
 providers/
   openai-compatible.ts  ← OpenRouter/OpenAI/Ollama/LM Studio (one adapter)
   anthropic.ts          ← native Anthropic Messages API (system param + role converter)
 rules/
   dnd5e/system.md       ← swappable rules module
+web/               ← browser client served by the web adapter (no build step)
+  index.html / app.js / style.css
 ```
 
 **Add a chat platform:** implement `PlatformAdapter` (4 methods) in `adapters/`,
@@ -204,6 +213,13 @@ message-converter pattern as a pure function plus a thin fetch wrapper.
 
 Shipped since the initial scaffold (newest first):
 
+- **Browser table UI** — `web/` is three plain files (`index.html`, `app.js`,
+  `style.css`): no build step, no external origins; join screen (name + room
+  code + optional password), scrolling log with distinct DM / player / whisper
+  styling, party roster with a round-robin whose-turn indicator, dice
+  quick-buttons plus custom notation, and a command palette covering every
+  `/dm` command; all socket/model text enters the DOM via `textContent`
+  (XSS-safe), and dropped sockets reconnect with exponential backoff
 - **Web adapter** — `npm run web`; serves a zero-build browser client plus a
   JSON-over-WebSocket protocol (the seam for desktop/mobile UIs); room codes
   so multiple parties share one server, optional `WEB_PASSWORD`, loopback-only
@@ -211,6 +227,11 @@ Shipped since the initial scaffold (newest first):
   limit, frame/field size caps, connection cap, hello deadline); fog-of-war
   whispers go only to the target player's socket, and after a reconnect
   `/dm join <name>` re-claims the old seat (HP, persona and turn slot intact)
+- **SessionStorage seam** — the core persists sessions only through a
+  `SessionStorage` interface (`load`/`save`/`delete`), injected at the
+  composition root (`index.ts`); `NodeFileStorage` keeps the JSON-files-under-
+  `DATA_DIR` behaviour, `MemoryStorage` is the portable in-memory one — the
+  seam for running the engine in a browser or mobile WebView later
 - **Mattermost adapter** — `npm run mattermost`; dependency-free (REST API v4 +
   events WebSocket); fog-of-war whispers via direct-message channels
 - **Matrix adapter** — `npm run matrix` (matrix-bot-sdk); fog-of-war whispers
