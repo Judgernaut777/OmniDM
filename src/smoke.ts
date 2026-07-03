@@ -927,6 +927,59 @@ async function main() {
       cardImg.ok && (cardImg.headers.get('content-type') ?? '').startsWith('image/') &&
       cardBytes.length > 8 && cardBytes.subarray(0, 8).equals(PNG_SIG));
 
+    // ── Scene token-board (VTT-lite): shared, server-authoritative state ──
+    type SToken = { id: string; who: string; kind: string; x: number; y: number };
+    // After /dm new + both joins, the board carries one pc token per party
+    // member, each seeded to a normalized 0..1 position.
+    const partyScene = await a.next(
+      (f) => f.type === 'scene' && Array.isArray(f.tokens) && (f.tokens as SToken[]).filter((t) => t.kind === 'pc').length === 2,
+    );
+    const pcTokens = (partyScene!.tokens as SToken[]).filter((t) => t.kind === 'pc');
+    check('web: the scene frame carries a pc token per party member, seeded inside 0..1',
+      pcTokens.length === 2 && pcTokens.some((t) => t.who === 'Thorin') &&
+      pcTokens.some((t) => t.id === `pc:${aliceId}`) &&
+      pcTokens.every((t) => t.x >= 0 && t.x <= 1 && t.y >= 0 && t.y <= 1));
+
+    // A move with out-of-range coords is clamped to 0..1 and rebroadcast to
+    // everyone (the mover included — the server is authoritative).
+    a.send({ type: 'move', id: `pc:${aliceId}`, x: 1.7, y: -0.4 });
+    const clamped = (f: Frame) =>
+      f.type === 'scene' && (f.tokens as SToken[]).some((t) => t.id === `pc:${aliceId}` && t.x === 1 && t.y === 0);
+    const movedA = await a.next(clamped);
+    const movedB = await b.next(clamped);
+    check('web: a move updates the token, clamps x,y to 0..1, and echoes to the mover', Boolean(movedA));
+    check('web: the move rebroadcasts the authoritative scene to every client in the room', Boolean(movedB));
+
+    // Malformed / unknown moves get an error frame, never a crash.
+    a.send({ type: 'move', id: 42, x: 'over-there' });
+    const moveErr = await a.next((f) => f.type === 'error' && /move/i.test(String(f.error)));
+    check('web: a malformed move yields an error frame, never a crash', Boolean(moveErr));
+    a.send({ type: 'move', id: 'pc:web-ghost', x: 0.5, y: 0.5 });
+    const ghostErr = await a.next((f) => f.type === 'error' && /Unknown token/i.test(String(f.error)));
+    check('web: a move for an unknown token id is rejected, server still up', Boolean(ghostErr));
+
+    // An NPC import (by a spectator, so it lands as an NPC) adds an npc token.
+    const sp = new WsClient(url);
+    await sp.open();
+    sp.send({ type: 'hello', userName: 'Watcher', channelId: 'room1', password: 'hunter2' });
+    await sp.next((f) => f.type === 'welcome');
+    await new Promise((r) => setTimeout(r, 1100)); // drain the rate-limit window before a say
+    sp.send({ type: 'say', text: `/dm import ${pngPath}` });
+    await sp.next((f) => f.type === 'msg' && String(f.text).includes('as an NPC'));
+    const npcScene = await sp.next((f) => f.type === 'scene' && (f.tokens as SToken[]).some((t) => t.kind === 'npc'));
+    const npcTok = (npcScene!.tokens as SToken[]).find((t) => t.kind === 'npc');
+    check('web: importing an NPC adds an npc token to the shared board',
+      Boolean(npcTok) && npcTok!.who === 'Vex' && npcTok!.id.startsWith('npc:') &&
+      npcTok!.x >= 0 && npcTok!.x <= 1 && npcTok!.y >= 0 && npcTok!.y <= 1);
+
+    // The actor field reflects the round-robin turn pointer once round-robin is on.
+    await new Promise((r) => setTimeout(r, 1100));
+    a.send({ type: 'say', text: '/dm mode round-robin' });
+    await a.next((f) => f.type === 'msg' && String(f.text).includes('Round-robin'));
+    const rrScene = await a.next((f) => f.type === 'scene' && typeof f.actor === 'string');
+    check('web: the scene actor reflects the round-robin turn pointer when set', rrScene?.actor === 'Thorin');
+    sp.close(); // the spectator leaves room1 so the later roster-shrink check sees only Alice + Bob
+
     const c = new WsClient(url);
     await c.open();
     c.send({ type: 'say', text: 'too eager' });

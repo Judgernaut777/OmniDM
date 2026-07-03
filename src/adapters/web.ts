@@ -11,7 +11,24 @@
  *                     { type:'msg', speaker?, text, private?: true }
  *                     { type:'roll', notation, dice, total, actor, modifier?, note? }
  *                       (one per resolved die roll, sent WITH the public 'msg')
+ *                     { type:'scene', tokens:[{id,who,kind,x,y}], actor, lastRoll? }
+ *                       (the shared token-board — see the "Scene" section below)
  *                     { type:'error', error }
+ *            client → { type:'move', id, x, y }                  (reposition a token)
+ *
+ * Scene (VTT-lite): the adapter holds a per-channel token board in memory. Each
+ * party member and each imported NPC gets one token { id, who, kind:'pc'|'npc',
+ * x, y } with x,y as normalized 0..1 board coordinates. Tokens are auto-seeded
+ * and reconciled from the session party+npcs on any roster change (joins keep
+ * existing positions; departures/imports add or drop tokens). `actor` mirrors
+ * the round-robin turn pointer (null in immediate mode). A resolved roll is
+ * stashed in `lastRoll` so the board can pop the result near the actor's token;
+ * it is authoritative and persists (the most recent roll) until a newer roll
+ * replaces it — the client fades its own pop. A client 'move' is clamped to
+ * 0..1 server-side and rebroadcast to everyone (including the mover), so the
+ * server is the single source of truth; a malformed move gets an error frame,
+ * never a crash. Moves have their own rolling-second allowance
+ * (MOVE_RATE_LIMIT_PER_SEC) so frequent dragging can't exhaust the `say` limit.
  * `channelId` is a room code, so multiple parties can share one server; each
  * connection gets a fresh stable userId, and fog-of-war whispers
  * (`targetUserId`) go only to that user's socket(s), flagged `private:true`.
@@ -38,7 +55,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { nanoid } from 'nanoid';
 import { WebSocketServer, type WebSocket } from 'ws';
-import type { GameSession, IncomingMessage, OutgoingMessage, PlatformAdapter, Player } from '../core/types.js';
+import type { GameSession, IncomingMessage, OutgoingMessage, OutgoingRoll, PlatformAdapter, Player } from '../core/types.js';
 import type { Portrait } from '../core/cards/card.js';
 import type { SessionStorage } from '../core/session/storage.js';
 
@@ -46,6 +63,8 @@ import type { SessionStorage } from '../core/session/storage.js';
 export const RATE_LIMIT_PER_SEC = 5;
 /** Frames tolerated per rolling second from a socket that has not completed hello; excess drops it (replying would amplify a flood). */
 export const UNJOINED_FRAMES_PER_SEC = 10;
+/** Token `move` frames per joined connection per rolling second — separate from (and looser than) the `say` limit, since dragging a token is naturally chatty. */
+export const MOVE_RATE_LIMIT_PER_SEC = 30;
 /** Hard cap on any single WebSocket frame (`ws` maxPayload — its default is 100 MB). */
 export const MAX_FRAME_BYTES = 32 * 1024;
 /** Server-side field caps — the client's maxlength attributes are advisory only. */
@@ -77,6 +96,24 @@ interface Seat {
   userName: string;
   channelId: string;
   saidAt: number[]; // recent `say` timestamps, for the rate limit
+  movedAt: number[]; // recent `move` timestamps, for the separate move allowance
+}
+
+/** A token on the shared board. Positions are normalized 0..1 board coordinates. */
+export type TokenKind = 'pc' | 'npc';
+interface Token {
+  id: string;
+  who: string; // character/user name (pc) or NPC card name
+  kind: TokenKind;
+  x: number;
+  y: number;
+}
+
+/** One channel's token board: the tokens (keyed by id), the current actor, and the freshest roll. */
+interface Scene {
+  tokens: Map<string, Token>;
+  actor: string | null; // round-robin current actor's name, or null in immediate mode
+  lastRoll?: OutgoingRoll; // most recent resolved roll, for a dice pop near the actor
 }
 
 export class WebAdapter implements PlatformAdapter {
@@ -87,6 +124,8 @@ export class WebAdapter implements PlatformAdapter {
   private seats = new Map<WebSocket, Seat>();
   /** In-memory portrait uploads, keyed by channel+user. Bytes never touch a WS frame. */
   private uploads = new Map<string, { mime: string; bytes: Buffer }>();
+  /** In-memory shared token boards, keyed by channelId. Positions live and die with the process. */
+  private scenes = new Map<string, Scene>();
 
   constructor(
     private readonly host = '127.0.0.1',
@@ -177,6 +216,16 @@ export class WebAdapter implements PlatformAdapter {
       seat.ws.send(frame);
       for (const rf of rollFrames) seat.ws.send(rf);
     }
+    // A resolved roll on public narration pops on the board near the actor's
+    // token: stash the freshest one and rebroadcast the scene. It persists
+    // (authoritative) until a newer roll replaces it; the client fades the pop.
+    if (!msg.targetUserId && msg.rolls?.length) {
+      const scene = this.scenes.get(msg.channelId);
+      if (scene) {
+        scene.lastRoll = msg.rolls[msg.rolls.length - 1];
+        this.broadcastScene(msg.channelId);
+      }
+    }
   }
 
   /** One inbound frame. Every failure mode answers with an error frame — never a crash. */
@@ -188,7 +237,7 @@ export class WebAdapter implements PlatformAdapter {
       while (preHello.length && now - preHello[0] >= 1000) preHello.shift();
       if (preHello.push(now) > UNJOINED_FRAMES_PER_SEC) return ws.terminate();
     }
-    let frame: { type?: unknown; userName?: unknown; channelId?: unknown; password?: unknown; text?: unknown };
+    let frame: { type?: unknown; userName?: unknown; channelId?: unknown; password?: unknown; text?: unknown; id?: unknown; x?: unknown; y?: unknown };
     try {
       frame = JSON.parse(raw);
     } catch {
@@ -196,7 +245,8 @@ export class WebAdapter implements PlatformAdapter {
     }
     if (frame?.type === 'hello') return this.hello(ws, frame);
     if (frame?.type === 'say') return this.say(ws, frame);
-    this.error(ws, `Unknown frame type ${JSON.stringify(frame?.type ?? null)} — expected "hello" or "say".`);
+    if (frame?.type === 'move') return this.move(ws, frame);
+    this.error(ws, `Unknown frame type ${JSON.stringify(frame?.type ?? null)} — expected "hello", "say", or "move".`);
   }
 
   /** Join a room: check the password, assign a userId, announce the roster. */
@@ -211,7 +261,7 @@ export class WebAdapter implements PlatformAdapter {
     if (userName.length > MAX_NAME_CHARS || channelId.length > MAX_ROOM_CHARS)
       return this.error(ws, `hello fields too long (userName ≤ ${MAX_NAME_CHARS}, channelId ≤ ${MAX_ROOM_CHARS} chars).`);
     if (this.seats.has(ws)) return this.error(ws, 'Already joined — one hello per connection.');
-    const seat: Seat = { ws, userId: `web-${nanoid(8)}`, userName, channelId, saidAt: [] };
+    const seat: Seat = { ws, userId: `web-${nanoid(8)}`, userName, channelId, saidAt: [], movedAt: [] };
     this.seats.set(ws, seat);
     ws.send(JSON.stringify({ type: 'welcome', userId: seat.userId, channelId }));
     void this.broadcastRoster(channelId);
@@ -241,6 +291,34 @@ export class WebAdapter implements PlatformAdapter {
       .finally(() => void this.broadcastRoster(seat.channelId));
   }
 
+  /**
+   * Reposition a token on the shared board. Moves are authoritative: the server
+   * clamps x,y to 0..1, updates its own state, and rebroadcasts the whole scene
+   * to the room (the mover included). A malformed frame or an unknown token id
+   * gets an error frame, never a crash. Moves have their own rolling-second
+   * allowance so dragging can't starve the `say` limit.
+   */
+  private move(ws: WebSocket, frame: { id?: unknown; x?: unknown; y?: unknown }): void {
+    const seat = this.seats.get(ws);
+    if (!seat) return this.error(ws, 'Say hello first: { type:"hello", userName, channelId }.');
+    const now = Date.now();
+    seat.movedAt = seat.movedAt.filter((t) => now - t < 1000);
+    if (seat.movedAt.length >= MOVE_RATE_LIMIT_PER_SEC)
+      return this.error(ws, `Rate limit: too many moves (max ${MOVE_RATE_LIMIT_PER_SEC}/second).`);
+    seat.movedAt.push(now);
+    const id = typeof frame.id === 'string' ? frame.id : '';
+    const x = typeof frame.x === 'number' ? frame.x : NaN;
+    const y = typeof frame.y === 'number' ? frame.y : NaN;
+    if (!id || !Number.isFinite(x) || !Number.isFinite(y))
+      return this.error(ws, 'Malformed move: needs { id:string, x:number, y:number }.');
+    const scene = this.scenes.get(seat.channelId);
+    const token = scene?.tokens.get(id);
+    if (!token) return this.error(ws, `Unknown token id ${JSON.stringify(id)} — move ignored.`);
+    token.x = clamp01(x);
+    token.y = clamp01(y);
+    this.broadcastScene(seat.channelId);
+  }
+
   /** Remove a closed socket's seat and re-announce its room's roster. */
   private dropSeat(ws: WebSocket): void {
     const seat = this.seats.get(ws);
@@ -261,6 +339,53 @@ export class WebAdapter implements PlatformAdapter {
     const session = (await this.storage?.load(sessionKey(channelId)).catch(() => null)) ?? null;
     const users = inRoom.map((s) => this.describeSeat(s, session));
     const frame = JSON.stringify({ type: 'roster', users });
+    for (const s of inRoom) s.ws.send(frame);
+    // The party/npcs may have changed (a join/leave/import); reconcile the token
+    // board against the session and rebroadcast the scene alongside the roster.
+    this.reconcileScene(channelId, session);
+    this.broadcastScene(channelId);
+  }
+
+  /**
+   * Reconcile a channel's token board against the session party+npcs: add a
+   * token for each new member/NPC (spread out by default), drop tokens for
+   * anyone who left, and KEEP the position of tokens that persist. Also caches
+   * the round-robin actor so a move can rebroadcast without reloading storage.
+   */
+  private reconcileScene(channelId: string, session: GameSession | null): Scene {
+    let scene = this.scenes.get(channelId);
+    if (!scene) {
+      scene = { tokens: new Map(), actor: null };
+      this.scenes.set(channelId, scene);
+    }
+    const desired = sceneTokens(session);
+    const wanted = new Set(desired.map((d) => d.id));
+    for (const id of [...scene.tokens.keys()]) if (!wanted.has(id)) scene.tokens.delete(id);
+    for (const d of desired) {
+      const existing = scene.tokens.get(d.id);
+      if (existing) {
+        existing.who = d.who; // a rename keeps the token's slot and position
+        existing.kind = d.kind;
+      } else {
+        scene.tokens.set(d.id, { id: d.id, who: d.who, kind: d.kind, ...spawnPos(d.kind, scene.tokens) });
+      }
+    }
+    scene.actor = actorName(session);
+    return scene;
+  }
+
+  /** Broadcast a channel's current token board to everyone in the room. */
+  private broadcastScene(channelId: string): void {
+    const scene = this.scenes.get(channelId);
+    if (!scene) return;
+    const inRoom = [...this.seats.values()].filter((s) => s.channelId === channelId);
+    if (!inRoom.length) return;
+    const frame = JSON.stringify({
+      type: 'scene',
+      tokens: [...scene.tokens.values()].map((t) => ({ id: t.id, who: t.who, kind: t.kind, x: t.x, y: t.y })),
+      actor: scene.actor,
+      ...(scene.lastRoll ? { lastRoll: scene.lastRoll } : {}),
+    });
     for (const s of inRoom) s.ws.send(frame);
   }
 
@@ -449,6 +574,54 @@ const effectivePortrait = (player: Player): Portrait | undefined => player.portr
 
 /** A path component safe to key stores/lookups: non-empty, bounded, no separators/NUL. */
 const validPathId = (v: string, max: number): boolean => v.length > 0 && v.length <= max && !/[/\\\0]/.test(v);
+
+/** Clamp a board coordinate into the normalized 0..1 range. */
+const clamp01 = (n: number): number => (n < 0 ? 0 : n > 1 ? 1 : n);
+
+/**
+ * The token set a session implies: one per seated player (id `pc:<userId>`) and
+ * one per imported NPC card (id `npc:<name>`, `#n`-suffixed on a name clash).
+ * Stable ids let positions survive across reconciliations.
+ */
+function sceneTokens(session: GameSession | null): { id: string; who: string; kind: TokenKind }[] {
+  if (!session) return [];
+  const out: { id: string; who: string; kind: TokenKind }[] = [];
+  for (const [userId, p] of Object.entries(session.players ?? {})) {
+    out.push({ id: `pc:${userId}`, who: p.characterName || p.userName, kind: 'pc' });
+  }
+  const seen = new Map<string, number>();
+  for (const npc of session.npcs ?? []) {
+    const base = (npc?.name || 'NPC').trim() || 'NPC';
+    const n = seen.get(base) ?? 0;
+    seen.set(base, n + 1);
+    out.push({ id: n === 0 ? `npc:${base}` : `npc:${base}#${n}`, who: base, kind: 'npc' });
+  }
+  return out;
+}
+
+/**
+ * A spread-out default position for a NEW token: PCs cluster near the bottom of
+ * the board, NPCs near the top, each laid out along a row that wraps every six.
+ * Existing tokens keep their own positions — this is only for first placement.
+ */
+function spawnPos(kind: TokenKind, existing: Map<string, Token>): { x: number; y: number } {
+  let same = 0;
+  for (const t of existing.values()) if (t.kind === kind) same++;
+  const col = same % 6;
+  const row = Math.floor(same / 6);
+  const x = clamp01(0.12 + col * 0.152);
+  const y = kind === 'pc' ? clamp01(0.8 - row * 0.1) : clamp01(0.2 + row * 0.1);
+  return { x, y };
+}
+
+/** The round-robin current actor's name, or null in immediate mode / an empty party. */
+function actorName(session: GameSession | null): string | null {
+  if (!session || session.turnMode !== 'round-robin') return null;
+  const order = Object.values(session.players ?? {});
+  if (!order.length) return null;
+  const p = order[session.turnIndex % order.length];
+  return p.characterName || p.userName;
+}
 
 /** Clip untrusted card text so an enriched roster frame stays small. */
 const clampText = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n)}…` : s);

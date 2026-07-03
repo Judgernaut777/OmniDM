@@ -29,6 +29,7 @@ const state = {
   roster: [],          // [{ userId, userName }] — sockets in the room
   chars: new Map(),    // userName → characterName (parsed from relayed /dm join lines)
   turnName: null,      // round-robin: whose turn, parsed from DM notices
+  scene: { tokens: [], actor: null, lastRoll: null }, // the shared token board
 };
 const BACKOFF_MAX = 15000;
 
@@ -95,6 +96,8 @@ function onFrame(f) {
     onChat(f);
   } else if (f.type === 'roll') {
     onRoll(f);
+  } else if (f.type === 'scene') {
+    onScene(f);
   } else if (f.type === 'error') {
     // An error before welcome means the hello was refused (e.g. bad password):
     // fall back to the join screen instead of hammering the server with retries.
@@ -268,6 +271,93 @@ function hueFor(name) {
   return `hsl(${h} 45% 62%)`;
 }
 
+/* ── Token board (VTT-lite) ──────────────────────────────────────────────────
+ * The adapter owns the board: a 'scene' frame carries every token
+ * { id, who, kind, x, y } with x,y normalized 0..1, the round-robin `actor`,
+ * and the most recent `lastRoll`. Dragging a token sends { type:'move', id, x,
+ * y }; the server clamps and rebroadcasts the authoritative scene, so what we
+ * render always comes back from the server. SVG nodes are built with
+ * createElementNS and every label lands via textContent — XSS-safe. */
+const SVGNS = 'http://www.w3.org/2000/svg';
+const clamp01n = (n) => (n < 0 ? 0 : n > 1 ? 1 : n);
+const svgEl = (tag, attrs) => {
+  const e = document.createElementNS(SVGNS, tag);
+  for (const k in attrs) e.setAttribute(k, String(attrs[k]));
+  return e;
+};
+
+let drag = null;         // { id } while a token is being dragged
+let lastMoveSent = 0;    // throttle stamp for outbound 'move' frames
+
+function onScene(f) {
+  state.scene.tokens = Array.isArray(f.tokens) ? f.tokens : [];
+  state.scene.actor = typeof f.actor === 'string' ? f.actor : null;
+  state.scene.lastRoll = f.lastRoll && typeof f.lastRoll === 'object' ? f.lastRoll : null;
+  renderBoard();
+}
+
+function renderBoard() {
+  const svg = $('board-svg');
+  if (!svg) return;
+  svg.replaceChildren();
+  for (const t of state.scene.tokens) {
+    if (!t || typeof t.id !== 'string') continue;
+    const x = Number.isFinite(t.x) ? clamp01n(t.x) : 0.5;
+    const y = Number.isFinite(t.y) ? clamp01n(t.y) : 0.5;
+    const who = typeof t.who === 'string' ? t.who : '';
+    const isActor = Boolean(state.scene.actor && who && state.scene.actor.toLowerCase() === who.toLowerCase());
+    const g = svgEl('g', { class: `token ${t.kind === 'npc' ? 'npc' : 'pc'}${isActor ? ' actor' : ''}`, transform: `translate(${x * 100} ${y * 100})` });
+    g.append(svgEl('circle', {
+      r: 7, fill: hueFor(who),
+      stroke: isActor ? '#f5c453' : 'rgba(0,0,0,.55)', 'stroke-width': isActor ? 2 : 1,
+    }));
+    const label = svgEl('text', { y: 14, 'text-anchor': 'middle', class: 'token-label' });
+    label.textContent = who.slice(0, 14);
+    g.append(label);
+    if (isActor && state.scene.lastRoll && Number.isFinite(state.scene.lastRoll.total)) {
+      const pop = svgEl('text', { y: -10, 'text-anchor': 'middle', class: 'token-pop' });
+      pop.textContent = `🎲 ${state.scene.lastRoll.total}`;
+      g.append(pop);
+    }
+    g.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      drag = { id: t.id };
+      svg.setPointerCapture?.(e.pointerId);
+    });
+    svg.append(g);
+  }
+}
+
+function boardNorm(evt) {
+  const r = $('board-svg').getBoundingClientRect();
+  return {
+    x: clamp01n(r.width ? (evt.clientX - r.left) / r.width : 0.5),
+    y: clamp01n(r.height ? (evt.clientY - r.top) / r.height : 0.5),
+  };
+}
+
+function sendMove(id, x, y) {
+  if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+  state.ws.send(JSON.stringify({ type: 'move', id, x, y }));
+}
+
+{
+  const svg = $('board-svg');
+  if (svg) {
+    svg.addEventListener('pointermove', (e) => {
+      if (!drag) return;
+      const now = Date.now();
+      if (now - lastMoveSent < 45) return; // stay well under the server's move allowance
+      lastMoveSent = now;
+      const { x, y } = boardNorm(e);
+      sendMove(drag.id, x, y);
+    });
+    const end = () => { drag = null; };
+    svg.addEventListener('pointerup', end);
+    svg.addEventListener('pointercancel', end);
+  }
+}
+
 /* ── Join screen / status ────────────────────────────────────────────────── */
 
 function setStatus(text) { $('status').textContent = text; }
@@ -279,6 +369,8 @@ function showJoin(error) {
   $('join-error').textContent = error;
   state.roster = [];
   state.turnName = null;
+  state.scene = { tokens: [], actor: null, lastRoll: null };
+  $('board-svg')?.replaceChildren();
 }
 
 $('join-form').addEventListener('submit', (e) => {
