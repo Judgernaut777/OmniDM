@@ -107,6 +107,12 @@ export class AnthropicProvider implements LLMProvider {
         'content-type': 'application/json',
         'x-api-key': this.apiKey,
         'anthropic-version': API_VERSION,
+        // Anthropic's API blocks browser-origin (CORS) requests unless the caller
+        // explicitly opts in with this header. The in-app "Play on this device"
+        // engine runs in a browser context (web build AND the Tauri desktop
+        // WebView, where the plain global fetch is used), so without it every
+        // Anthropic turn is blocked by the preflight. Harmless on Node/native.
+        'anthropic-dangerous-direct-browser-access': 'true',
       },
       body: JSON.stringify({
         model: req.model,

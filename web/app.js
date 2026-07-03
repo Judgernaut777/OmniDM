@@ -345,12 +345,26 @@ function charName(u) {
  * onerror fallback; a preset crest for {kind:'preset', id}; otherwise a crest
  * seeded on the character/user name. portraitSVG (portraits.js) builds every
  * crest with createElementNS — never innerHTML. */
+/* Resolve a roster/board portrait descriptor URL for DISPLAY. The descriptor
+ * carries a SERVER-RELATIVE "/portrait/<ch>/<uid>" path (defaultPortraitUrl on
+ * the server). When the active transport talks to a server on a DIFFERENT origin
+ * (cross-origin RemoteTransport — the hosted-client / Tauri / Capacitor story),
+ * that path must resolve against the SERVER's HTTP base, not the page origin, or
+ * every portrait <img>/<image> 404s and falls back to a crest. Same-origin ('')
+ * and absolute (http(s):, data:) URLs pass through unchanged. Mirrors the upload
+ * path, which already prefixes httpBase(). */
+function portraitUrl(url) {
+  if (typeof url !== 'string') return url;
+  const base = state.transport && state.transport.httpBase ? state.transport.httpBase() : '';
+  return base && url.startsWith('/') ? base + url : url;
+}
+
 function makePortrait(u) {
   const seed = charName(u) || u.userName || '';
   const p = u && u.portrait;
   if (p && p.kind === 'image' && typeof p.url === 'string') {
     const img = document.createElement('img');
-    img.src = p.url;
+    img.src = portraitUrl(p.url);
     img.alt = '';
     img.decoding = 'async';
     img.addEventListener('error', () => img.replaceWith(portraitSVG(seed, {})));
@@ -737,7 +751,7 @@ function tokenPortrait(t, kind) {
       x: -TOKEN_R, y: -TOKEN_R, width: TOKEN_R * 2, height: TOKEN_R * 2,
       preserveAspectRatio: 'xMidYMid slice',
     });
-    img.setAttribute('href', desc.url); // same-origin /portrait/... URL — never an external host
+    img.setAttribute('href', portraitUrl(desc.url)); // /portrait/... resolved against the server origin (cross-origin transport) — never an arbitrary external host
     img.addEventListener('error', () => img.replaceWith(crestNode(desc.seed, '')));
     return img;
   }

@@ -627,6 +627,26 @@ async function main() {
       anthropicModels.length === 3 &&
       anthropicModels.some((m) => m.id === 'claude-opus-4-8') &&
       anthropicModels.every((m) => !m.free));
+
+    // complete() runs from a BROWSER context in the in-app engine (web build AND
+    // the Tauri desktop WebView, where the plain global fetch is used). Anthropic's
+    // API blocks browser-origin requests unless the caller opts in with the
+    // direct-browser-access header; without it every "Play on this device" Anthropic
+    // turn dies at the CORS preflight. Capture the outgoing request to pin the header.
+    let captured: { url: string; headers: Record<string, string> } | null = null;
+    const captureFetch = (async (url: string, init: RequestInit) => {
+      captured = { url: String(url), headers: (init.headers ?? {}) as Record<string, string> };
+      return new Response(JSON.stringify({ content: [{ type: 'text', text: 'You awaken.' }] }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const ap = new AnthropicProvider({ apiKey: 'sk-secret', fetchImpl: captureFetch });
+    const reply = await ap.complete({ model: 'claude-opus-4-8', messages: [{ role: 'user', content: 'hi' }] });
+    check('anthropic: complete() joins the returned text blocks', reply === 'You awaken.');
+    check('anthropic: complete() sends the direct-browser-access header (CORS opt-in for web/Tauri WebView)',
+      captured!.headers['anthropic-dangerous-direct-browser-access'] === 'true');
+    check('anthropic: complete() still sends x-api-key + version and posts to /v1/messages',
+      captured!.headers['x-api-key'] === 'sk-secret' &&
+      captured!.headers['anthropic-version'] === '2023-06-01' &&
+      captured!.url.endsWith('/v1/messages'));
   }
 
   // ── Command routing + multiplayer ──
@@ -1306,6 +1326,14 @@ async function main() {
     check('web-ui: the roster token and card sheet render portraits, not a bare hue dot',
       appSrc.includes('makePortrait') && appSrc.includes("el('span', 'seat-portrait')") &&
       /function openCard\(/.test(appSrc) && appSrc.includes('/portrait/'));
+    // Cross-origin portrait parity: roster/board descriptors carry a server-RELATIVE
+    // /portrait/… path, so BOTH the roster <img> and the board <image> must resolve it
+    // through the transport's httpBase() — else, when the client is hosted apart from
+    // the server, every portrait 404s against the page origin and falls back to a crest.
+    check('web-ui: portraits resolve their URL through the transport httpBase (cross-origin display parity)',
+      /function portraitUrl\(/.test(appSrc) && /httpBase\(\)/.test(appSrc) &&
+      /img\.src = portraitUrl\(/.test(appSrc) &&
+      /setAttribute\('href', portraitUrl\(/.test(appSrc));
     check('web-ui: index.html includes the character-card sheet with a crest gallery + upload',
       html.includes('id="card-sheet"') && html.includes('id="card-gallery"') && html.includes('id="card-file"'));
 

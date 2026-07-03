@@ -14,8 +14,11 @@
      (any https host, or a local Ollama/LM Studio on loopback) plus ws(s) for a server
      game — a scheme allowance, NOT a baked-in external origin, and since script-src stays
      'self' it grants fetch/socket reach without opening XSS. Portraits/favicon are
-     same-origin or data: images (uploaded in-app portraits resolve to a data: URL). -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss: https: http://localhost:* http://127.0.0.1:*; object-src 'none'; base-uri 'none'; form-action 'none'">
+     same-origin or data: images (uploaded in-app portraits resolve to a data: URL);
+     `img-src https:` additionally lets a CROSS-ORIGIN game server's /portrait/… image
+     load when the client is hosted apart from the server (the same scheme allowance
+     connect-src grants — no baked origin, and an <img> can't execute script). -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' ws: wss: https: http://localhost:* http://127.0.0.1:*; object-src 'none'; base-uri 'none'; form-action 'none'">
 <title>OmniDM — the table awaits</title>
 <link rel="icon" href="data:image/svg+xml;charset=utf-8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>🎲</text></svg>">
 <link rel="stylesheet" href="style.css">
