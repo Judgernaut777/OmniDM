@@ -94,11 +94,31 @@ set `WEB_PASSWORD`, no auth. To let remote players in, put a reverse proxy
 with HTTPS and auth in front of it and set `WEB_HOST=0.0.0.0` deliberately.
 `WEB_HOST`, `WEB_PORT` (default `8787`) and `WEB_PASSWORD` all live in `.env`.
 
-The bundled client (`web/`) is a dark-fantasy table UI in three plain files —
-no build step, no external origins: a scrolling log with distinct DM / player /
-whisper styling, a party roster with a whose-turn indicator, a dice tray, and
-a command palette covering every `/dm` command. The adapter itself speaks a
-small JSON-over-WebSocket protocol that desktop/mobile UIs can reuse.
+The bundled client (`web/`) is a dark-fantasy table UI in four plain files
+(`index.html`, `app.js`, `style.css`, `portraits.js`) — no build step, no
+external origins. It has a scrolling log with distinct DM / player / whisper
+styling; a **shared battle map** where every party member and imported NPC is
+a draggable token (moves are server-authoritative, so every screen stays in
+sync — collapse it with the "Hide map" toggle); a party roster with a
+round-robin whose-turn indicator; a **felt dice tray** whose faces tumble and
+settle on the engine's *real* roll (never re-rolled; skipped under
+`prefers-reduced-motion`), with the total popping over the roller's token on
+the map; and a command palette covering every `/dm` command.
+
+**Portraits & character cards.** Each seat and each map token is drawn as a
+portrait. Pick one of eight preset archetype crests with `/dm portrait
+<preset>` (`fighter`, `mage`, `ranger`, `rogue`, `cleric`, `bard`,
+`barbarian`, `druid`) — rendered as procedural heraldic avatars entirely
+client-side — or click your own seat to open a **character-card panel** (large
+portrait, name, card summary) and upload your own picture (png/jpeg/gif/webp,
+served same-origin with `nosniff`). On the map, PCs get a gold rim, NPCs a
+dashed steel rim, and whoever's turn it is glows with the candle motif; an
+imported card's embedded PNG becomes its portrait automatically.
+
+The adapter itself speaks a small JSON-over-WebSocket protocol (`msg`, `roll`,
+`scene`, `move`, and roster frames) that desktop/mobile UIs can reuse; portrait
+image bytes travel over HTTP (`GET`/`POST /portrait/<channel>/<user>`), never
+inside a socket frame.
 
 ## Using whatever model you want
 
@@ -178,7 +198,8 @@ core/
   bot.ts         ← platform-agnostic router (commands + turns)
   types.ts       ← canonical Message / Session / Provider contracts
   cards/
-    card.ts      ← Character Card V2/V3 import (JSON or PNG-embedded)
+    card.ts      ← Character Card V2/V3 import (JSON or PNG-embedded); Portrait type
+  portraits.ts   ← fixed preset-archetype catalog (`/dm portrait`); id normalizer
   lore/
     lorebook.ts  ← keyword-triggered world info (/dm lore, card character_books)
   engine/
@@ -199,7 +220,8 @@ providers/
 rules/
   dnd5e/system.md       ← swappable rules module
 web/               ← browser client served by the web adapter (no build step)
-  index.html / app.js / style.css
+  index.html / app.js / style.css   ← table UI: log, roster, battle map, dice tray, card panel
+  portraits.js     ← procedural heraldic crest portraits, shared by roster + token board
 ```
 
 **Add a chat platform:** implement `PlatformAdapter` (4 methods) in `adapters/`,
@@ -226,8 +248,21 @@ Shipped since the initial scaffold (newest first):
   and fades. Collapse it with the topbar-adjacent "Map" toggle; it stacks above
   the log on mobile. XSS-safe (SVG built with `createElementNS`, labels via
   `textContent`), no external origins, reduced-motion aware
-- **Browser table UI** — `web/` is three plain files (`index.html`, `app.js`,
-  `style.css`): no build step, no external origins; join screen (name + room
+- **Character portraits, cards & animated dice** — every seat and battle-map
+  token is a portrait: one of eight preset archetype crests (`/dm portrait
+  <preset>`) rendered as procedural heraldic avatars entirely client-side
+  (`web/portraits.js`, `createElementNS` / `textContent` only — never
+  `innerHTML`), or your own uploaded picture (png/jpeg/gif/webp, POSTed to
+  `/portrait/<channel>/<user>` behind the room password, stored on the seat and
+  served same-origin with `nosniff` + a clamped content-type). Clicking a seat
+  opens a character-card panel with the large portrait, name and card summary;
+  your own seat also gets a crest gallery and the upload control. An imported
+  card's embedded PNG becomes its portrait automatically. The felt dice tray
+  tumbles each die through random faces before settling on the engine's
+  *authoritative* value — never re-rolled — skipped under
+  `prefers-reduced-motion`
+- **Browser table UI** — `web/` is four plain files (`index.html`, `app.js`,
+  `style.css`, `portraits.js`): no build step, no external origins; join screen (name + room
   code + optional password), scrolling log with distinct DM / player / whisper
   styling, party roster with a round-robin whose-turn indicator, dice
   quick-buttons plus custom notation, and a command palette covering every
