@@ -156,36 +156,100 @@ The adapter itself speaks a small JSON-over-WebSocket protocol (`msg`, `roll`,
 image bytes travel over HTTP (`GET`/`POST /portrait/<channel>/<user>`), never
 inside a socket frame.
 
-### Run on desktop (Tauri) and mobile (Capacitor)
+## Desktop & mobile apps
 
-The same `web/` client is wrapped as native apps with **no rewrite** — both use
-the **hybrid model**: a native WebView loads the committed client and runs the
-whole AI-DM engine (`web/engine.bundle.js`) **in the WebView**. No Node sidecar,
-no bundled server. "Play on this device" talks straight to your own LLM; "Connect
-to a server" uses the unchanged WebSocket protocol.
+The same `web/` client is wrapped as native **desktop (Tauri)** and **mobile
+(Capacitor iOS + Android)** apps with **no rewrite**. Both use the same **hybrid
+model** as the browser: a native WebView loads the committed client and runs the
+whole AI-DM engine (`web/engine.bundle.js`) **inside the WebView**. There is **no
+Node sidecar and no bundled server** — the shells are thin (a WebView + a small
+Rust crate for Tauri; a WebView + a native project for Capacitor).
 
-- **Desktop** — Tauri v2 (`src-tauri/`, `npm run tauri:dev` / `tauri:build`).
-- **Mobile** — Capacitor for **iOS + Android** (`capacitor.config.ts`,
-  `capacitor/`). `appId com.omnidm.app`, `webDir` = the committed `web/` client.
+- **Play on this device** — the engine runs in-app with *your* provider, base
+  URL, model and **API key**, stored only on that device (WebView localStorage)
+  and sent only to the LLM endpoint you configured. Solo / hotseat, no server.
+- **Connect to a server** — point the app at an OmniDM server (`npm run web`
+  running elsewhere) for multiplayer over the unchanged WebSocket protocol.
 
-  ```bash
-  npm install                 # brings in @capacitor/{core,cli,ios,android}
-  npm run build:web           # refresh web/engine.bundle.js if the engine changed
-  npx cap add android         # generate the native project (Android SDK required)
-  npm run cap:sync            # copy web/ into it + update plugins
-  npm run cap:android         # build & launch on an emulator/device
-  # iOS (macOS + Xcode only): npx cap add ios && npm run cap:sync && npx cap open ios
-  ```
+Both shells install `identifier`/`appId` `com.omnidm.app` and point at the
+committed `web/` directory, so no separate build/copy of the front end is needed;
+rerun `npm run build:web` only after changing the shared engine under `src/core`
+or `src/providers`.
 
-  **LLM CORS on device.** A mobile WebView is still a browser, so a plain `fetch`
-  to your LLM endpoint is subject to CORS. On a Capacitor **native** platform the
-  in-app provider instead routes through the native **`CapacitorHttp`** stack
-  (URLSession / OkHttp) — not a browser context, so no CORS and no page-CSP
-  `connect-src` gate; any LLM host is reachable. This is **feature-detected**
-  (`src/browser/native-http.ts`): native → CapacitorHttp, plain browser → `fetch`.
-  Your API key stays on the device (WebView localStorage in v1) and is sent only
-  to the endpoint you configured. Full build steps + toolchain requirements +
-  the offline WebView check are in [`capacitor/README.md`](capacitor/README.md).
+The native project outputs (`src-tauri/target/`, Capacitor's `android/` and
+`ios/`) are **not committed** and are **not built on this Linux box** — it has no
+Rust/Cargo, no `webkit2gtk-4.1`, no Android SDK and no macOS/Xcode. What is
+committed is the complete scaffold (configs, scripts, a Rust crate, icons, and
+per-platform READMEs); a device build needs only the toolchain below. Each
+platform also ships an **offline headless-chromium check** that runs here with no
+native toolchain (`node src-tauri/webview-check.mjs`, `node
+capacitor/webview-check.mjs`) — they serve `web/` under the exact app CSP / a
+simulated native runtime and drive a real in-app turn through the actual bundle.
+
+### Desktop — Tauri v2 (`src-tauri/`)
+
+Toolchain (a developer machine, not this CI box):
+
+| Requirement | Detail |
+|---|---|
+| **Rust** stable ≥ 1.77.2 | install via <https://rustup.rs> |
+| **Node ≥ 22** + `npm install` | provides `@tauri-apps/cli` |
+| **Linux** deps | `webkit2gtk-4.1`, `librsvg2`, build tooling — on Debian/Ubuntu: `sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev` |
+| **macOS** deps | Xcode Command Line Tools (`xcode-select --install`); system WKWebView, nothing else — produces `.app` / `.dmg` |
+| **Windows** deps | MSVC C++ Build Tools + the **WebView2** runtime (bundled on Win11) — produces `.msi` / `.exe` |
+
+```bash
+npm install            # installs @tauri-apps/cli
+npm run build:web      # refresh web/engine.bundle.js if the engine changed
+npm run tauri:dev      # launch the desktop app (devtools)
+npm run tauri:build    # release bundle → src-tauri/target/release/bundle/
+npm run tauri -- info  # verify your toolchain
+```
+
+`frontendDist` points straight at the static `web/` directory, so there is no dev
+server or `beforeDevCommand`. The window is CSP-locked exactly like the web
+client (`script-src 'self'` keeps XSS shut; `connect-src` allows `https:` +
+loopback so the in-app engine can reach the *user-configured* LLM host — a scheme
+allowance, no baked-in origin), and the capability set is Tauri **core defaults
+only** (no fs/shell/http reach). Details in
+[`src-tauri/README.md`](src-tauri/README.md).
+
+### Mobile — Capacitor iOS + Android (`capacitor.config.ts`, `capacitor/`)
+
+Toolchain:
+
+| Target | Requirements |
+|---|---|
+| **Android** | Android Studio + **Android SDK** (`ANDROID_HOME` set), a JDK 17+, Gradle (wrapper generated). Emulator or a USB-debug device. |
+| **iOS** | **macOS** + **Xcode** + CocoaPods (`sudo gem install cocoapods`), a simulator or a device + an Apple signing profile. **iOS cannot be built off a Mac.** |
+| **Both** | Node ≥ 22 + this repo's `npm install` (provides `@capacitor/cli`). |
+
+```bash
+npm install            # brings in @capacitor/{core,cli,android,ios}
+npm run build:web      # refresh web/engine.bundle.js if the engine changed
+
+npx cap add android    # one-time: generate android/ (Android SDK; not committed)
+npm run cap:sync       # copy web/ into the native project + update plugins
+npm run cap:android    # build & launch on an emulator/device (cap run android)
+
+# iOS — on a Mac only:
+npx cap add ios        # one-time: generate ios/ (needs macOS)
+npm run cap:sync
+npx cap open ios       # open in Xcode → pick a signing team → Run
+```
+
+**LLM CORS on device.** A mobile WebView is still a browser, so a plain `fetch`
+to your LLM endpoint is subject to CORS (and the page CSP's `connect-src`). On a
+Capacitor **native** platform the in-app provider instead routes through the
+native **`CapacitorHttp`** stack (URLSession on iOS, OkHttp on Android) — not a
+browser context, so **no CORS and no CSP gate**; any LLM host is reachable. The
+selection is **feature-detected** in `src/browser/native-http.ts`: `selectFetch()`
+returns a `CapacitorHttp`-backed fetch only when `window.Capacitor.isNativePlatform()`
+is true and the plugin is registered, otherwise `undefined` so a plain browser and
+the Node server keep the default fetch. That fetch is threaded into both providers
+via `buildProvider({ …, fetchImpl })`. Your API key stays on the device (WebView
+localStorage in v1) and is sent only to the endpoint you configured. Full steps +
+the offline WebView check are in [`capacitor/README.md`](capacitor/README.md).
 
 ## Using whatever model you want
 
@@ -280,25 +344,39 @@ core/
   narrator/
     narrator.ts  ← builds the prompt; LLM narrates resolved turns
     fog.ts       ← splits [PRIVATE:<Name>]…[/PRIVATE] whispers out of narration
+  room/
+    room-engine.ts ← transport-agnostic RoomEngine: seat/roster/scene/roll/fog/portrait semantics, no node:http/ws/fs (shared by the web adapter AND the in-app engine)
   session/
     session-manager.ts  ← channel → game session, party, seat re-claim after reconnect
     storage.ts   ← SessionStorage interface + MemoryStorage (the browser/mobile seam)
     store.ts     ← NodeFileStorage: JSON files under DATA_DIR
+    browser-storage.ts  ← BrowserSessionStorage: IndexedDB (localStorage fallback) for the in-app engine
 providers/
   openai-compatible.ts  ← OpenRouter/OpenAI/Ollama/LM Studio (one adapter)
   anthropic.ts          ← native Anthropic Messages API (system param + role converter)
 rules/
   dnd5e/system.md       ← swappable rules module
-browser/
+browser/               ← in-app (WebView) engine seam, no node: on the engine path
   local-engine.ts  ← in-app composition root: wires Bot + RoomEngine + browser storage + provider (the LocalTransport's engine)
   engine-entry.ts  ← the one module esbuild bundles → web/engine.bundle.js (global OmniDMEngine)
+  native-http.ts   ← selectFetch(): CapacitorHttp-backed fetch on a native mobile platform (CORS bypass), else default fetch (feature-detected)
 scripts/
   build-web.mjs    ← esbuild bundle step for web/engine.bundle.js (npm run build:web); stubs the Node-only card loader
-web/               ← browser client served by the web adapter
+web/               ← browser client served by the web adapter AND wrapped by the Tauri/Capacitor shells
   index.html / app.js / style.css   ← table UI: launch/settings, log, roster, battle map, dice tray, character creator + card sheet
   transport.js     ← hybrid transport: RemoteTransport (WebSocket → server) | LocalTransport (in-page engine)
   engine.bundle.js ← the shared engine bundled for the browser (GENERATED by npm run build:web; committed)
   portraits.js     ← procedural heraldic crest portraits, shared by roster + token board
+src-tauri/         ← Tauri v2 DESKTOP shell (WebView over web/, thin Rust crate)
+  tauri.conf.json  ← app id/window/CSP/bundle; frontendDist → ../web
+  Cargo.toml / build.rs / src/{main,lib}.rs   ← Rust crate (no Node sidecar, no custom commands)
+  capabilities/default.json   ← permission set: Tauri core defaults ONLY (no fs/shell/http)
+  icons/           ← generated app icons + generate-icons.mjs (npm run tauri:icons)
+  webview-check.mjs ← offline headless-chromium check of web/ under the exact Tauri CSP
+capacitor.config.ts  ← Capacitor MOBILE (iOS + Android) shell config: appId com.omnidm.app, webDir → web/, CapacitorHttp enabled
+capacitor/
+  README.md        ← per-platform build steps + toolchain + the CORS/native-HTTP story
+  webview-check.mjs ← offline check simulating the native WebView (injects window.Capacitor + CapacitorHttp stub)
 ```
 
 **Add a chat platform:** implement `PlatformAdapter` (4 methods) in `adapters/`,
@@ -314,6 +392,31 @@ message-converter pattern as a pure function plus a thin fetch wrapper.
 
 Shipped since the initial scaffold (newest first):
 
+- **Desktop & mobile apps (hybrid)** — the `web/` client is wrapped, with **no
+  rewrite**, as a **Tauri v2** desktop app (`src-tauri/`) and a **Capacitor**
+  iOS + Android app (`capacitor.config.ts`, `capacitor/`). Both are thin native
+  WebViews that run the whole AI-DM engine in-WebView (no Node sidecar, no bundled
+  server); "Play on this device" uses your own key, "Connect to a server" uses the
+  unchanged WebSocket protocol. The Tauri window keeps the web client's strict CSP
+  (`script-src 'self'`) and Tauri **core-default** capabilities only; on a native
+  mobile platform the in-app LLM call routes through **`CapacitorHttp`** to bypass
+  WebView CORS (feature-detected in `src/browser/native-http.ts`). Scaffold +
+  configs + scripts + icons + per-platform READMEs are committed and verified by
+  the Node gates plus offline headless-chromium WebView checks; **the native
+  builds are not run here** (this box has no Rust/webkit2gtk, no Android SDK, no
+  macOS/Xcode) — and **iOS can only be built on a Mac**
+- **In-app engine + hybrid browser client** — the core was made browser-runnable
+  without breaking Node: the web adapter's room/protocol logic was extracted into
+  a transport-agnostic **`RoomEngine`** (`src/core/room`), the Node-only
+  touchpoints (rules loader, card PNG/zlib loader, session storage, provider
+  browser-mode) put behind interfaces, and a **`BrowserSessionStorage`**
+  (IndexedDB / localStorage) added. The browser client now talks to a **Transport**
+  (`web/transport.js`): `RemoteTransport` (WebSocket → server) or `LocalTransport`,
+  which runs `RoomEngine` + `Bot` + browser storage + your provider **in-page**.
+  The shared engine is bundled same-origin by **`npm run build:web`** into the
+  committed `web/engine.bundle.js`. The launch screen lets you pick "Play on this
+  device" (BYO provider/key, stored locally, sent only to your model) vs "Connect
+  to a server", and remembers the choice
 - **D&D 5e classes, bios & a character creator** — the portrait catalog is now
   the twelve official D&D 5e classes (`barbarian`, `bard`, `cleric`, `druid`,
   `fighter`, `monk`, `paladin`, `ranger`, `rogue`, `sorcerer`, `warlock`,
@@ -398,6 +501,13 @@ Shipped since the initial scaffold (newest first):
 - Initiative-rolled turn order (round-robin by join order is in)
 - More adapters: Signal (via signal-cli)
 - More native providers beyond Anthropic
+- Native app builds & distribution — the desktop/mobile **scaffolds** are in, but
+  the platform builds have not been run here: generate and commit (or CI-build)
+  the Capacitor `android/` / `ios/` projects, produce signed Tauri bundles per OS,
+  and set up code signing / notarization. (iOS requires a Mac + Xcode.)
+- Harden on-device key storage — move the in-app API key out of WebView
+  localStorage into the platform secure store (iOS Keychain / Android Keystore,
+  OS keychain on desktop)
 
 ## Prior art studied
 
