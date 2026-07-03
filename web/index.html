@@ -76,6 +76,28 @@
   </div>
 </div>
 
+<!-- Character card sheet: a seat's portrait, name, card summary, and (for your
+     own seat) a crest picker + upload-your-own control -->
+<div id="card-sheet" hidden>
+  <div id="card-sheet-inner" role="dialog" aria-modal="true" aria-label="Character card">
+    <button id="card-close" type="button" aria-label="Close">✕</button>
+    <div id="card-portrait" class="card-portrait" aria-hidden="true"></div>
+    <h2 id="card-name" class="card-name"></h2>
+    <div id="card-sub" class="card-sub"></div>
+    <p id="card-desc" class="card-desc"></p>
+    <div id="card-picker" class="card-picker" hidden>
+      <h3>Choose your crest</h3>
+      <div id="card-gallery" class="card-gallery" role="list"></div>
+      <label class="card-upload">
+        <span>Upload your own portrait</span>
+        <input id="card-file" type="file" accept="image/*">
+      </label>
+      <div id="card-upload-status" class="card-upload-status" role="status" aria-live="polite"></div>
+    </div>
+  </div>
+</div>
+
+<script src="portraits.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -138,6 +138,55 @@ class WsClient {
   }
 }
 
+/**
+ * Best-effort offline sanity check: render a procedural crest inside headless
+ * chromium to prove portraitSVG actually builds an SVG via createElementNS (not
+ * just that the source parses) and is deterministic per seed. Skipped — never
+ * failed — when chromium is missing or won't run, so the gate stays portable.
+ */
+async function headlessCrestCheck(portraitSrc: string): Promise<void> {
+  const chromium = '/usr/bin/chromium';
+  try {
+    await fs.access(chromium);
+  } catch {
+    console.log('⏭  web-ui: headless crest check skipped (no chromium)');
+    return;
+  }
+  const tmpDir = path.join('data', 'smoke');
+  await fs.mkdir(tmpDir, { recursive: true });
+  const htmlPath = path.join(tmpDir, 'crest-probe.html');
+  const page = `<!doctype html><html><head><meta charset="utf-8"></head><body><pre id="out"></pre>
+<script>${portraitSrc}
+try {
+  var svg = portraitSVG('fighter', { preset: 'fighter' });
+  var stops = svg.getElementsByTagName('stop');
+  var ok = svg.tagName.toLowerCase() === 'svg'
+    && svg.getAttribute('class') === 'crest'
+    && svg.querySelector('.crest-emblem') != null
+    && svg.querySelectorAll('path').length >= 2
+    && stops.length >= 2;
+  var a = portraitSVG('Thorin', {}).getElementsByTagName('stop')[0].getAttribute('stop-color');
+  var b = portraitSVG('Thorin', {}).getElementsByTagName('stop')[0].getAttribute('stop-color');
+  document.getElementById('out').textContent = 'CREST_OK=' + (ok && a === b);
+} catch (e) {
+  document.getElementById('out').textContent = 'CREST_OK=false:' + e;
+}
+</script></body></html>`;
+  await fs.writeFile(htmlPath, page, 'utf8');
+  const { spawnSync } = await import('node:child_process');
+  const res = spawnSync(
+    chromium,
+    ['--headless', '--no-sandbox', '--disable-gpu', '--dump-dom', `file://${path.resolve(htmlPath)}`],
+    { encoding: 'utf8', timeout: 25000 },
+  );
+  const dom = String(res.stdout ?? '');
+  if (res.error || !dom.includes('CREST_OK=')) {
+    console.log('⏭  web-ui: headless crest check skipped (chromium did not produce output)');
+    return;
+  }
+  check('web-ui: headless chromium renders a deterministic procedural crest (createElementNS)', dom.includes('CREST_OK=true'));
+}
+
 async function main() {
   const dataDir = path.join('data', 'smoke');
   await fs.rm(dataDir, { recursive: true, force: true });
@@ -769,17 +818,19 @@ async function main() {
     // The browser UI ships as three plain files; each must arrive with a sane
     // content-type, and the HTML must be self-contained (no external origins —
     // players and the LLM are untrusted, and Capacitor will wrap this offline).
-    const [htmlRes, jsRes, cssRes] = await Promise.all(
-      ['index.html', 'app.js', 'style.css'].map((f) => fetch(`http://127.0.0.1:${port}/${f}`)),
+    const [htmlRes, jsRes, cssRes, portraitJsRes] = await Promise.all(
+      ['index.html', 'app.js', 'style.css', 'portraits.js'].map((f) => fetch(`http://127.0.0.1:${port}/${f}`)),
     );
     check('web-ui: index.html served as text/html', htmlRes.ok && Boolean(htmlRes.headers.get('content-type')?.startsWith('text/html')));
     check('web-ui: app.js served as text/javascript', jsRes.ok && Boolean(jsRes.headers.get('content-type')?.startsWith('text/javascript')));
     check('web-ui: style.css served as text/css', cssRes.ok && Boolean(cssRes.headers.get('content-type')?.startsWith('text/css')));
+    check('web-ui: portraits.js served as text/javascript', portraitJsRes.ok && Boolean(portraitJsRes.headers.get('content-type')?.startsWith('text/javascript')));
     const html = await htmlRes.text();
-    check('web-ui: HTML wires up app.js and style.css', html.includes('src="app.js"') && html.includes('href="style.css"'));
+    check('web-ui: HTML wires up app.js, portraits.js and style.css',
+      html.includes('src="app.js"') && html.includes('src="portraits.js"') && html.includes('href="style.css"'));
     const srcHrefs = [...html.matchAll(/(?:src|href)\s*=\s*"([^"]*)"/gi)].map((m) => m[1]);
-    check('web-ui: no src/href attribute points at an external origin',
-      srcHrefs.length >= 3 && srcHrefs.every((v) => !/^(?:https?:)?\/\//i.test(v)));
+    check('web-ui: every asset reference is same-origin (relative), never an external origin',
+      srcHrefs.length >= 4 && srcHrefs.every((v) => !/^(?:https?:)?\/\//i.test(v)));
     // The client is DOM code smoke can't execute, so pin its two reconnect-UX
     // fixes statically: Leave must not depend on a close event (a CLOSED socket
     // fires none), and a trailing close must not wipe a shown join error.
@@ -788,6 +839,24 @@ async function main() {
       /'leave-btn'\)[^]*?clearTimeout\(state\.retryTimer\)[^]*?showJoin\(''\)/.test(appSrc));
     check('web-ui: a close event after a refused hello cannot wipe the join-screen error',
       /if \(\$\('join-screen'\)\.hidden\) showJoin\(''\)/.test(appSrc));
+    // The portrait helper must be procedural + XSS-safe: crests are built with
+    // createElementNS (never innerHTML) and cover all eight preset archetypes.
+    const portraitSrc = await portraitJsRes.text();
+    check('web-ui: portraits.js exposes portraitSVG and the full preset catalog',
+      /function portraitSVG\(/.test(portraitSrc) &&
+      PORTRAIT_PRESETS.every((id) => portraitSrc.includes(`${id}:`)));
+    check('web-ui: crests are built with createElementNS, with no innerHTML assignment',
+      portraitSrc.includes('createElementNS') && !/\.innerHTML\s*=/.test(portraitSrc));
+    check('web-ui: the roster token and card sheet render portraits, not a bare hue dot',
+      appSrc.includes('makePortrait') && appSrc.includes("el('span', 'seat-portrait')") &&
+      /function openCard\(/.test(appSrc) && appSrc.includes('/portrait/'));
+    check('web-ui: index.html includes the character-card sheet with a crest gallery + upload',
+      html.includes('id="card-sheet"') && html.includes('id="card-gallery"') && html.includes('id="card-file"'));
+
+    // Optional, offline: render a crest in headless chromium to prove the
+    // procedural SVG actually builds (createElementNS path) and is deterministic.
+    // Best-effort — skipped (never failed) when chromium is unavailable.
+    await headlessCrestCheck(portraitSrc);
 
     const bad = new WsClient(url);
     await bad.open();

@@ -167,10 +167,14 @@ function onRoll(f) {
   art.append(head);
 
   const tray = el('div', 'roll-dice');
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
   for (const face of dice.length ? dice : [total]) {
     const die = el('span', 'die-face');
     die.textContent = String(face);
-    die.style.animationDelay = `${Math.floor(Math.random() * 140)}ms`;
+    if (!reduce) {
+      die.style.animationDelay = `${Math.floor(Math.random() * 140)}ms`;
+      settleDie(die, face);
+    }
     tray.append(die);
   }
   art.append(tray);
@@ -190,6 +194,26 @@ function onRoll(f) {
 
   log.append(art);
   if (stick) log.scrollTop = log.scrollHeight;
+}
+
+/* Make a die visibly tumble through random faces before settling on the
+ * engine's real value (never re-rolled — the final face is always `value`).
+ * Off under prefers-reduced-motion (the caller skips this entirely) and
+ * non-blocking: it drives itself on a short timer and lands quickly. */
+function settleDie(die, value) {
+  let ticks = 5 + Math.floor(Math.random() * 5);
+  const hi = Math.max(6, value);
+  const iv = setInterval(() => {
+    if (ticks-- <= 0) {
+      clearInterval(iv);
+      die.textContent = String(value); // authoritative: settle on the real face
+      die.classList.remove('spin');
+      die.classList.add('settled');
+      return;
+    }
+    die.textContent = String(1 + Math.floor(Math.random() * hi));
+    die.classList.toggle('spin');
+  }, 72);
 }
 
 /* ── Log ─────────────────────────────────────────────────────────────────── */
@@ -238,19 +262,24 @@ function renderRoster() {
   box.replaceChildren();
   for (const u of state.roster) {
     const seat = el('div', 'seat');
-    const dot = el('span', 'dot');
-    dot.style.color = dot.style.background = hueFor(u.userName);
+    seat.setAttribute('role', 'button');
+    seat.tabIndex = 0;
+    seat.title = 'Open character card';
+    const frame = el('span', 'seat-portrait');
+    frame.append(makePortrait(u));
     const names = el('div', 'names');
     const user = el('div', 'user');
     user.textContent = u.userName + (u.userId === state.userId ? ' (you)' : '');
     names.append(user);
-    const char = state.chars.get(u.userName);
+    // The enriched roster carries the server's character name; fall back to the
+    // heuristic map parsed from relayed /dm join lines when it is absent.
+    const char = charName(u);
     if (char && char !== u.userName) {
       const c = el('div', 'char');
       c.textContent = `as ${char}`;
       names.append(c);
     }
-    seat.append(dot, names);
+    seat.append(frame, names);
     const turn = state.turnName &&
       [char, u.userName].some((n) => n && n.toLowerCase() === state.turnName.toLowerCase());
     if (turn) {
@@ -259,9 +288,38 @@ function renderRoster() {
       badge.textContent = '⚔ acting';
       seat.append(badge);
     }
+    seat.addEventListener('click', () => openCard(u));
+    seat.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openCard(u); }
+    });
     box.append(seat);
   }
   $('turn-line').textContent = state.turnName ? `⚔ ${state.turnName} acts` : '';
+}
+
+/** A seat's character name: server-enriched roster first, then the relay map. */
+function charName(u) {
+  return (typeof u.characterName === 'string' && u.characterName) || state.chars.get(u.userName) || '';
+}
+
+/* A round token for a roster seat / card sheet: an uploaded image (same-origin)
+ * when the descriptor is {kind:'image', url}, with the procedural crest as its
+ * onerror fallback; a preset crest for {kind:'preset', id}; otherwise a crest
+ * seeded on the character/user name. portraitSVG (portraits.js) builds every
+ * crest with createElementNS — never innerHTML. */
+function makePortrait(u) {
+  const seed = charName(u) || u.userName || '';
+  const p = u && u.portrait;
+  if (p && p.kind === 'image' && typeof p.url === 'string') {
+    const img = document.createElement('img');
+    img.src = p.url;
+    img.alt = '';
+    img.decoding = 'async';
+    img.addEventListener('error', () => img.replaceWith(portraitSVG(seed, {})));
+    return img;
+  }
+  if (p && p.kind === 'preset' && typeof p.id === 'string') return portraitSVG(seed, { preset: p.id });
+  return portraitSVG(seed, {});
 }
 
 /** Deterministic per-name hue, so a speaker keeps one color everywhere. */
@@ -270,6 +328,83 @@ function hueFor(name) {
   for (const ch of String(name)) h = (h * 31 + ch.codePointAt(0)) % 360;
   return `hsl(${h} 45% 62%)`;
 }
+
+/* ── Character card sheet ─────────────────────────────────────────────────────
+ * Clicking a roster seat opens a sheet with the large portrait, the character
+ * name, and the bounded card summary (all via textContent — the card text is
+ * untrusted). For your OWN seat it also offers a crest gallery (each choice
+ * sends "/dm portrait <id>") and an upload control that POSTs the chosen image
+ * to /portrait/<channel>/<user>; the server then rebroadcasts the roster. */
+let galleryBuilt = false;
+
+function buildGallery() {
+  if (galleryBuilt) return;
+  galleryBuilt = true;
+  const g = $('card-gallery');
+  for (const id of PORTRAIT_PRESETS) {
+    const btn = el('button', 'crest-choice');
+    btn.type = 'button';
+    btn.title = id;
+    btn.setAttribute('role', 'listitem');
+    btn.append(portraitSVG(id, { preset: id }));
+    const cap = el('span', 'crest-cap');
+    cap.textContent = id;
+    btn.append(cap);
+    btn.addEventListener('click', () => { sendSay(`/dm portrait ${id}`); closeCard(); });
+    g.append(btn);
+  }
+}
+
+function openCard(u) {
+  $('card-portrait').replaceChildren(makePortrait(u));
+  const name = charName(u) || u.userName || 'Adventurer';
+  $('card-name').textContent = name;
+  $('card-sub').textContent = name !== u.userName ? `played by ${u.userName}` : u.userName;
+  const desc = u && u.card && typeof u.card.description === 'string' ? u.card.description.trim() : '';
+  $('card-desc').textContent = desc || 'No character card imported yet.';
+  const mine = u.userId === state.userId;
+  const picker = $('card-picker');
+  picker.hidden = !mine;
+  if (mine) buildGallery();
+  $('card-upload-status').textContent = '';
+  $('card-sheet').hidden = false;
+}
+
+function closeCard() { $('card-sheet').hidden = true; }
+
+$('card-close').addEventListener('click', closeCard);
+$('card-sheet').addEventListener('click', (e) => { if (e.target === $('card-sheet')) closeCard(); });
+
+$('card-file').addEventListener('change', async (e) => {
+  const file = e.target.files && e.target.files[0];
+  e.target.value = ''; // let the same file be re-picked after a failure
+  if (!file || !state.join || !state.userId) return;
+  const status = $('card-upload-status');
+  status.textContent = 'Uploading…';
+  try {
+    const ch = encodeURIComponent(state.join.channelId);
+    const uid = encodeURIComponent(state.userId);
+    const q = state.join.password ? `?password=${encodeURIComponent(state.join.password)}` : '';
+    const res = await fetch(`/portrait/${ch}/${uid}${q}`, {
+      method: 'POST',
+      headers: { 'Content-Type': file.type || 'application/octet-stream' },
+      body: file,
+    });
+    if (!res.ok) {
+      status.textContent = res.status === 401
+        ? 'Upload refused — check the room password.'
+        : res.status === 413 ? 'That image is too large.'
+        : res.status === 415 ? 'That file is not an image.'
+        : `Upload failed (${res.status}).`;
+      return;
+    }
+    // The server broadcasts a fresh roster, which re-renders the token for us.
+    status.textContent = 'Portrait updated.';
+    setTimeout(closeCard, 700);
+  } catch {
+    status.textContent = 'Upload failed — connection error.';
+  }
+});
 
 /* ── Token board (VTT-lite) ──────────────────────────────────────────────────
  * The adapter owns the board: a 'scene' frame carries every token
@@ -471,4 +606,4 @@ const COMMANDS = [
 
 $('palette-btn').addEventListener('click', () => { $('palette').hidden = !$('palette').hidden; });
 $('palette').addEventListener('click', (e) => { if (e.target === $('palette')) $('palette').hidden = true; });
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') $('palette').hidden = true; });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { $('palette').hidden = true; closeCard(); } });
