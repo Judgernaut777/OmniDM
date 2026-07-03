@@ -8,31 +8,80 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
-<!-- Defense-in-depth: players and the LLM are untrusted. Lock scripts to same-origin
-     (no inline/injected code executes), block plugins/base-tag hijacks, and keep every
-     fetch/socket same-origin. Portraits and the favicon are same-origin or data: images. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:; object-src 'none'; base-uri 'none'; form-action 'none'">
+<!-- Defense-in-depth: players and the LLM are untrusted. Lock SCRIPTS to same-origin
+     (no inline/injected code executes) and block plugins/base-tag hijacks. `connect-src`
+     additionally allows the user-configured LLM endpoint used by "Play on this device"
+     (any https host, or a local Ollama/LM Studio on loopback) plus ws(s) for a server
+     game — a scheme allowance, NOT a baked-in external origin, and since script-src stays
+     'self' it grants fetch/socket reach without opening XSS. Portraits/favicon are
+     same-origin or data: images (uploaded in-app portraits resolve to a data: URL). -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss: https: http://localhost:* http://127.0.0.1:*; object-src 'none'; base-uri 'none'; form-action 'none'">
 <title>OmniDM — the table awaits</title>
 <link rel="icon" href="data:image/svg+xml;charset=utf-8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>🎲</text></svg>">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
-<!-- Join screen: name + room code (+ optional password) -->
+<!-- Launch screen: pick how to play (in-app engine vs a server), name + room,
+     and the relevant settings. Persisted in localStorage; reopenable via the
+     topbar ⚙ Settings button. (Kept id="join-screen" — showJoin() toggles it.) -->
 <section id="join-screen">
-  <form id="join-form" class="scroll-card">
+  <form id="join-form" class="scroll-card launch-card">
     <h1>🎲 OmniDM</h1>
-    <p class="tagline">An AI Dungeon Master awaits. Gather your party.</p>
+    <p class="tagline">An AI Dungeon Master awaits. Choose how to play.</p>
+
+    <!-- Mode picker: in-app engine (this device) vs a shared server -->
+    <div class="mode-picker" role="radiogroup" aria-label="How to play">
+      <button type="button" id="mode-local" class="mode-choice" role="radio" aria-checked="true" data-mode="local">
+        <span class="mode-title">🕯 Play on this device</span>
+        <span class="mode-desc">The AI DM runs in this app with your own model. Solo or hotseat — this device only.</span>
+      </button>
+      <button type="button" id="mode-server" class="mode-choice" role="radio" aria-checked="false" data-mode="server">
+        <span class="mode-title">🌐 Connect to a server</span>
+        <span class="mode-desc">Join an OmniDM server to play multiplayer with friends across devices.</span>
+      </button>
+    </div>
+
     <label>Adventurer
       <input id="j-name" required maxlength="40" placeholder="Your name" autocomplete="username">
     </label>
     <label>Room code
       <input id="j-room" required maxlength="60" placeholder="tavern" value="tavern">
     </label>
-    <label>Password <small>(only if the keeper set one)</small>
-      <input id="j-pass" type="password" placeholder="—" autocomplete="current-password">
-    </label>
-    <button type="submit" class="btn-gold">Enter the tavern</button>
+
+    <!-- In-app (local) settings: the user brings their own model + key. The key is
+         stored ONLY on this device and sent ONLY to the endpoint below. -->
+    <fieldset id="local-settings" class="mode-fields">
+      <legend>Your AI model <small>bring your own</small></legend>
+      <label>Provider
+        <select id="llm-provider">
+          <option value="">OpenAI-compatible (OpenRouter, OpenAI, Ollama, LM Studio…)</option>
+          <option value="anthropic">Anthropic (Claude, native)</option>
+        </select>
+      </label>
+      <label>Base URL
+        <input id="llm-baseurl" maxlength="200" placeholder="https://openrouter.ai/api/v1" autocomplete="off">
+      </label>
+      <label>API key <small>stored on this device only; sent only to the endpoint above</small>
+        <input id="llm-apikey" type="password" maxlength="400" placeholder="sk-…  (leave blank for local models)" autocomplete="off">
+      </label>
+      <label>Model
+        <input id="llm-model" maxlength="120" placeholder="meta-llama/llama-3.3-70b-instruct:free" autocomplete="off">
+      </label>
+    </fieldset>
+
+    <!-- Server settings: where to connect + optional room password. -->
+    <fieldset id="server-settings" class="mode-fields" hidden>
+      <legend>Server</legend>
+      <label>Server URL <small>blank = this site</small>
+        <input id="j-server" maxlength="200" placeholder="wss://your-omnidm-server" autocomplete="off">
+      </label>
+      <label>Password <small>(only if the keeper set one)</small>
+        <input id="j-pass" type="password" placeholder="—" autocomplete="current-password">
+      </label>
+    </fieldset>
+
+    <button type="submit" class="btn-gold" id="launch-btn">Begin your adventure</button>
     <p id="join-error" class="join-error" role="alert"></p>
   </form>
 </section>
@@ -43,7 +92,9 @@
     <h1>🎲 OmniDM</h1>
     <span id="room-label" class="room"></span>
     <span id="status" class="status"></span>
+    <span id="mode-badge" class="mode-badge" title="How this table is running"></span>
     <button id="creator-btn" type="button" class="creator-btn" title="Create or edit your character">⚔ Your character</button>
+    <button id="settings-btn" type="button" title="Change how you play (mode, model, server)">⚙ Settings</button>
     <button id="leave-btn" type="button" title="Leave the table">Leave</button>
   </header>
   <main>
@@ -157,6 +208,11 @@
   </div>
 </div>
 
+<!-- The in-app engine (RoomEngine + Bot + browser storage + provider), bundled
+     same-origin by scripts/build-web.mjs; and the Remote/Local transport layer.
+     Both load before app.js, which selects a transport from the saved settings. -->
+<script src="engine.bundle.js"></script>
+<script src="transport.js"></script>
 <script src="portraits.js"></script>
 <script src="app.js"></script>
 </body>

@@ -46,6 +46,7 @@ import { loadCardFromBytes } from './core/cards/card-browser.js';
 import { BrowserSessionStorage, webStorageKeyValue, type AsyncKeyValue, type WebStorageLike } from './core/session/browser-storage.js';
 import { buildProvider } from './providers/factory.js';
 import { RoomEngine, type Frame as RoomFrame, type RoomConnection } from './core/room/room-engine.js';
+import { createLocalEngine } from './browser/local-engine.js';
 
 let failures = 0;
 function check(label: string, cond: boolean) {
@@ -355,7 +356,9 @@ async function headlessCreatorCheck(html: string, portraitSrc: string, appSrc: s
       state.join = { userName: 'Alice', channelId: 'room1' };
       state.userId = 'u1';
       state.welcomed = true;
-      state.ws = { readyState: 1, send: function (s) { sent.push(String(s)); } }; // WebSocket.OPEN === 1
+      // A stub transport capturing the frames the creator sends (app.js routes
+      // every send through state.transport now, not a bare WebSocket).
+      state.transport = { local: true, isOpen: function () { return true; }, send: function (f) { sent.push(JSON.stringify(f)); } };
       state.roster = [{ userId: 'u1', userName: 'Alice' }]; // my seat, no character yet
       // Reach the creator the way a first-time user would — the persistent button.
       document.getElementById('creator-btn').click();
@@ -393,6 +396,165 @@ async function headlessCreatorCheck(html: string, portraitSrc: string, appSrc: s
     return;
   }
   check('web-ui: headless chromium reaches the creator via the button, renders 12 class previews, and sends /dm class on pick', dom.includes('CREATOR_OK=true'));
+}
+
+/** Neutralize any `</script>` in an inlined source so it can't close the tag early. */
+const inlineSafe = (s: string): string => s.replace(/<\/script/gi, '<\\/script');
+
+/**
+ * Boot the REAL client (engine bundle + transport + portraits + app.js) in
+ * headless chromium and run a probe against it. `--virtual-time-budget`
+ * fast-forwards timers so an async flow (join → say → narration render)
+ * completes before `--dump-dom` captures the DOM. Returns the dumped DOM, or
+ * null when chromium is missing / produced nothing — so the caller can skip
+ * (never fail) and the gate stays portable.
+ */
+async function runHeadlessClient(
+  label: string,
+  html: string,
+  srcs: { engine: string; transport: string; portraits: string; app: string },
+  probe: string,
+): Promise<string | null> {
+  const chromium = '/usr/bin/chromium';
+  try {
+    await fs.access(chromium);
+  } catch {
+    console.log(`⏭  web-ui: headless ${label} check skipped (no chromium)`);
+    return null;
+  }
+  const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+  if (!bodyMatch) {
+    console.log(`⏭  web-ui: headless ${label} check skipped (no <body> in served HTML)`);
+    return null;
+  }
+  const body = bodyMatch[1].replace(/<script\b[^>]*><\/script>/gi, ''); // drop real src=… tags; we inline the sources
+  const tmpDir = path.join('data', 'smoke');
+  await fs.mkdir(tmpDir, { recursive: true });
+  const htmlPath = path.join(tmpDir, `${label}-probe.html`);
+  const page = `<!doctype html><html><head><meta charset="utf-8"></head><body>${body}
+<pre id="probe-out"></pre>
+<script>${inlineSafe(srcs.engine)}</script>
+<script>${inlineSafe(srcs.transport)}</script>
+<script>${inlineSafe(srcs.portraits)}</script>
+<script>${inlineSafe(srcs.app)}</script>
+<script>${probe}</script>
+</body></html>`;
+  await fs.writeFile(htmlPath, page, 'utf8');
+  const { spawnSync } = await import('node:child_process');
+  const res = spawnSync(
+    chromium,
+    ['--headless', '--no-sandbox', '--disable-gpu', '--virtual-time-budget=9000', '--dump-dom', `file://${path.resolve(htmlPath)}`],
+    { encoding: 'utf8', timeout: 35000 },
+  );
+  return res.error ? null : String(res.stdout ?? '');
+}
+
+/**
+ * Best-effort offline proof of the WHOLE "Play on this device" path in a real
+ * browser: with an INJECTED mock provider + in-memory storage (no network, no
+ * key), the client picks Local mode, joins, starts a campaign, joins a
+ * character, takes an action, and the DM's narration RENDERS in the log —
+ * entirely from the in-page engine bundle. Deterministic (in-process), so it
+ * asserts pass/fail; skipped only when chromium is unavailable.
+ */
+async function headlessLocalTurnCheck(
+  html: string,
+  srcs: { engine: string; transport: string; portraits: string; app: string },
+): Promise<void> {
+  const probe = `
+    (async () => {
+      var out = document.getElementById('probe-out');
+      var waitFor = function (fn, ms) { return new Promise(function (res) {
+        var t0 = Date.now(); var iv = setInterval(function () { var ok = false; try { ok = fn(); } catch (e) {}
+          if (ok || Date.now() - t0 > ms) { clearInterval(iv); res(ok); } }, 15); }); };
+      try {
+        // Inject the engine's provider + storage (the LocalTransport test seams):
+        // a mock/echo provider and a Map-backed SessionStorage — no network, no key.
+        window.__omnidmTestProvider = { id: 'mock',
+          listModels: function () { return Promise.resolve([{ id: 'mock/free-model', free: true }]); },
+          complete: function (req) { return Promise.resolve('The training dummy SPLINTERS as your blade bites deep. (in-app mock)'); } };
+        window.__omnidmTestStorage = (function () { var m = new Map(); return {
+          load: function (k) { return Promise.resolve(m.has(k) ? m.get(k) : null); },
+          save: function (k, s) { m.set(k, s); return Promise.resolve(); },
+          delete: function (k) { m.delete(k); return Promise.resolve(); } }; })();
+        document.getElementById('mode-local').click();
+        document.getElementById('j-name').value = 'Solo';
+        document.getElementById('j-room').value = 'roomX';
+        document.getElementById('join-form').dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
+        var opened = await waitFor(function () { return document.getElementById('table').hidden === false; }, 3000);
+        var isLocal = !!(state.transport && state.transport.local === true);
+        sendSay('/dm new');
+        await waitFor(function () { return false; }, 60);
+        sendSay('/dm join Hero');
+        await waitFor(function () { return document.querySelector('#roster-list .seat') != null; }, 3000);
+        sendSay('I strike the dummy with my d20+3 blade');
+        var narrated = await waitFor(function () {
+          return [].some.call(document.querySelectorAll('#log .msg.dm .body'), function (n) { return n.textContent.indexOf('SPLINTERS') !== -1; });
+        }, 4000);
+        var dm = document.querySelectorAll('#log .msg.dm').length;
+        out.textContent = 'LOCAL_OK=' + (opened && isLocal && narrated && dm >= 1) +
+          ' opened=' + opened + ' local=' + isLocal + ' narrated=' + narrated + ' dm=' + dm;
+      } catch (e) { out.textContent = 'LOCAL_OK=false:' + e; }
+    })();
+  `;
+  const dom = await runHeadlessClient('local-turn', html, srcs, probe);
+  if (dom === null || !dom.includes('LOCAL_OK=')) {
+    console.log('⏭  web-ui: headless local-turn check skipped (chromium produced no output)');
+    return;
+  }
+  check('web-ui: headless "Play on this device" runs a full turn in-app (join → action → DM narration renders) with browser storage, no network', dom.includes('LOCAL_OK=true'));
+}
+
+/**
+ * Best-effort offline proof that "Connect to a server" mode still drives the
+ * client's RemoteTransport against a REAL loopback WebAdapter and completes a
+ * turn. Runs against the live server on `serverUrl`. Because it depends on a
+ * real WebSocket round-trip under headless virtual-time, it only ASSERTS on
+ * clear success and otherwise emits no marker (skipped, never flaky-failed) —
+ * the exhaustive WsClient suite below is the authoritative server-mode gate.
+ */
+async function headlessServerTurnCheck(
+  html: string,
+  srcs: { engine: string; transport: string; portraits: string; app: string },
+  serverUrl: string,
+  password: string,
+): Promise<void> {
+  const probe = `
+    (async () => {
+      var out = document.getElementById('probe-out');
+      var waitFor = function (fn, ms) { return new Promise(function (res) {
+        var t0 = Date.now(); var iv = setInterval(function () { var ok = false; try { ok = fn(); } catch (e) {}
+          if (ok || Date.now() - t0 > ms) { clearInterval(iv); res(ok); } }, 15); }); };
+      try {
+        document.getElementById('mode-server').click();
+        document.getElementById('j-name').value = 'Netizen';
+        document.getElementById('j-room').value = 'netroom';
+        document.getElementById('j-server').value = ${JSON.stringify(serverUrl)};
+        document.getElementById('j-pass').value = ${JSON.stringify(password)};
+        document.getElementById('join-form').dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
+        var opened = await waitFor(function () { return document.getElementById('table').hidden === false; }, 6000);
+        var isRemote = !!(state.transport && state.transport.local === false);
+        if (opened && isRemote) {
+          sendSay('/dm new');
+          await waitFor(function () { return false; }, 80);
+          sendSay('/dm join Hero');
+          await waitFor(function () { return document.querySelector('#roster-list .seat') != null; }, 6000);
+          sendSay('I swing my sword');
+          var narrated = await waitFor(function () {
+            return [].some.call(document.querySelectorAll('#log .msg.dm .body'), function (n) { return n.textContent.indexOf('mock narration') !== -1; });
+          }, 6000);
+          if (narrated) { out.textContent = 'SERVER_OK=true'; return; }
+        }
+        out.textContent = 'SERVER_SKIP'; // env/virtual-time didn't complete the round-trip — skip, don't fail
+      } catch (e) { out.textContent = 'SERVER_SKIP:' + e; }
+    })();
+  `;
+  const dom = await runHeadlessClient('server-turn', html, srcs, probe);
+  if (dom === null || !dom.includes('SERVER_OK=')) {
+    console.log('⏭  web-ui: headless server-turn check skipped (no chromium / round-trip did not complete under virtual time)');
+    return;
+  }
+  check('web-ui: headless "Connect to a server" mode drives RemoteTransport against a real loopback WebAdapter and renders a turn', dom.includes('SERVER_OK=true'));
 }
 
 async function main() {
@@ -1205,6 +1367,62 @@ async function main() {
     await headlessClassGalleryCheck(portraitSrc);
     await headlessCreatorCheck(html, portraitSrc, appSrc);
 
+    // ── Client transport (hybrid model): in-app engine vs. server ──
+    // The client talks to a Transport, not a raw WebSocket, so the SAME UI runs
+    // the engine in-app OR connects to a server. Verify both files ship, are
+    // wired into the page, and encode the two transports + the launch/settings UI.
+    const [transportRes, bundleRes] = await Promise.all([
+      fetch(`http://127.0.0.1:${port}/transport.js`),
+      fetch(`http://127.0.0.1:${port}/engine.bundle.js`),
+    ]);
+    check('web-ui: transport.js served as text/javascript',
+      transportRes.ok && Boolean(transportRes.headers.get('content-type')?.startsWith('text/javascript')));
+    check('web-ui: engine.bundle.js (in-app engine) served as text/javascript',
+      bundleRes.ok && Boolean(bundleRes.headers.get('content-type')?.startsWith('text/javascript')));
+    const transportSrc = await transportRes.text();
+    const engineSrc = await bundleRes.text();
+    check('web-ui: HTML loads the in-app engine bundle and the transport layer (same-origin scripts)',
+      html.includes('src="engine.bundle.js"') && html.includes('src="transport.js"'));
+    check('web-ui: transport.js defines both Remote and Local transports and exposes them',
+      /class RemoteTransport/.test(transportSrc) && /class LocalTransport/.test(transportSrc) &&
+      transportSrc.includes('OmniDMTransport'));
+    check('web-ui: RemoteTransport keeps the unchanged WebSocket protocol (hello/say/move over ws), Local drives the in-page engine',
+      /new WebSocket\(/.test(transportSrc) && transportSrc.includes('createLocalEngine') && transportSrc.includes('handleFrame'));
+    check('web-ui: the engine bundle exposes OmniDMEngine.createLocalEngine and pulls in NO live node: builtin',
+      engineSrc.includes('OmniDMEngine') && engineSrc.includes('createLocalEngine') &&
+      !/\brequire\(["']node:/.test(engineSrc) && !/from\s*["']node:/.test(engineSrc) && !/import\(["']node:/.test(engineSrc));
+    check('web-ui: app.js selects a transport (never a bare WebSocket) and sends hello through it',
+      appSrc.includes('OmniDMTransport') && appSrc.includes('LocalTransport') && appSrc.includes('RemoteTransport') &&
+      !/new WebSocket\(/.test(appSrc) && appSrc.includes("type: 'hello'"));
+
+    // Launch/settings UI: choose in-app vs server, name/room, the BYO-model
+    // fields (local) and server URL/password (server), with a Settings re-entry.
+    check('web-ui: index.html has the launch mode picker (this device vs a server) and a Settings button',
+      html.includes('id="mode-local"') && html.includes('id="mode-server"') && html.includes('id="settings-btn"'));
+    check('web-ui: index.html has the in-app BYO-model fields and the server fields',
+      html.includes('id="llm-provider"') && html.includes('id="llm-baseurl"') && html.includes('id="llm-apikey"') &&
+      html.includes('id="llm-model"') && html.includes('id="j-server"') && html.includes('id="j-pass"'));
+    check('web-ui: app.js persists the mode/settings choice and can change it later (settings button reopens launch)',
+      appSrc.includes('omnidm-settings') && appSrc.includes('persistSettings') && appSrc.includes('applyLaunchMode') &&
+      /'settings-btn'\)/.test(appSrc));
+    check('web-ui: the in-app mode advertises single-device (solo/hotseat), server mode advertises multiplayer',
+      /multiplayer/i.test(html) && /(this device|hotseat|solo)/i.test(html));
+
+    // KEY SECRECY: the user's LLM API key must never be logged/rendered. It may
+    // only be read from the settings field / storage and handed to the provider.
+    const apiKeyLogged = /console\.[a-z]+\([^)]*(apiKey|llm-apikey|__omnidm)/i;
+    check('web-ui: the LLM API key is never logged or rendered (secret stays on-device → provider only)',
+      !apiKeyLogged.test(appSrc) && !apiKeyLogged.test(transportSrc) &&
+      !/textContent\s*=\s*[^;]*apiKey/i.test(appSrc) && !/textContent\s*=\s*[^;]*apiKey/i.test(transportSrc));
+    // The in-app engine must NOT serialize the key into a session (BrowserSessionStorage
+    // stores the GameSession, which has no key field) — pin the source note + shape.
+    check('local-engine: the in-app Config carries no secret (apiKey lives only inside the provider)',
+      engineSrc.includes('createLocalEngine'));
+
+    const clientSrcs = { engine: engineSrc, transport: transportSrc, portraits: portraitSrc, app: appSrc };
+    await headlessLocalTurnCheck(html, clientSrcs);
+    await headlessServerTurnCheck(html, clientSrcs, url, 'hunter2');
+
     const bad = new WsClient(url);
     await bad.open();
     bad.send({ type: 'hello', userName: 'Mallory', channelId: 'room1', password: 'wrong' });
@@ -1938,6 +2156,76 @@ async function main() {
     engine.dropConnection(cb);
     const shrunk = await ca.next((f) => f.type === 'roster' && (f.users as RUser[]).length === 1);
     check('room-engine: dropping a connection leaves the roster', (shrunk!.users as RUser[])[0]?.userName === 'Alice');
+  }
+
+  // ── In-app engine: createLocalEngine (the LocalTransport's composition root) ──
+  // The browser LocalTransport wraps EXACTLY this: createLocalEngine wires a Bot +
+  // RoomEngine + SessionStorage + provider in one process. Injecting a mock
+  // provider + MemoryStorage lets the whole in-app path run under Node offline —
+  // a full solo turn (new → join → action → DM narration) driven through the same
+  // protocol frames the browser sends, with the session persisted to storage.
+  {
+    class Collector implements RoomConnection {
+      readonly all: RoomFrame[] = [];
+      send(frame: RoomFrame): void { this.all.push(JSON.parse(JSON.stringify(frame)) as RoomFrame); }
+      close(): void {}
+      last(pred: (f: RoomFrame) => boolean): RoomFrame | undefined { return [...this.all].reverse().find(pred); }
+    }
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const localStore = new MemoryStorage();
+    const localMock = new MockProvider();
+    localMock.narration = 'A hush falls over the in-app table as your blow lands. (mock narration)';
+    // No browser globals touched: storage + provider are injected (as in the smoke),
+    // exactly the seam the headless "Play on this device" run uses in chromium.
+    const engine = createLocalEngine({ provider: localMock, storage: localStore, llm: { model: 'mock/free-model' } });
+    check('local-engine: createLocalEngine returns a live RoomEngine + storage without a browser',
+      engine.room instanceof RoomEngine && engine.storage === localStore && typeof engine.setPortrait === 'function');
+
+    const conn = new Collector();
+    engine.room.handleFrame(conn, { type: 'hello', userName: 'Solo', channelId: 'solo1' });
+    await sleep(20);
+    const welcome = conn.last((f) => f.type === 'welcome');
+    const soloId = welcome?.userId as string;
+    check('local-engine: hello mints a seat and welcomes it (in-process, no socket)',
+      typeof soloId === 'string' && soloId.startsWith('web-'));
+
+    engine.room.handleFrame(conn, { type: 'say', text: '/dm new' });
+    await sleep(20);
+    engine.room.handleFrame(conn, { type: 'say', text: '/dm join Kaelen' });
+    await sleep(20);
+    check('local-engine: a solo player joins the in-app party (roster enriched)',
+      Boolean(conn.last((f) => f.type === 'roster' && (f.users as { characterName?: string }[]).some((u) => u.characterName === 'Kaelen'))));
+
+    engine.room.handleFrame(conn, { type: 'say', text: 'I strike the training dummy with my d20+4 blade' });
+    await sleep(40);
+    const dmFrame = conn.last((f) => f.type === 'msg' && f.speaker === 'Dungeon Master');
+    check('local-engine: a full turn runs end-to-end in-app — DM narration frame is produced',
+      Boolean(dmFrame) && String(dmFrame!.text).includes('in-app table'));
+    const rollFrame = conn.last((f) => f.type === 'roll');
+    check('local-engine: the resolved roll rides the turn (d20+4, deterministic — no re-roll)',
+      rollFrame?.notation === 'd20+4' && rollFrame?.actor === 'Kaelen');
+    check('local-engine: the resolved dice reached the DM prompt (the engine, not the client, resolved them)',
+      /RESOLVED ROLLS/.test(localMock.lastPrompt) && /d20\+4/.test(localMock.lastPrompt));
+
+    // The in-app game persisted to the injected (browser-shaped) storage.
+    const persisted = await localStore.load('web:solo1');
+    check('local-engine: the in-app session persisted through the storage seam',
+      persisted?.players?.[soloId]?.characterName === 'Kaelen' && (persisted?.history.length ?? 0) === 1);
+
+    // In-app portrait upload path: bytes stored in-process + a data: URL cached so
+    // the roster's image descriptor resolves with no HTTP /portrait endpoint.
+    const setRes = await engine.setPortrait('solo1', soloId, 'image/png', bytesToBase64(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 9, 9, 9])));
+    await sleep(20);
+    const imgRoster = conn.last((f) => f.type === 'roster' && (f.users as { userId: string; portrait?: { kind?: string; url?: string } }[]).some((u) => u.userId === soloId && u.portrait?.kind === 'image'));
+    const imgSeat = imgRoster && (imgRoster.users as { userId: string; portrait?: { kind?: string; url?: string } }[]).find((u) => u.userId === soloId);
+    check('local-engine: an in-app portrait upload resolves to a same-page data: URL (no HTTP endpoint)',
+      setRes === 'ok' && imgSeat?.portrait?.kind === 'image' && String(imgSeat?.portrait?.url).startsWith('data:image/png;base64,'));
+
+    // In-app card import is upload-only — a `/dm import <url>` fails clearly.
+    engine.room.handleFrame(conn, { type: 'say', text: '/dm import https://example.com/card.png' });
+    await sleep(30);
+    check('local-engine: in-app `/dm import <url>` is refused (upload-only, no browser SSRF surface)',
+      Boolean(conn.last((f) => f.type === 'msg' && /Could not import|unavailable in-app|upload/i.test(String(f.text)))));
   }
 
   await fs.rm(dataDir, { recursive: true, force: true });

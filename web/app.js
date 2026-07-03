@@ -18,7 +18,9 @@ const $ = (id) => document.getElementById(id);
 const el = (tag, cls) => { const e = document.createElement(tag); if (cls) e.className = cls; return e; };
 
 const state = {
-  ws: null,
+  transport: null,     // the active Transport (RemoteTransport | LocalTransport)
+  mode: 'local',       // 'local' (in-app engine) | 'server' (WebSocket)
+  settings: null,      // { mode, userName, channelId, server:{url,password}, llm:{…} } — persisted
   join: null,          // { userName, channelId, password? } — preserved across reconnects
   wantReconnect: false,
   retryTimer: null,    // pending reconnect timeout — cancelled by Leave
@@ -42,26 +44,47 @@ const state = {
 };
 const BACKOFF_MAX = 15000;
 
-/* ── Connection ──────────────────────────────────────────────────────────── */
+/* ── Connection (transport-agnostic) ─────────────────────────────────────────
+ * app.js never touches a WebSocket or the engine directly — it drives a
+ * Transport (web/transport.js) that routes the SAME protocol frames either over
+ * a WebSocket to a server (RemoteTransport) or through the in-page engine
+ * (LocalTransport). Both call back into onFrame/onTransportOpen/onClose. */
 
 function connect() {
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const ws = new WebSocket(`${proto}://${location.host}/ws`);
-  state.ws = ws;
+  const T = globalThis.OmniDMTransport;
   state.welcomed = false;
-  ws.addEventListener('open', () => {
-    setStatus('joining…');
-    ws.send(JSON.stringify({ type: 'hello', ...state.join }));
-  });
-  ws.addEventListener('message', (ev) => {
-    let f; try { f = JSON.parse(ev.data); } catch { return; }
-    onFrame(f);
-  });
-  ws.addEventListener('close', onClose);
+  const cb = { onFrame, onOpen: onTransportOpen, onClose };
+  if (!T) return showJoin('Client transport failed to load (web/transport.js).');
+  if (state.mode === 'local') {
+    // Test seams: the offline smoke injects a mock provider + storage so a full
+    // turn runs with no network. In production both are undefined and the engine
+    // builds a real provider from the user's settings + durable browser storage.
+    const w = typeof window !== 'undefined' ? window : {};
+    state.transport = new T.LocalTransport({
+      settings: state.settings || {},
+      provider: w.__omnidmTestProvider || undefined,
+      storage: w.__omnidmTestStorage || undefined,
+      ...cb,
+    });
+  } else {
+    const serverUrl = (state.settings && state.settings.server && state.settings.server.url) || '';
+    state.transport = new T.RemoteTransport({ serverUrl, ...cb });
+  }
+  state.transport.open();
+}
+
+/** The transport is ready to receive frames — send the hello handshake. */
+function onTransportOpen() {
+  setStatus('joining…');
+  const hello = { type: 'hello', userName: state.join.userName, channelId: state.join.channelId };
+  // A room password is a SERVER concept; the in-app engine is open (this device).
+  if (state.mode === 'server' && state.join.password) hello.password = state.join.password;
+  state.transport.send(hello);
 }
 
 function onClose() {
-  if (!state.wantReconnect) {
+  // Only a server transport reconnects; the in-app engine has nothing to rejoin.
+  if (!state.wantReconnect || !state.transport || !state.transport.supportsReconnect) {
     // A refused hello (or Leave) already showed the join screen — don't let
     // this trailing close event wipe the error message it is displaying.
     if ($('join-screen').hidden) showJoin('');
@@ -75,10 +98,10 @@ function onClose() {
 }
 
 function sendSay(text) {
-  if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+  if (!state.transport || !state.transport.isOpen()) {
     return addLine('err', '', 'Not connected — hold on while the table is rejoined.');
   }
-  state.ws.send(JSON.stringify({ type: 'say', text }));
+  state.transport.send({ type: 'say', text });
 }
 
 /* ── Frames ──────────────────────────────────────────────────────────────── */
@@ -584,19 +607,28 @@ $('card-file')?.addEventListener('change', async (e) => {
   e.target.value = ''; // let the same file be re-picked after a failure
   if (!file || !state.join || !state.userId) return;
   const status = $('card-upload-status');
-  if (!state.uploadToken) { status.textContent = 'Reconnecting — try again in a moment.'; return; }
   status.textContent = 'Uploading…';
   try {
-    const ch = encodeURIComponent(state.join.channelId);
-    const uid = encodeURIComponent(state.userId);
-    // The seat token (from welcome) authorizes writing MY OWN portrait — the room
-    // password gates joining, not whose portrait you set. Sent as a header so it
-    // stays out of URLs/referrers.
-    const res = await fetch(`/portrait/${ch}/${uid}`, {
-      method: 'POST',
-      headers: { 'Content-Type': file.type || 'application/octet-stream', 'x-upload-token': state.uploadToken },
-      body: file,
-    });
+    let res;
+    if (state.transport && state.transport.local) {
+      // In-app: no HTTP endpoint — the engine stores the bytes in-process and
+      // rebroadcasts the roster (which re-renders the live preview).
+      res = await state.transport.uploadPortrait({ channelId: state.join.channelId, userId: state.userId, file });
+    } else {
+      if (!state.uploadToken) { status.textContent = 'Reconnecting — try again in a moment.'; return; }
+      const ch = encodeURIComponent(state.join.channelId);
+      const uid = encodeURIComponent(state.userId);
+      const base = state.transport && state.transport.httpBase ? state.transport.httpBase() : '';
+      // The seat token (from welcome) authorizes writing MY OWN portrait — the room
+      // password gates joining, not whose portrait you set. Sent as a header so it
+      // stays out of URLs/referrers.
+      const r = await fetch(`${base}/portrait/${ch}/${uid}`, {
+        method: 'POST',
+        headers: { 'Content-Type': file.type || 'application/octet-stream', 'x-upload-token': state.uploadToken },
+        body: file,
+      });
+      res = { ok: r.ok, status: r.status };
+    }
     if (!res.ok) {
       status.textContent = res.status === 401
         ? 'Upload refused — you can only set your own portrait.'
@@ -606,7 +638,7 @@ $('card-file')?.addEventListener('change', async (e) => {
         : `Upload failed (${res.status}).`;
       return;
     }
-    // The server broadcasts a fresh roster, which re-renders the live preview.
+    // The server/engine broadcasts a fresh roster, which re-renders the live preview.
     status.textContent = 'Portrait updated.';
   } catch {
     status.textContent = 'Upload failed — connection error.';
@@ -788,8 +820,8 @@ function boardNorm(evt) {
 }
 
 function sendMove(id, x, y) {
-  if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
-  state.ws.send(JSON.stringify({ type: 'move', id, x, y }));
+  if (!state.transport || !state.transport.isOpen()) return;
+  state.transport.send({ type: 'move', id, x, y });
 }
 
 {
@@ -845,26 +877,112 @@ function showJoin(error) {
   $('board')?.querySelectorAll('.board-pop').forEach((p) => p.remove());
 }
 
+/* ── Launch / settings ────────────────────────────────────────────────────────
+ * The launch screen picks the transport: "Play on this device" (LocalTransport,
+ * the in-app engine — bring your own model) vs "Connect to a server"
+ * (RemoteTransport, WebSocket → multiplayer). The choice + fields are persisted
+ * in localStorage under 'omnidm-settings'. The LLM API key lives ONLY there
+ * (this device) and is passed ONLY to the engine → provider; it is never logged,
+ * rendered, or written into a session. */
+
+const SETTINGS_KEY = 'omnidm-settings';
+const DEFAULT_LLM = { provider: '', baseUrl: 'https://openrouter.ai/api/v1', apiKey: '', model: 'meta-llama/llama-3.3-70b-instruct:free' };
+
+/** Reflect the chosen mode in the launch UI (which fieldset shows, radios). */
+function applyLaunchMode(mode) {
+  state.mode = mode === 'server' ? 'server' : 'local';
+  const local = state.mode === 'local';
+  $('local-settings').hidden = !local;
+  $('server-settings').hidden = local;
+  for (const btn of document.querySelectorAll('.mode-choice')) {
+    const on = btn.dataset.mode === state.mode;
+    btn.classList.toggle('selected', on);
+    btn.setAttribute('aria-checked', String(on));
+  }
+  $('launch-btn').textContent = local ? 'Play on this device' : 'Connect to the server';
+}
+
+/** Read the current launch settings out of the form. */
+function readSettings() {
+  return {
+    mode: state.mode,
+    userName: $('j-name').value.trim(),
+    channelId: $('j-room').value.trim(),
+    server: { url: $('j-server').value.trim(), password: $('j-pass').value },
+    llm: {
+      provider: $('llm-provider').value,
+      baseUrl: $('llm-baseurl').value.trim(),
+      apiKey: $('llm-apikey').value, // secret — stored locally only
+      model: $('llm-model').value.trim(),
+    },
+  };
+}
+
+/** Persist settings (incl. the key) to this device only. Never logged. */
+function persistSettings(s) {
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch { /* private mode — settings just won't persist */ }
+}
+
+/** Prefill the launch form from persisted settings (or sensible defaults). */
+function prefillSettings() {
+  let s = null;
+  try { s = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null'); } catch { s = null; }
+  if (!s) {
+    // Migrate the older name/room-only record, if present.
+    try { const old = JSON.parse(localStorage.getItem('omnidm-join') || 'null'); if (old) s = { userName: old.userName, channelId: old.channelId }; } catch { /* ignore */ }
+  }
+  s = s || {};
+  const llm = Object.assign({}, DEFAULT_LLM, s.llm || {});
+  if (s.userName) $('j-name').value = s.userName;
+  if (s.channelId) $('j-room').value = s.channelId;
+  $('llm-provider').value = llm.provider || '';
+  $('llm-baseurl').value = llm.baseUrl || '';
+  $('llm-apikey').value = llm.apiKey || '';
+  $('llm-model').value = llm.model || '';
+  if (s.server && s.server.url) $('j-server').value = s.server.url;
+  applyLaunchMode(s.mode || 'local');
+}
+
+/** Topbar badge + creator note describing how this table runs. */
+function updateModeBadge() {
+  const badge = $('mode-badge');
+  if (!badge) return;
+  if (state.mode === 'local') { badge.textContent = '🕯 On this device'; badge.title = 'The AI DM runs in this app — solo / hotseat, this device only.'; }
+  else { badge.textContent = '🌐 Server'; badge.title = 'Connected to an OmniDM server — multiplayer.'; }
+}
+
+for (const btn of document.querySelectorAll('.mode-choice')) {
+  btn.addEventListener('click', () => applyLaunchMode(btn.dataset.mode));
+}
+
 $('join-form').addEventListener('submit', (e) => {
   e.preventDefault();
   const userName = $('j-name').value.trim();
   const channelId = $('j-room').value.trim();
   if (!userName || !channelId) return;
-  const password = $('j-pass').value;
+  const settings = readSettings();
+  state.settings = settings;
+  const password = state.mode === 'server' ? settings.server.password : '';
   state.join = { userName, channelId, ...(password ? { password } : {}) };
-  try { localStorage.setItem('omnidm-join', JSON.stringify({ userName, channelId })); } catch { /* private mode */ }
-  state.wantReconnect = true;
+  persistSettings(settings);
+  // Only a server game reconnects; the in-app engine has nothing to reconnect to.
+  state.wantReconnect = state.mode === 'server';
   state.backoff = 1000;
   $('join-error').textContent = '';
+  updateModeBadge();
   setStatus('connecting…');
   connect();
 });
 
-try {
-  const saved = JSON.parse(localStorage.getItem('omnidm-join') || 'null');
-  if (saved?.userName) $('j-name').value = saved.userName;
-  if (saved?.channelId) $('j-room').value = saved.channelId;
-} catch { /* first visit */ }
+prefillSettings();
+
+// ⚙ Settings — return to the launch screen to change mode/model/server later.
+$('settings-btn')?.addEventListener('click', () => {
+  state.wantReconnect = false;
+  clearTimeout(state.retryTimer);
+  state.transport?.close();
+  showJoin('');
+});
 
 $('leave-btn').addEventListener('click', () => {
   // Leave must not depend on a close event: during a reconnect backoff the
@@ -872,7 +990,7 @@ $('leave-btn').addEventListener('click', () => {
   // retry and go back to the join screen directly.
   state.wantReconnect = false;
   clearTimeout(state.retryTimer);
-  state.ws?.close();
+  state.transport?.close();
   showJoin('');
 });
 
