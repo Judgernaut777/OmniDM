@@ -105,15 +105,19 @@ settle on the engine's *real* roll (never re-rolled; skipped under
 `prefers-reduced-motion`), with the total popping over the roller's token on
 the map; and a command palette covering every `/dm` command.
 
-**Portraits & character cards.** Each seat and each map token is drawn as a
-portrait. Pick one of eight preset archetype crests with `/dm portrait
-<preset>` (`fighter`, `mage`, `ranger`, `rogue`, `cleric`, `bard`,
-`barbarian`, `druid`) — rendered as procedural heraldic avatars entirely
-client-side — or click your own seat to open a **character-card panel** (large
-portrait, name, card summary) and upload your own picture (png/jpeg/gif/webp,
-served same-origin with `nosniff`). On the map, PCs get a gold rim, NPCs a
-dashed steel rim, and whoever's turn it is glows with the candle motif; an
-imported card's embedded PNG becomes its portrait automatically.
+**Classes, portraits & character cards.** Set your character's D&D 5e class
+with `/dm class <name>` — one of the twelve official classes (`barbarian`,
+`bard`, `cleric`, `druid`, `fighter`, `monk`, `paladin`, `ranger`, `rogue`,
+`sorcerer`, `warlock`, `wizard`) — which also picks a matching portrait crest
+unless you've uploaded your own. Add a short persona with `/dm bio <text>`; the
+class and bio are woven into the DM's prompt so it plays you accordingly. Each
+seat and each map token is drawn as a portrait: the class preset crest (or set
+one directly with `/dm portrait <preset>`), rendered as procedural heraldic
+avatars entirely client-side — or click your own seat to open a **character-card
+panel** (large portrait, name, class, bio, card summary) and upload your own
+picture (png/jpeg/gif/webp, served same-origin with `nosniff`). On the map, PCs
+get a gold rim, NPCs a dashed steel rim, and whoever's turn it is glows with the
+candle motif; an imported card's embedded PNG becomes its portrait automatically.
 
 The adapter itself speaks a small JSON-over-WebSocket protocol (`msg`, `roll`,
 `scene`, `move`, and roster frames) that desktop/mobile UIs can reuse; portrait
@@ -148,7 +152,10 @@ for their own usage. Local models are free.
 /dm pass                skip your turn (round-robin)
 /dm fog <on|off>        per-player fog of war: the DM can whisper private
                         details to one character (default off)
-/dm portrait [<preset>] set your portrait to a preset archetype (no arg lists
+/dm class [<name>]      set your D&D 5e class (no arg lists all 12); also picks
+                        a matching portrait crest
+/dm bio [<text>]        set a short character bio/persona (no arg shows yours)
+/dm portrait [<preset>] set your portrait to a class preset (no arg lists
                         them); upload your own picture in the browser
 /dm import <src>        import a Character Card V2/V3 (JSON or PNG, path or URL)
 /dm lore add <name> | <keywords> | <content>
@@ -199,7 +206,7 @@ core/
   types.ts       ← canonical Message / Session / Provider contracts
   cards/
     card.ts      ← Character Card V2/V3 import (JSON or PNG-embedded); Portrait type
-  portraits.ts   ← fixed preset-archetype catalog (`/dm portrait`); id normalizer
+  portraits.ts   ← the 12 D&D 5e class presets (`/dm class`/`/dm portrait`); id normalizer + fallback
   lore/
     lorebook.ts  ← keyword-triggered world info (/dm lore, card character_books)
   engine/

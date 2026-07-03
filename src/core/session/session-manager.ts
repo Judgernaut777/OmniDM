@@ -91,6 +91,10 @@ export class SessionManager {
       characterName: characterName ?? prior?.characterName,
       hp: prior?.hp ?? 10,
       maxHp: prior?.maxHp ?? 10,
+      // Class + bio are part of the character identity — carry them across a
+      // seat re-claim (a reconnect mints a fresh userId), like the portrait.
+      class: prior?.class,
+      bio: prior?.bio,
       card: prior?.card,
       // A seat re-claim (new userId, same character) must carry the portrait
       // across too — a preset OR uploaded image lives on the Player, and the web

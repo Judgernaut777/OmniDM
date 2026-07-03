@@ -363,9 +363,14 @@ function openCard(u) {
   $('card-portrait').replaceChildren(makePortrait(u));
   const name = charName(u) || u.userName || 'Adventurer';
   $('card-name').textContent = name;
-  $('card-sub').textContent = name !== u.userName ? `played by ${u.userName}` : u.userName;
+  // Class + bio come off the enriched roster seat. All via textContent — the
+  // values are untrusted, so they are never interpolated into markup.
+  const cls = u && typeof u.class === 'string' ? u.class.trim() : '';
+  const played = name !== u.userName ? `played by ${u.userName}` : u.userName;
+  $('card-sub').textContent = cls ? `${cls} — ${played}` : played;
+  const bio = u && typeof u.bio === 'string' ? u.bio.trim() : '';
   const desc = u && u.card && typeof u.card.description === 'string' ? u.card.description.trim() : '';
-  $('card-desc').textContent = desc || 'No character card imported yet.';
+  $('card-desc').textContent = desc || bio || 'No character card imported yet.';
   const mine = u.userId === state.userId;
   const picker = $('card-picker');
   picker.hidden = !mine;

@@ -39,7 +39,7 @@ import { SlackAdapter } from './adapters/slack.js';
 import { MatrixAdapter } from './adapters/matrix.js';
 import { MattermostAdapter } from './adapters/mattermost.js';
 import { MAX_FRAME_BYTES, MAX_NAME_CHARS, MAX_PORTRAIT_BYTES, MAX_TEXT_CHARS, RATE_LIMIT_PER_SEC, UNJOINED_FRAMES_PER_SEC, WebAdapter } from './adapters/web.js';
-import { PORTRAIT_PRESETS } from './core/portraits.js';
+import { MAX_BIO_CHARS, PORTRAIT_PRESETS, resolvePresetId } from './core/portraits.js';
 
 let failures = 0;
 function check(label: string, cond: boolean) {
@@ -652,6 +652,60 @@ async function main() {
     check('portrait: setting a preset does not disturb other players', pSaved?.players.u2 === undefined);
   }
 
+  // ── Class + bio: /dm class defaults the portrait, /dm bio is bounded, both reach the prompt ──
+  {
+    // A dedicated bot+storage so out-of-band mutations share the bot's cache.
+    const cbStorage = new NodeFileStorage(dataDir);
+    const cbBot = new Bot(config, provider, cbStorage);
+    const cbFrom = (userId: string, userName: string, text: string) => from(userId, userName, text, 'classbio');
+    await cbBot.handle(cbFrom('u1', 'Alice', '/dm new'), send);
+    await cbBot.handle(cbFrom('u1', 'Alice', '/dm join Mira'), send);
+    out.length = 0;
+    await cbBot.handle(cbFrom('u1', 'Alice', '/dm class'), send);
+    check('class: bare command lists all 12 D&D 5e classes',
+      PORTRAIT_PRESETS.length === 12 && PORTRAIT_PRESETS.every((id) => out.at(-1)!.text.includes(id)));
+    out.length = 0;
+    await cbBot.handle(cbFrom('u1', 'Alice', '/dm class not-a-class'), send);
+    check('class: an unknown class name is rejected', out.at(-1)!.text.includes('Unknown class'));
+    out.length = 0;
+    await cbBot.handle(cbFrom('u2', 'Bob', '/dm class fighter'), send);
+    check('class: a spectator (non-player) cannot set a class', out.at(-1)!.text.includes('Join first'));
+    out.length = 0;
+    await cbBot.handle(cbFrom('u1', 'Alice', '/dm class Wizard'), send); // case-insensitive; name == id
+    check('class: setting a class confirms it', out.at(-1)!.text.toLowerCase().includes('wizard'));
+    const cbSaved1 = await cbStorage.load('cli:classbio');
+    check('class: class is stored on the player and defaults the preset portrait to it',
+      cbSaved1?.players.u1?.class === 'wizard' &&
+      cbSaved1?.players.u1?.portrait?.kind === 'preset' &&
+      (cbSaved1!.players.u1!.portrait as { id: string }).id === 'wizard');
+
+    // A prior uploaded/card image portrait must NOT be clobbered by /dm class.
+    // Mutate through the bot's OWN storage so its cache reflects the image.
+    cbSaved1!.players.u1!.portrait = { kind: 'image', mime: 'image/png', data: 'AAAA' };
+    await cbStorage.save('cli:classbio', cbSaved1!);
+    await cbBot.handle(cbFrom('u1', 'Alice', '/dm class rogue'), send);
+    const cbSaved2 = await cbStorage.load('cli:classbio');
+    check('class: setting a class does not overwrite an uploaded image portrait',
+      cbSaved2?.players.u1?.class === 'rogue' && cbSaved2?.players.u1?.portrait?.kind === 'image');
+
+    // Bio is length-bounded server-side.
+    const longBio = 'x'.repeat(MAX_BIO_CHARS + 200);
+    await cbBot.handle(cbFrom('u1', 'Alice', `/dm bio ${longBio}`), send);
+    const cbSaved3 = await cbStorage.load('cli:classbio');
+    check('bio: a long bio is clamped to the bound', (cbSaved3?.players.u1?.bio?.length ?? 0) === MAX_BIO_CHARS);
+
+    // A readable bio + the class flavor must both reach the narrator prompt.
+    await cbBot.handle(cbFrom('u1', 'Alice', '/dm bio A wandering scholar chasing a lost spellbook.'), send);
+    out.length = 0;
+    await cbBot.handle(cbFrom('u1', 'Alice', 'I study the ancient runes'), send);
+    check('class+bio: the class flavor and the bio both reach the narrator prompt',
+      provider.lastPrompt.includes('Player characters') &&
+      provider.lastPrompt.includes('Rogue') &&
+      provider.lastPrompt.includes('chasing a lost spellbook'));
+    check('class+bio: text adapters still get a plain DM narration (new fields are player-only)',
+      out.some((m) => m.speaker === 'Dungeon Master'));
+  }
+
   // ── Fog of war: per-player private narration (fresh channel) ──
   const fogFrom = (userId: string, userName: string, text: string) => from(userId, userName, text, 'chan2');
   await bot.handle(fogFrom('u1', 'Alice', '/dm new'), send);
@@ -1071,7 +1125,7 @@ async function main() {
       a.all.filter((f) => f.type === 'roll').length === rollsSoFar);
 
     // ── Portraits over the web protocol: enriched roster + HTTP upload/serve ──
-    type RosterUser = { userId: string; userName: string; characterName?: string; portrait?: { kind?: string; id?: string; url?: string; data?: string } | null };
+    type RosterUser = { userId: string; userName: string; characterName?: string; class?: string; bio?: string; portrait?: { kind?: string; id?: string; url?: string; data?: string } | null };
     await new Promise((r) => setTimeout(r, 1100)); // drain the rate-limit window
     a.send({ type: 'say', text: '/dm portrait ranger' });
     const presetRoster = await a.next(
@@ -1080,6 +1134,25 @@ async function main() {
     const aliceSeat = (presetRoster?.users as RosterUser[] | undefined)?.find((u) => u.userName === 'Alice');
     check('web: enriched roster carries the character name and a preset portrait descriptor',
       aliceSeat?.characterName === 'Thorin' && aliceSeat?.portrait?.kind === 'preset' && aliceSeat?.portrait?.id === 'ranger');
+
+    // Class + bio ride on the enriched roster seat too — /dm class also defaults
+    // the preset portrait (ranger → wizard here, no image), and /dm bio is bounded.
+    await new Promise((r) => setTimeout(r, 1100));
+    a.send({ type: 'say', text: '/dm class wizard' });
+    const classRoster = await a.next(
+      (f) => f.type === 'roster' && (f.users as RosterUser[]).some((u) => u.userName === 'Alice' && u.class === 'wizard'),
+    );
+    const aliceClassed = (classRoster?.users as RosterUser[] | undefined)?.find((u) => u.userName === 'Alice');
+    check('web: enriched roster carries the character class and the class-defaulted portrait',
+      aliceClassed?.class === 'wizard' && aliceClassed?.portrait?.kind === 'preset' && aliceClassed?.portrait?.id === 'wizard');
+    await new Promise((r) => setTimeout(r, 1100));
+    a.send({ type: 'say', text: '/dm bio A wandering scholar chasing a lost spellbook.' });
+    const bioRoster = await a.next(
+      (f) => f.type === 'roster' && (f.users as RosterUser[]).some((u) => u.userName === 'Alice' && typeof u.bio === 'string' && u.bio.includes('spellbook')),
+    );
+    const aliceBio = (bioRoster?.users as RosterUser[] | undefined)?.find((u) => u.userName === 'Alice');
+    check('web: enriched roster carries the character bio (no inline image bytes)',
+      typeof aliceBio?.bio === 'string' && aliceBio.bio.includes('spellbook') && aliceBio.portrait?.data === undefined);
 
     // POST an image upload (carrying the seat's upload token), then GET it back
     // byte-for-byte. The token — not the URL userId — is what authorizes the write.
@@ -1398,6 +1471,28 @@ async function main() {
   const oldp = await store.load('cli:oldp');
   check('legacy: pre-portrait session loads; player & NPC portraits default to absent',
     oldp?.players.u1?.characterName === 'Thorin' && oldp!.players.u1!.portrait === undefined && oldp!.npcs[0]?.portrait === undefined);
+
+  // Retired/unknown class-or-portrait ids resolve to a sensible class — never crash.
+  check('legacy: a retired preset id resolves to its successor class', resolvePresetId('mage') === 'wizard');
+  check('legacy: an unknown preset id resolves to the default class', resolvePresetId('totally-made-up') === 'fighter');
+  check('legacy: a current class id resolves to itself', resolvePresetId('paladin') === 'paladin');
+
+  // A pre-class session storing a since-removed preset id must load fine; the id
+  // is kept verbatim on disk and readers resolve it through resolvePresetId.
+  await fs.writeFile(
+    path.join(dataDir, 'session_cli_oldpreset.json'),
+    JSON.stringify({
+      id: 'oldpreset', platform: 'cli', channelId: 'oldpreset', systemId: 'dnd5e', model: 'mock/free-model',
+      players: { u1: { userId: 'u1', userName: 'Alice', characterName: 'Thorin', hp: 10, maxHp: 10, portrait: { kind: 'preset', id: 'mage' } } },
+      npcs: [], history: [], summary: '', createdAt: 1,
+    }),
+    'utf8',
+  );
+  const oldPreset = await store.load('cli:oldpreset');
+  check('legacy: a session with a retired preset id loads and resolves to the fallback',
+    oldPreset?.players.u1?.class === undefined &&
+    oldPreset?.players.u1?.portrait?.kind === 'preset' &&
+    resolvePresetId((oldPreset!.players.u1!.portrait as { id: string }).id) === 'wizard');
 
   await fs.rm(dataDir, { recursive: true, force: true });
   console.log(`\n${failures === 0 ? '🎉 all checks passed' : `💥 ${failures} check(s) failed`}`);

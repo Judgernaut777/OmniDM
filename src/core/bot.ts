@@ -14,7 +14,7 @@ import { loadCard } from './cards/card.js';
 import { findEntry, importCardBook, makeEntry } from './lore/lorebook.js';
 import { splitFog } from './narrator/fog.js';
 import { TurnPipeline } from './engine/turn-pipeline.js';
-import { normalizePresetId, PORTRAIT_PRESETS } from './portraits.js';
+import { classPreset, MAX_BIO_CHARS, normalizePresetId, PORTRAIT_PRESETS } from './portraits.js';
 
 type Send = (msg: OutgoingMessage) => Promise<void>;
 
@@ -248,6 +248,50 @@ export class Bot {
         return reply(`🔄 Round-robin mode — players act in join order.${current ? ` It's ${name(current)}'s turn.` : ''}`);
       }
 
+      case 'class': {
+        // No arg lists the 12 classes (no game needed); setting one requires a
+        // seat (class lives on the Player, like the portrait it defaults).
+        if (!rest) {
+          return reply(
+            `🧝 **D&D 5e classes:** ${PORTRAIT_PRESETS.join(', ')}\n` +
+              `Set yours with \`/dm class <name>\` (e.g. \`/dm class wizard\`). This also picks a matching portrait unless you've uploaded your own.`,
+          );
+        }
+        const session = await this.sessions.get(msg);
+        if (!session) return reply('No game here yet — `/dm new` first.');
+        if (!this.sessions.isPlayer(session, msg.userId))
+          return reply('Join first with `/dm join <name>` to set your class.');
+        const id = normalizePresetId(rest);
+        if (!id) return reply(`Unknown class \`${rest}\`. Choose one of: ${PORTRAIT_PRESETS.join(', ')}.`);
+        const player = session.players[msg.userId];
+        player.class = id;
+        // Default the preset portrait to the class — unless the player already
+        // has a real picture (an upload OR embedded card art), which we keep.
+        const hasImage = player.portrait?.kind === 'image' || player.card?.portrait?.kind === 'image';
+        if (!hasImage) player.portrait = { kind: 'preset', id };
+        await this.sessions.save(session);
+        const preset = classPreset(id);
+        return reply(`🧝 You are now a **${preset.name}** — ${preset.flavor}.`);
+      }
+
+      case 'bio': {
+        const session = await this.sessions.get(msg);
+        if (!session) return reply('No game here yet — `/dm new` first.');
+        if (!this.sessions.isPlayer(session, msg.userId))
+          return reply('Join first with `/dm join <name>` to set a bio.');
+        const player = session.players[msg.userId];
+        if (!rest) {
+          return reply(
+            player.bio
+              ? `📜 Your bio: ${player.bio}`
+              : 'Usage: `/dm bio <a short description of your character>` — a lightweight persona if you have no imported card.',
+          );
+        }
+        player.bio = rest.length > MAX_BIO_CHARS ? rest.slice(0, MAX_BIO_CHARS) : rest;
+        await this.sessions.save(session);
+        return reply(`📜 Bio set (${player.bio.length} chars).`);
+      }
+
       case 'portrait': {
         // Listing needs no game; setting one requires a seat (portraits live on
         // the Player). Image uploads happen out-of-band over HTTP (web adapter).
@@ -357,7 +401,9 @@ const HELP = `**OmniDM — commands**
 \`/dm turn\` — show whose turn it is (round-robin)
 \`/dm fog <on|off>\` — per-player fog of war: the DM can whisper private details to one character
 \`/dm pass\` — skip your turn (round-robin)
-\`/dm portrait [<preset>]\` — set your portrait to a preset archetype (no arg lists them); upload your own picture in the browser
+\`/dm class [<name>]\` — set your D&D 5e class (no arg lists all 12); also picks a matching portrait
+\`/dm bio [<text>]\` — set a short character bio/persona (no arg shows yours)
+\`/dm portrait [<preset>]\` — set your portrait to a class preset (no arg lists them); upload your own picture in the browser
 \`/dm import <file-or-URL>\` — import a Character Card V2/V3 (JSON or PNG): your persona if joined, an NPC otherwise
 \`/dm lore add <name> | <keywords> | <content>\` — world info, injected when a keyword comes up (also \`list\`, \`remove <id-or-name>\`)
 \`/dm models [filter]\` — list models you can use (🆓 = free)

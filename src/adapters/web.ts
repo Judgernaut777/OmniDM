@@ -443,6 +443,10 @@ export class WebAdapter implements PlatformAdapter {
       userName: seat.userName,
       characterName: player?.characterName,
       portrait: this.portraitDescriptor(seat.channelId, seat.userId, player),
+      // Class + bio ride on the seat (bounded), so the client can show a
+      // character's identity without an imported card. Never image bytes.
+      ...(player?.class ? { class: player.class } : {}),
+      ...(player?.bio ? { bio: clampText(player.bio, MAX_CARD_SUMMARY_CHARS) } : {}),
       ...(card
         ? {
             card: {

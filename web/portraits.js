@@ -10,19 +10,24 @@
  */
 'use strict';
 
-/* The fixed archetype catalog — mirrors src/core/portraits.ts. Each has its own
- * hue + class emblem so the eight presets are visually distinct. */
-const PORTRAIT_PRESETS = ['fighter', 'mage', 'ranger', 'rogue', 'cleric', 'bard', 'barbarian', 'druid'];
+/* The fixed class catalog — mirrors src/core/portraits.ts (the 12 official D&D
+ * 5e classes). Each has its own hue + class emblem so all presets are visually
+ * distinct. */
+const PORTRAIT_PRESETS = ['barbarian', 'bard', 'cleric', 'druid', 'fighter', 'monk', 'paladin', 'ranger', 'rogue', 'sorcerer', 'warlock', 'wizard'];
 
 const PRESET_META = {
+  barbarian: { hue: 20,  emblem: 'axe' },
+  bard:      { hue: 322, emblem: 'note' },
+  cleric:    { hue: 46,  emblem: 'sun' },
+  druid:     { hue: 96,  emblem: 'leaf' },
   fighter:   { hue: 2,   emblem: 'swords' },
-  mage:      { hue: 262, emblem: 'star' },
+  monk:      { hue: 174, emblem: 'tower' },
+  paladin:   { hue: 52,  emblem: 'chalice' },
   ranger:    { hue: 138, emblem: 'arrow' },
   rogue:     { hue: 214, emblem: 'dagger' },
-  cleric:    { hue: 46,  emblem: 'sun' },
-  bard:      { hue: 322, emblem: 'note' },
-  barbarian: { hue: 20,  emblem: 'axe' },
-  druid:     { hue: 96,  emblem: 'leaf' },
+  sorcerer:  { hue: 8,   emblem: 'flame' },
+  warlock:   { hue: 286, emblem: 'skull' },
+  wizard:    { hue: 262, emblem: 'star' },
 };
 
 /* The full sigil vocabulary — presets pick a fixed one, seeded crests pick by

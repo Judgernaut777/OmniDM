@@ -10,8 +10,9 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import type { ChatMessage, GameSession, LLMProvider, RollResult } from '../types.js';
+import type { ChatMessage, GameSession, LLMProvider, Player, RollResult } from '../types.js';
 import { renderCard } from '../cards/card.js';
+import { classPreset, MAX_BIO_CHARS } from '../portraits.js';
 import { buildWorldInfo } from '../lore/lorebook.js';
 import { HISTORY_WINDOW, type MemoryRecord } from '../memory/retrieval.js';
 import { FOG_PROMPT } from './fog.js';
@@ -29,6 +30,26 @@ function loadSystemModule(systemId: string): string {
   }
 }
 
+/**
+ * A one-line character sheet for the prompt: the player's class (with its flavor
+ * descriptor) and bounded bio. Empty when the player has set neither — the card
+ * block, if any, carries the rest of the persona.
+ */
+function characterSheet(p: Player): string {
+  const parts: string[] = [];
+  if (p.class) {
+    const cls = classPreset(p.class);
+    parts.push(`Class: ${cls.name} (${cls.flavor})`);
+  }
+  if (p.bio) {
+    const bio = p.bio.length > MAX_BIO_CHARS ? `${p.bio.slice(0, MAX_BIO_CHARS)}…` : p.bio;
+    parts.push(`Bio: ${bio}`);
+  }
+  if (!parts.length) return '';
+  const name = p.characterName || p.userName;
+  return `- ${name} (played by ${p.userName}) — ${parts.join('. ')}`;
+}
+
 export class Narrator {
   constructor(private provider: LLMProvider) {}
 
@@ -42,6 +63,13 @@ export class Narrator {
       .map((p) => `- ${p.characterName || p.userName} (HP ${p.hp}/${p.maxHp})`)
       .join('\n') || '- (no characters yet)';
 
+    // Lightweight per-player character notes (class + bio) — a complement to any
+    // imported card, not a duplicate: the sheet is a one-liner, the card its own
+    // rich block below. Bounded so a long bio can't blow the prompt budget.
+    const sheets = Object.values(session.players)
+      .map((p) => characterSheet(p))
+      .filter(Boolean);
+
     // Imported Character Cards: player personas + session NPCs, bounded blocks.
     const cards = [
       ...Object.values(session.players)
@@ -54,6 +82,7 @@ export class Narrator {
       BASE_DM_PROMPT,
       loadSystemModule(session.systemId),
       `## The party\n${roster}`,
+      sheets.length ? `## Player characters (play each true to their class and bio)\n${sheets.join('\n')}` : '',
       cards.length ? `## Imported characters (portray each consistently with their card)\n${cards.join('\n\n')}` : '',
       session.fogOfWar ? FOG_PROMPT : '',
       session.summary ? `## Story so far\n${session.summary}` : '',

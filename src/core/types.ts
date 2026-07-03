@@ -125,6 +125,16 @@ export interface Player {
   characterName?: string;
   hp?: number;
   maxHp?: number;
+  /**
+   * The character's D&D 5e class id (`/dm class <name>`), one of the 12 preset
+   * ids. Absent-safe — old sessions have none. May equal the portrait preset id.
+   */
+  class?: string;
+  /**
+   * A short, optional character bio/persona (`/dm bio <text>`) — a lightweight
+   * stand-in for players who don't import a full Character Card. Absent-safe.
+   */
+  bio?: string;
   /** Imported Character Card persona (`/dm import`), if any. */
   card?: CharacterCard;
   /**
