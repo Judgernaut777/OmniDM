@@ -220,8 +220,10 @@ Toolchain:
 
 | Target | Requirements |
 |---|---|
-| **Android** | Android Studio + **Android SDK** (`ANDROID_HOME` set), a JDK 17+, Gradle (wrapper generated). Emulator or a USB-debug device. |
+| **Android** | **Android SDK** (`ANDROID_HOME` set: platform-tools, `platforms;android-34`, `build-tools;34.0.0`) + **JDK 21** (Capacitor 8 / AGP 8 compile against Java 21 — JDK 17 fails with `invalid source release: 21`). Gradle wrapper is generated. All of this installs **user-space, no root** (SDK cmdline-tools, a JDK tarball). Emulator (needs `/dev/kvm`) or a USB-debug device. |
 | **iOS** | **macOS** + **Xcode** + CocoaPods (`sudo gem install cocoapods`), a simulator or a device + an Apple signing profile. **iOS cannot be built off a Mac.** |
+
+> **Building on an ARM64 Linux host** (e.g. this project's box): Google ships the Android **`aapt2`** resource compiler as an **x86-64-only** ELF for Linux — there is no aarch64 build, and the SDK's own `build-tools/*/aapt2` is x86-64 too. A native ARM64 Gradle build gets all the way through dependency resolution and Java compilation, then fails at `AAPT2 … Daemon startup failed`. Fixes: install `qemu-user-static` + binfmt (`sudo apt install qemu-user-static` — one root command, then the x86-64 `aapt2` runs transparently), or use a user-space x86-64 emulator such as **box64** and point Gradle at a wrapper via `android.aapt2FromMavenOverride`. On x86-64 Linux / macOS / Windows this is a non-issue.
 | **Both** | Node ≥ 22 + this repo's `npm install` (provides `@capacitor/cli`). |
 
 ```bash
