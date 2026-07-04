@@ -1089,9 +1089,33 @@ function sendMove(id, x, y) {
 
 /* ── Join screen / status ────────────────────────────────────────────────── */
 
-function setStatus(text) { $('status').textContent = text; }
+/** Sets the status pill's text AND an honest data-state ('ok' | 'pending' |
+ * 'down') that style.css uses to color/animate the little status dot — so
+ * "reconnecting…" doesn't keep showing the same steady green dot as
+ * "connected". Derived from the text itself since callers already pass a
+ * handful of fixed phrases (see connect()/onClose()/onFrame()). */
+function setStatus(text) {
+  $('status').textContent = text;
+  const s = String(text);
+  const state = s === 'connected' ? 'ok'
+    : /reconnecting|lost/i.test(s) ? 'down'
+    : /connecting|joining/i.test(s) ? 'pending'
+    : '';
+  if (state) $('status').setAttribute('data-state', state);
+  else $('status').removeAttribute('data-state');
+}
+
+/** Toggle the launch button's loading spinner + disable the form fields while
+ * a join is in flight, so submitting never just sits there looking inert. */
+function setLaunchLoading(on) {
+  $('launch-btn').classList.toggle('is-loading', on);
+  $('launch-btn').disabled = on;
+  $('j-name').disabled = on;
+  $('j-room').disabled = on;
+}
 
 function showJoin(error) {
+  setLaunchLoading(false);
   $('table').hidden = true;
   $('palette').hidden = true;
   $('creator').hidden = true;
@@ -1102,7 +1126,10 @@ function showJoin(error) {
   state.creator.pendingName = null;
   state.creator.pendingBio = null;
   $('join-screen').hidden = false;
-  $('join-error').textContent = error;
+  const errEl = $('join-error');
+  errEl.textContent = error;
+  errEl.classList.remove('shake');
+  if (error) { void errEl.offsetWidth; errEl.classList.add('shake'); } // restart the animation even on a repeat error
   state.roster = [];
   state.turnName = null;
   state.scene = { tokens: [], actor: null, lastRoll: null, lastRollSeen: null };
@@ -1225,6 +1252,7 @@ $('join-form').addEventListener('submit', (e) => {
   $('join-error').textContent = '';
   updateModeBadge();
   setStatus('connecting…');
+  setLaunchLoading(true);
   connect();
 });
 
