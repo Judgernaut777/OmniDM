@@ -1,25 +1,33 @@
 # OmniDM
 
-A **multi-platform, multi-player, model-agnostic AI Dungeon Master.** Run a
-tabletop RPG with an AI game master in any chat channel, with any LLM, for any
-number of players. Test for free; bring your own model when you're ready.
+A **production-ready, multi-platform, multi-player, model-agnostic AI Dungeon Master** with real mechanical rules, content extensibility, and a polished table UI. Run a tabletop RPG with an AI game master in any chat channel, with any LLM, for any number of players — solo/hotseat on your device, or multiplayer on a shared server.
 
-> Working name — rename freely. This is an early scaffold, not a finished product.
+Play for free on any platform; bring your own model or use free APIs. Self-host forever, or use a future hosted tier (content packs available free and premium).
 
-## Get OmniDM
+## Get the app
 
-Pick your preferred way to play:
+Pick your preferred platform and play mode:
 
-| Mode | What you get | How to run |
-|------|--------------|-----------|
-| **Browser** | Web table UI, play in any browser (PC/phone). "Play on this device" with your own model, or "Connect to a server" for multiplayer. | `npm run web`, open <http://127.0.0.1:8787> |
-| **Desktop** (Electron) | Standalone app for PC/Mac/Linux. Same table UI as the web build, bundled with Chromium — no system WebKit deps needed. "Play on this device" (your model locally) or "Connect to a server" (multiplayer). | `npm run electron` |
-| **Desktop** (Tauri, lightweight) | Alternative lightweight desktop app: smaller bundle but needs `webkit2gtk` on Linux. Same hybrid model — play locally or join a server. | Run on a machine with Tauri prereqs (see below), then `npm run tauri:dev` |
-| **Mobile** (iOS/Android) | Native app via Capacitor. Same AI DM engine in the native WebView. On-device play with your model, or join a server. iOS requires a Mac to build. | Android: `npm run cap:sync && npm run cap:android` • iOS: run on Mac with Xcode |
+| **Platform** | **Solo/Hotseat (on this device)** | **Multiplayer (server)** |
+|---|---|---|
+| **Browser** | `npm run web` → <http://127.0.0.1:8787> <br/> Web table UI in your browser. | Point the same UI at a server instance (`npm run web` elsewhere) |
+| **Desktop - Electron** | `npm run electron` <br/> Standalone app with Chromium bundled (no WebKit deps); cross-platform Windows/Mac/Linux. | Point the app at a server |
+| **Desktop - Tauri** (lightweight) | `npm run tauri:dev` <br/> Smaller bundle (~100MB vs ~300MB); needs `webkit2gtk` on Linux, system WKWebView on macOS, WebView2 on Windows. | Same hybrid model |
+| **Mobile - Capacitor** (iOS/Android) | Android: `npm run cap:sync && npm run cap:android` <br/> iOS: `npm run cap:sync && npm run cap:ios` (macOS + Xcode only) <br/> Native app; on-device play with your key. | Same hybrid model; point at a server |
+| **Chat bots** (Discord/Slack/Matrix/Mattermost) | N/A — bots don't host single-player play. | `npm run discord` / `npm run slack` / `npm run matrix` / `npm run mattermost` <br/> Multiplayer only, everyone in the channel shares the session. |
+| **CLI** (terminal) | `npm run cli` <br/> Text-mode REPL; cheapest way to test the engine. No UI, just turns + rolls. | N/A — single-player only |
 
-**Two play modes (all platforms):**
-- **🕯 Play on this device**: the AI DM engine runs locally with your own LLM API key (stored on your device only, never on a server). Solo or hotseat, no network needed except to your model.
-- **🌐 Connect to a server**: point your app at an OmniDM server running elsewhere for real multiplayer — everyone in a room code shares one party, fog-of-war whispers are private.
+**Key feature: both play modes use the same engine, same rules, same UI.** Your API key and model are your choice; everything is open, free to self-host, and runs offline (except the LLM call to your configured endpoint).
+
+## Free, open, and extensible
+
+**Self-hosting is free forever.** Run `npm run web` (or `npm run electron`, `npm run discord`, etc.) on any machine. No fees, no server bill, no paywall. Everything ships unlocked.
+
+**Bring your own model.** Every platform supports OpenAI-compatible (Claude, GPT, Ollama, LM Studio, OpenRouter, etc.) and native Anthropic APIs. Free tier? Use a free OpenRouter model. Your own key? Pay per token. Local LLM on your machine? Zero cost.
+
+**Extend with content packs.** Custom rules systems, lorebook entries, NPCs, and campaign starters are bundled as JSON files that validate and load into any session. Free packs are free. The scaffold exists for premium packs and a future hosted tier, but nothing is locked today.
+
+**Production-ready, transparent roadmap.** Real mechanical rules (HP, damage, conditions), polished UIs, CI gates (typecheck + 450+ smoke tests), and open-source code. See [MONETIZATION.md](MONETIZATION.md) for details on how packs and a future hosted tier would work (the seam is there, but not wired up yet).
 
 ## Quick start — CLI (free, ~2 minutes)
 
@@ -46,11 +54,10 @@ same dropdown includes Claude, GPT, Gemini, and local models.
 
 ## Why this exists
 
-The open-source landscape has lots of AI DMs, but each one is locked to **one
-platform** (Discord *or* web) **or one model** (one vendor). None is all three of:
-multi-platform, multi-player, and model-agnostic. OmniDM is built around that gap.
+The open-source landscape has many AI DMs, but none ships all three of:
+**multi-platform** (web, desktop, mobile, chat bots, terminal), **multi-player** (shared sessions, real multiplayer, fog-of-war), **and model-agnostic** (Claude, GPT, local LLMs, free APIs). OmniDM fills that gap. Beyond breadth, it also ships **real mechanical rules** (HP, conditions, checks — the engine owns these, not the narration), **extensible content packs** (game systems, NPCs, lorebooks, campaign starters), and a **polished, cross-platform table UI** that's the same everywhere.
 
-The design borrows deliberately from prior art (see [`docs` credits](#prior-art-studied)):
+The architecture borrows deliberately from prior art (see [`docs` credits](#prior-art-studied)):
 
 | Layer | Pattern | Borrowed from |
 |------|---------|---------------|
@@ -358,6 +365,7 @@ for their own usage. Local models are free.
 /dm new                 start a campaign in this channel
 /dm join <name>         join with a character name
 /dm who                 show the party
+/dm hp                  show every party member's current HP
 /dm mode <m>            turn mode: immediate (default) or round-robin
 /dm turn                show whose turn it is (round-robin)
 /dm pass                skip your turn (round-robin)
@@ -374,8 +382,14 @@ for their own usage. Local models are free.
 /dm lore list           show the lorebook (ids, names, trigger keywords)
 /dm lore remove <id>    remove a lore entry (by id or name)
 /dm pack list           list bundled content packs (rules + lorebook + NPCs +
-                        a campaign starter)
+                        campaign starters); free or premium
 /dm pack load <id>      import a content pack into this session
+/dm damage <name> <n>   deal n damage to a character (real mechanic: hp clamped
+                        at 0, unconscious condition set)
+/dm heal <name> <n>     restore n hp to a character (clamped at maxHp)
+/dm check <name> <result>  record an ability check as PASS or FAIL — the
+                        narration treats it as a resolved fact (no LLM
+                        reroll)
 /dm models [filter]     list usable models (🆓 = free)
 /dm model <id>          pick the model for this game
 /dm roll <notation>     roll dice (d20+5, 2d6, d20 adv, 4d6kh3)
@@ -384,24 +398,13 @@ for their own usage. Local models are free.
 
 Anything that isn't a command is treated as your character's action.
 
-`/dm import` accepts the Character Card V2/V3 format (raw JSON or a card PNG
-with the embedded `chara`/`ccv3` chunk). If you've already joined, the card
-becomes **your persona**; otherwise it becomes an **NPC** the DM portrays.
-A card's `character_book` is imported into the session lorebook automatically.
-Because anyone in the channel can run it, sources are restricted: local paths
-must live under `DATA_DIR`, URLs must be public http(s) (no loopback/private
-addresses, no redirects), and downloads are size-capped.
+**Mechanical rules.** HP, damage, healing, and conditions are **real**: `/dm damage` and `/dm heal` apply deterministic state changes (clamped, synced to the roster). The DM can also embed mechanics into narration: end a turn with `<<hp Name -7>>` (damage), `<<condition Name prone>>` (add condition), or `<<heal Name 5>>` (heal); the engine parses, applies, and strips these before broadcasting the text. Pre-resolved ability checks (`/dm check`) are treated as facts in the narration — the LLM never re-rolls them.
 
-`/dm lore` entries are keyword-triggered world info (SillyTavern's World Info
-pattern): when an entry's keyword appears in the current action or recent
-turns, its content is injected into the DM prompt as a bounded `WORLD INFO`
-block. Entries with no keywords are always injected.
+`/dm import` accepts the Character Card V2/V3 format (raw JSON or a card PNG with the embedded `chara`/`ccv3` chunk). If you've already joined, the card becomes **your persona**; otherwise it becomes an **NPC** the DM portrays. A card's `character_book` is imported into the session lorebook automatically. Because anyone in the channel can run it, sources are restricted: local paths must live under `DATA_DIR`, URLs must be public http(s) (no loopback/private addresses, no redirects), and downloads are size-capped.
 
-`/dm pack` loads a **content pack**: a versioned JSON bundle of a rules/system
-module, lorebook entries, NPCs, and an optional campaign starter — see
-[MONETIZATION.md](MONETIZATION.md) for the format and how packs relate to a
-future hosted tier (self-hosting unlocks every pack today; nothing is gated
-unless you turn on the hosted stub).
+`/dm lore` entries are keyword-triggered world info (SillyTavern's World Info pattern): when an entry's keyword appears in the current action or recent turns, its content is injected into the DM prompt as a bounded `WORLD INFO` block. Entries with no keywords are always injected.
+
+`/dm pack` loads a **content pack**: a versioned JSON bundle of a rules/system module, lorebook entries, NPCs, and an optional campaign starter — see [MONETIZATION.md](MONETIZATION.md) for the format and how packs relate to extensibility. Self-hosting unlocks every pack today; nothing is gated unless you enable the hosted entitlements stub.
 
 `/dm fog on` (daicer's `player_perspectives`) lets the DM append
 `[PRIVATE:<CharacterName>] … [/PRIVATE]` sections to its narration. The public
@@ -485,19 +488,11 @@ message-converter pattern as a pure function plus a thin fetch wrapper.
 
 Shipped since the initial scaffold (newest first):
 
-- **Desktop & mobile apps (hybrid)** — the `web/` client is wrapped, with **no
-  rewrite**, as a **Tauri v2** desktop app (`src-tauri/`) and a **Capacitor**
-  iOS + Android app (`capacitor.config.ts`, `capacitor/`). Both are thin native
-  WebViews that run the whole AI-DM engine in-WebView (no Node sidecar, no bundled
-  server); "Play on this device" uses your own key, "Connect to a server" uses the
-  unchanged WebSocket protocol. The Tauri window keeps the web client's strict CSP
-  (`script-src 'self'`) and Tauri **core-default** capabilities only; on a native
-  mobile platform the in-app LLM call routes through **`CapacitorHttp`** to bypass
-  WebView CORS (feature-detected in `src/browser/native-http.ts`). Scaffold +
-  configs + scripts + icons + per-platform READMEs are committed and verified by
-  the Node gates plus offline headless-chromium WebView checks; **the native
-  builds are not run here** (this box has no Rust/webkit2gtk, no Android SDK, no
-  macOS/Xcode) — and **iOS can only be built on a Mac**
+- **Content packs & extensible rules** — `/dm pack list|load <id>` imports bundled or custom game content: rules modules, lorebook entries, NPCs, and campaign starters. Packs are a real JSON format (schema in [MONETIZATION.md](MONETIZATION.md)) that can be free or premium. One real example pack (`frontier-outpost.pack.json`) ships out-of-the-box. Today, everything is unlocked for self-hosters; the entitlements seam (`src/core/entitlements/`) is there for a future hosted tier, but nothing blocks you.
+- **Real mechanical rules** — HP, damage, healing, conditions, and ability checks are owned by the engine, not the LLM. The DM's narration can emit `<<hp Name -7>>` / `<<condition Name prone>>` markers which are parsed, applied deterministically, clamped, and stripped from the final text; players never see the marker syntax. `/dm damage`, `/dm heal`, `/dm check` apply mechanics explicitly. The rules engine is **deterministic and pure** — tests cover all clamps, condition transitions, unconscious state automation.
+- **Landing page** — a self-contained marketing page is committed at `web/landing.html`; serves as the project's home and link target.
+- **CI gates** — GitHub Actions workflow (`.github/workflows/ci.yml`) runs typecheck, builds the web engine bundle, verifies it's up-to-date, and runs smoke tests (450+ checks covering every layer). Smoke tests gracefully skip headless web-UI checks if chromium is unavailable (e.g., on ARM CI builders), but report every skip so you know what's covered.
+- **Desktop & mobile apps (hybrid)** — the `web/` client is wrapped, with **no rewrite**, as a **Tauri v2** desktop app (`src-tauri/`) and a **Capacitor** iOS + Android app (`capacitor.config.ts`, `capacitor/`). Both are thin native WebViews that run the whole AI-DM engine in-WebView (no Node sidecar, no bundled server); "Play on this device" uses your own key, "Connect to a server" uses the unchanged WebSocket protocol. The Tauri window keeps the web client's strict CSP (`script-src 'self'`) and Tauri **core-default** capabilities only; on a native mobile platform the in-app LLM call routes through **`CapacitorHttp`** to bypass WebView CORS (feature-detected in `src/browser/native-http.ts`). Scaffold + configs + scripts + icons + per-platform READMEs are committed and verified by the Node gates plus offline headless-chromium WebView checks; **the native builds are not run here** (this box has no Rust/webkit2gtk, no Android SDK, no macOS/Xcode) — and **iOS can only be built on a Mac**
 - **In-app engine + hybrid browser client** — the core was made browser-runnable
   without breaking Node: the web adapter's room/protocol logic was extracted into
   a transport-agnostic **`RoomEngine`** (`src/core/room`), the Node-only
@@ -589,19 +584,15 @@ Shipped since the initial scaffold (newest first):
   size-guarded
 - **Round-robin turn mode** — `/dm mode round-robin`, `/dm turn`, `/dm pass`
 
-## Roadmap / not done yet
+## What's next
 
-- Initiative-rolled turn order (round-robin by join order is in)
-- More adapters: Signal (via signal-cli)
-- More native providers beyond Anthropic
-- Native app builds & distribution — the desktop/mobile **scaffolds** are in, but
-  the platform builds have not been run here: generate and commit (or CI-build)
-  the Capacitor `android/` / `ios/` projects, produce signed Tauri bundles per OS,
-  and set up code signing / notarization. (iOS requires a Mac + Xcode.)
-- Harden on-device key storage further — the key now defaults to sessionStorage
-  (localStorage only if the player opts into "Remember this key"); move it into
-  the platform secure store (iOS Keychain / Android Keystore, OS keychain on
-  desktop) instead of WebView storage entirely
+- **Signed native builds & CI distribution** — the desktop/mobile scaffolds are code-complete and tested; shipping needs signed Tauri bundles per OS and generated Capacitor projects in CI, plus code signing/notarization (macOS/Windows).
+- **Hosted tier + real billing** — `src/core/entitlements/` is the seam a real billing integration replaces; an operator can drop in their own `isUnlocked(key, scope)` logic keyed by tenant (guild/room) and flip `OMNIDM_HOSTED_TIER=1` to gate premium packs.
+- **More platforms** — Signal (via signal-cli), Twilio, Teams, etc. Adding one is a single `PlatformAdapter` implementation (~200 LOC) in `adapters/`.
+- **More native providers** — more cloud APIs beyond Claude (Anthropic native), plus deeper integrations for local models.
+- **Secure key storage** — move from WebView sessionStorage/localStorage into the platform's secure store (iOS Keychain, Android Keystore, OS Keychain on desktop).
+- **Initiative & combat** — 5e-style initiative rolls; automated round-robin turns within combat vs narrative mode.
+- **More content packs** — the format and loader are production-ready; shipping curated packs (homebrew systems, one-shots, settings) is a matter of authoring and testing them.
 
 ## Prior art studied
 
