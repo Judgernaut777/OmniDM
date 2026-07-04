@@ -39,6 +39,12 @@ import { OpenAICompatibleProvider } from './providers/openai-compatible.js';
 import { SlackAdapter } from './adapters/slack.js';
 import { MatrixAdapter } from './adapters/matrix.js';
 import { MattermostAdapter } from './adapters/mattermost.js';
+import { CliAdapter } from './adapters/cli.js';
+import { DiscordAdapter } from './adapters/discord.js';
+import { Events, type Client } from 'discord.js';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
+import { pickAdapter, parseAdapterArg } from './index.js';
 import { MAX_CARD_SUMMARY_CHARS, MAX_FRAME_BYTES, MAX_NAME_CHARS, MAX_PORTRAIT_BYTES, MAX_TEXT_CHARS, RATE_LIMIT_PER_SEC, UNJOINED_FRAMES_PER_SEC, WebAdapter } from './adapters/web.js';
 import { MAX_BIO_CHARS, PORTRAIT_PRESETS, resolvePresetId } from './core/portraits.js';
 import { BUNDLED_RULES, bundledRulesProvider } from './core/rules/registry.js';
@@ -59,10 +65,44 @@ import { isCapacitorNative, getCapacitorHttp, makeNativeFetch, selectFetch, type
 /** The committed static web client directory (src/smoke.ts -> ../web). */
 const WEB_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'web');
 
+let total = 0;
 let failures = 0;
+let skipped = 0;
 function check(label: string, cond: boolean) {
+  total++;
   console.log(`${cond ? '✅' : '❌'} ${label}`);
   if (!cond) failures++;
+}
+
+/**
+ * An explicitly COUNTED skip — never a silent no-op. Used only for the
+ * handful of best-effort headless-chromium checks: when the binary is
+ * missing or won't run in this environment, the check is not asserted, but
+ * it IS reported and tallied, so the final summary's headline numbers can
+ * never silently shrink relative to a run where chromium was available.
+ */
+function skip(label: string) {
+  skipped++;
+  console.log(`⏭  ${label}`);
+}
+
+/**
+ * Runs one top-level test section in isolation: a throw inside it (a real
+ * regression, a stale fixture, an environment hiccup) is caught, reported as
+ * a single FAILED check carrying the section's name and the error, and
+ * execution CONTINUES with the next section — instead of the single 2600+
+ * line main() aborting outright and silently blinding every downstream
+ * section's checks (the previous behavior: an uncaught throw anywhere killed
+ * the whole run with no summary at all).
+ */
+async function section(name: string, fn: () => void | Promise<void>): Promise<void> {
+  try {
+    await fn();
+  } catch (err) {
+    const detail = err instanceof Error ? (err.stack ?? err.message) : String(err);
+    check(`${name}: section threw unexpectedly — ${detail.split('\n')[0]}`, false);
+    console.log(detail);
+  }
 }
 
 // A provider that needs no network. Echoes what it was asked to narrate so we
@@ -167,7 +207,7 @@ async function headlessCrestCheck(portraitSrc: string): Promise<void> {
   try {
     await fs.access(chromium);
   } catch {
-    console.log('⏭  web-ui: headless crest check skipped (no chromium)');
+    skip('web-ui: headless crest check skipped (no chromium)');
     return;
   }
   const tmpDir = path.join('data', 'smoke');
@@ -199,7 +239,7 @@ try {
   );
   const dom = String(res.stdout ?? '');
   if (res.error || !dom.includes('CREST_OK=')) {
-    console.log('⏭  web-ui: headless crest check skipped (chromium did not produce output)');
+    skip('web-ui: headless crest check skipped (chromium did not produce output)');
     return;
   }
   check('web-ui: headless chromium renders a deterministic procedural crest (createElementNS)', dom.includes('CREST_OK=true'));
@@ -218,12 +258,12 @@ async function headlessBoardCheck(html: string, portraitSrc: string, appSrc: str
   try {
     await fs.access(chromium);
   } catch {
-    console.log('⏭  web-ui: headless board check skipped (no chromium)');
+    skip('web-ui: headless board check skipped (no chromium)');
     return;
   }
   const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
   if (!bodyMatch) {
-    console.log('⏭  web-ui: headless board check skipped (no <body> in served HTML)');
+    skip('web-ui: headless board check skipped (no <body> in served HTML)');
     return;
   }
   const body = bodyMatch[1].replace(/<script\b[^>]*><\/script>/gi, ''); // drop the real src=… tags; we inline the sources
@@ -270,7 +310,7 @@ async function headlessBoardCheck(html: string, portraitSrc: string, appSrc: str
   );
   const dom = String(res.stdout ?? '');
   if (res.error || !dom.includes('BOARD_OK=')) {
-    console.log('⏭  web-ui: headless board check skipped (chromium did not produce output)');
+    skip('web-ui: headless board check skipped (chromium did not produce output)');
     return;
   }
   check('web-ui: headless chromium renders scene tokens as portrait crests on the board', dom.includes('BOARD_OK=true'));
@@ -289,7 +329,7 @@ async function headlessClassGalleryCheck(portraitSrc: string): Promise<void> {
   try {
     await fs.access(chromium);
   } catch {
-    console.log('⏭  web-ui: headless class-gallery check skipped (no chromium)');
+    skip('web-ui: headless class-gallery check skipped (no chromium)');
     return;
   }
   const tmpDir = path.join('data', 'smoke');
@@ -329,7 +369,7 @@ try {
   );
   const dom = String(res.stdout ?? '');
   if (res.error || !dom.includes('GALLERY_OK=')) {
-    console.log('⏭  web-ui: headless class-gallery check skipped (chromium did not produce output)');
+    skip('web-ui: headless class-gallery check skipped (chromium did not produce output)');
     return;
   }
   check('web-ui: headless chromium renders all 12 class busts as rich, distinct portraits', dom.includes('GALLERY_OK=true'));
@@ -349,12 +389,12 @@ async function headlessCreatorCheck(html: string, portraitSrc: string, appSrc: s
   try {
     await fs.access(chromium);
   } catch {
-    console.log('⏭  web-ui: headless creator check skipped (no chromium)');
+    skip('web-ui: headless creator check skipped (no chromium)');
     return;
   }
   const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
   if (!bodyMatch) {
-    console.log('⏭  web-ui: headless creator check skipped (no <body> in served HTML)');
+    skip('web-ui: headless creator check skipped (no <body> in served HTML)');
     return;
   }
   const body = bodyMatch[1].replace(/<script\b[^>]*><\/script>/gi, ''); // drop the real src=… tags; we inline the sources
@@ -403,7 +443,7 @@ async function headlessCreatorCheck(html: string, portraitSrc: string, appSrc: s
   );
   const dom = String(res.stdout ?? '');
   if (res.error || !dom.includes('CREATOR_OK=')) {
-    console.log('⏭  web-ui: headless creator check skipped (chromium did not produce output)');
+    skip('web-ui: headless creator check skipped (chromium did not produce output)');
     return;
   }
   check('web-ui: headless chromium reaches the creator via the button, renders 12 class previews, and sends /dm class on pick', dom.includes('CREATOR_OK=true'));
@@ -430,12 +470,12 @@ async function runHeadlessClient(
   try {
     await fs.access(chromium);
   } catch {
-    console.log(`⏭  web-ui: headless ${label} check skipped (no chromium)`);
+    skip(`web-ui: headless ${label} check skipped (no chromium)`);
     return null;
   }
   const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
   if (!bodyMatch) {
-    console.log(`⏭  web-ui: headless ${label} check skipped (no <body> in served HTML)`);
+    skip(`web-ui: headless ${label} check skipped (no <body> in served HTML)`);
     return null;
   }
   const body = bodyMatch[1].replace(/<script\b[^>]*><\/script>/gi, ''); // drop real src=… tags; we inline the sources
@@ -510,7 +550,7 @@ async function headlessLocalTurnCheck(
   `;
   const dom = await runHeadlessClient('local-turn', html, srcs, probe);
   if (dom === null || !dom.includes('LOCAL_OK=')) {
-    console.log('⏭  web-ui: headless local-turn check skipped (chromium produced no output)');
+    skip('web-ui: headless local-turn check skipped (chromium produced no output)');
     return;
   }
   check('web-ui: headless "Play on this device" runs a full turn in-app (join → action → DM narration renders) with browser storage, no network', dom.includes('LOCAL_OK=true'));
@@ -562,7 +602,7 @@ async function headlessServerTurnCheck(
   `;
   const dom = await runHeadlessClient('server-turn', html, srcs, probe);
   if (dom === null || !dom.includes('SERVER_OK=')) {
-    console.log('⏭  web-ui: headless server-turn check skipped (no chromium / round-trip did not complete under virtual time)');
+    skip('web-ui: headless server-turn check skipped (no chromium / round-trip did not complete under virtual time)');
     return;
   }
   check('web-ui: headless "Connect to a server" mode drives RemoteTransport against a real loopback WebAdapter and renders a turn', dom.includes('SERVER_OK=true'));
@@ -634,7 +674,7 @@ async function headlessLocalErrorAndHelpCheck(
   `;
   const dom = await runHeadlessClient('local-error-help', html, srcs, probe);
   if (dom === null || !dom.includes('ERRHELP_OK=')) {
-    console.log('⏭  web-ui: headless local-error/help check skipped (chromium produced no output)');
+    skip('web-ui: headless local-error/help check skipped (chromium produced no output)');
     return;
   }
   check(
@@ -700,7 +740,7 @@ async function headlessKeyStorageCheck(
   `;
   const dom = await runHeadlessClient('key-storage', html, srcs, probe);
   if (dom === null || !dom.includes('KEYSTORE_OK=')) {
-    console.log('⏭  web-ui: headless key-storage check skipped (chromium produced no output)');
+    skip('web-ui: headless key-storage check skipped (chromium produced no output)');
     return;
   }
   check(
@@ -736,11 +776,25 @@ async function main() {
     text,
   });
 
+  // Hoisted so a handful of fixtures created in one top-level section
+  // (now its own isolated section() closure, see below) remain reachable
+  // from a much later section that reuses them — without these, wrapping
+  // each section in its own closure would silently shadow-break the reuse.
+  let sessionFile: string | undefined;
+  let store: NodeFileStorage;
+  let pngChunk: (type: string, data: Buffer) => Buffer;
+  let embedded: string;
+  let pngPath: string;
+  let bomb: Buffer;
+
+  await section("Dice (pure / deterministic)", async () => {
   // ── Dice (pure / deterministic) ──
   check('dice: d20+5 in range 6..25', (() => { const r = roll('d20+5'); return r.total >= 6 && r.total <= 25; })());
   check('dice: seeded rolls are reproducible', roll('2d6+1', 'x', 99).total === roll('2d6+1', 'x', 99).total);
   check('dice: extractRolls finds notation in prose', extractRolls('I cast 8d6 fireball and swing d20+7').length === 2);
 
+  });
+  await section("Anthropic message conversion (pure / no network)", async () => {
   // ── Anthropic message conversion (pure / no network) ──
   {
     const conv = convertToAnthropic([
@@ -801,6 +855,8 @@ async function main() {
       captured!.url.endsWith('/v1/messages'));
   }
 
+  });
+  await section("Command routing + multiplayer", async () => {
   // ── Command routing + multiplayer ──
   await bot.handle(from('u1', 'Alice', '/dm new'), send);
   check('new: campaign created reply', out.at(-1)!.text.includes('new campaign'));
@@ -811,25 +867,33 @@ async function main() {
   await bot.handle(from('u1', 'Alice', '/dm who'), send);
   check('multiplayer: both characters in party', out.at(-1)!.text.includes('Thorin') && out.at(-1)!.text.includes('Elaria'));
 
+  });
+  await section("Spectator guard", async () => {
   // ── Spectator guard ──
   out.length = 0;
   await bot.handle(from('u3', 'Carol', 'I sneak in'), send);
   check('spectator: non-player is gated', out.at(-1)!.text.includes('spectating'));
 
+  });
+  await section("Full turn: resolve dice BEFORE narration", async () => {
   // ── Full turn: resolve dice BEFORE narration ──
   out.length = 0;
   await bot.handle(from('u1', 'Alice', 'I attack the goblin with my d20+5 sword'), send);
   check('turn: DM narration returned', out.at(-1)!.speaker === 'Dungeon Master');
   check('turn: resolved roll was injected into the prompt', /RESOLVED ROLLS/.test(provider.lastPrompt) && /d20\+5/.test(provider.lastPrompt));
 
+  });
+  await section("Model dropdown", async () => {
   // ── Model dropdown ──
   out.length = 0;
   await bot.handle(from('u1', 'Alice', '/dm models'), send);
   check('models: lists the free mock model', out.at(-1)!.text.includes('mock/free-model'));
 
+  });
+  await section("Persistence to disk", async () => {
   // ── Persistence to disk ──
   const files = await fs.readdir(dataDir);
-  const sessionFile = files.find((f) => f.startsWith('session_'));
+  sessionFile = files.find((f) => f.startsWith('session_'));
   check('persistence: session file written to disk', Boolean(sessionFile));
   if (sessionFile) {
     const saved = JSON.parse(await fs.readFile(path.join(dataDir, sessionFile), 'utf8'));
@@ -837,6 +901,8 @@ async function main() {
     check('persistence: roll persisted with the turn', saved.history[0].rolls[0]?.notation === 'd20+5');
   }
 
+  });
+  await section("Structured dice events: the DM narration carries the deterministic roll", async () => {
   // ── Structured dice events: the DM narration carries the deterministic roll ──
   out.length = 0;
   await bot.handle(from('u1', 'Alice', '/dm roll d20+5'), send);
@@ -864,6 +930,8 @@ async function main() {
   const plainMsg = out.find((m) => m.speaker === 'Dungeon Master');
   check('roll: a plain narration action carries no roll data', Boolean(plainMsg) && plainMsg!.rolls === undefined);
 
+  });
+  await section("Round-robin turn mode", async () => {
   // ── Round-robin turn mode ──
   out.length = 0;
   await bot.handle(from('u1', 'Alice', '/dm mode round-robin'), send);
@@ -887,6 +955,8 @@ async function main() {
   await bot.handle(from('u1', 'Alice', '/dm turn'), send);
   check('turn: pointer persisted as Thorin', out.at(-1)!.text.includes('Thorin'));
 
+  });
+  await section("Round-robin: a double-send racing the in-flight turn must not consume Bob's turn", async () => {
   // ── Round-robin: a double-send racing the in-flight turn must not consume Bob's turn ──
   out.length = 0;
   await Promise.all([
@@ -901,6 +971,8 @@ async function main() {
   await bot.handle(from('u2', 'Bob', '/dm turn'), send);
   check("round-robin: after the double-send it is Elaria's turn, not skipped", out.at(-1)!.text.includes('Elaria'));
 
+  });
+  await section("Round-robin: the pointer stays normalized, so a join at the wrap point can't steal the turn", async () => {
   // ── Round-robin: the pointer stays normalized, so a join at the wrap point can't steal the turn ──
   {
     const mgr = new SessionManager(new NodeFileStorage(dataDir), 'mock/free-model');
@@ -916,6 +988,8 @@ async function main() {
       mgr.currentPlayer(s)?.userId === 'a');
   }
 
+  });
+  await section("Seat re-claim: a fresh userId re-joining as an existing character migrates the seat", async () => {
   // ── Seat re-claim: a fresh userId re-joining as an existing character migrates the seat ──
   // (The web adapter mints a new userId per connection; without this, a
   // reconnect + `/dm join <name>` ghosts the party: round-robin deadlocks on
@@ -943,6 +1017,8 @@ async function main() {
       Boolean(s.players.w9) && s.players.w2?.characterName === 'Thorin' && Object.keys(s.players).length === 2);
   }
 
+  });
+  await section("Seat-hijack prevention: reclaim-by-name REQUIRES the ownership token", async () => {
   // ── Seat-hijack prevention: reclaim-by-name REQUIRES the ownership token ──
   // Previously any room member could seize a character (and intercept its private
   // fog whispers) just by naming it in `/dm join`. A reclaim now needs the same
@@ -973,6 +1049,8 @@ async function main() {
       Boolean(s.players.a2) && !s.players.a1 && s.players.a2?.characterName === 'Gandalf' && Object.keys(s.players).length === 1);
   }
 
+  });
+  await section("Character name is length-capped server-side (client maxlength is advisory)", async () => {
   // ── Character name is length-capped server-side (client maxlength is advisory) ──
   // A raw socket can send `/dm join ` + arbitrary text; an unbounded name would
   // then bloat every roster broadcast and the DM system prompt on each turn.
@@ -1031,6 +1109,8 @@ async function main() {
     provider.narration = 'The tavern falls silent as you act. (mock narration)';
   }
 
+  });
+  await section("Character Card import (V2 JSON → player persona)", async () => {
   // ── Character Card import (V2 JSON → player persona) ──
   await bot.handle(from('u1', 'Alice', '/dm mode immediate'), send);
   const v2Path = path.join(dataDir, 'zara.card.json');
@@ -1046,9 +1126,11 @@ async function main() {
   check('import: persona card fields reach the prompt',
     provider.lastPrompt.includes('Imported characters') && provider.lastPrompt.includes('cunning tiefling rogue') && provider.lastPrompt.includes('Sly, loyal'));
   await bot.handle(from('u1', 'Alice', '/dm join Zara the Second'), send);
-  const store = new NodeFileStorage(dataDir);
+  store = new NodeFileStorage(dataDir);
   check('import: re-joining keeps the imported persona', (await store.load('cli:chan1'))?.players.u1?.card?.name === 'Zara');
 
+  });
+  await section("Character Card import (V3 JSON from a spectator → NPC)", async () => {
   // ── Character Card import (V3 JSON from a spectator → NPC) ──
   const v3Path = path.join(dataDir, 'grim.card.json');
   await fs.writeFile(v3Path, JSON.stringify({
@@ -1063,16 +1145,18 @@ async function main() {
   check('import: NPC card + lorebook entry reach the prompt',
     provider.lastPrompt.includes('grumpy gnome shopkeeper') && provider.lastPrompt.includes('thieves guild'));
 
+  });
+  await section("Character Card import (PNG with embedded tEXt 'chara' chunk)", async () => {
   // ── Character Card import (PNG with embedded tEXt 'chara' chunk) ──
-  const pngChunk = (type: string, data: Buffer) => {
+  pngChunk = (type: string, data: Buffer) => {
     const b = Buffer.alloc(12 + data.length);
     b.writeUInt32BE(data.length, 0);
     b.write(type, 4, 'latin1');
     data.copy(b, 8);
     return b; // CRC left zeroed — the extractor doesn't verify it
   };
-  const embedded = Buffer.from(JSON.stringify({ spec_version: '2.0', data: { name: 'Vex', description: 'A PNG-borne spectre.' } })).toString('base64');
-  const pngPath = path.join(dataDir, 'vex.card.png');
+  embedded = Buffer.from(JSON.stringify({ spec_version: '2.0', data: { name: 'Vex', description: 'A PNG-borne spectre.' } })).toString('base64');
+  pngPath = path.join(dataDir, 'vex.card.png');
   await fs.writeFile(pngPath, Buffer.concat([
     Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
     pngChunk('IHDR', Buffer.alloc(13)),
@@ -1083,10 +1167,14 @@ async function main() {
   await bot.handle(from('u4', 'Dave', `/dm import ${pngPath}`), send);
   check('import: PNG-embedded card extracted as NPC', out.at(-1)!.text.includes('Vex'));
 
+  });
+  await section("Card injection stays bounded", async () => {
   // ── Card injection stays bounded ──
   check('import: very long card fields are clipped in the prompt',
     renderCard({ specVersion: '2.0', name: 'Blob', description: 'x'.repeat(5000) }, 'NPC').length < 1000);
 
+  });
+  await section("Cards persist in the session JSON", async () => {
   // ── Cards persist in the session JSON ──
   const savedSession = JSON.parse(await fs.readFile(path.join(dataDir, sessionFile!), 'utf8'));
   check('persistence: persona card saved on the player', savedSession.players.u1?.card?.name === 'Zara');
@@ -1095,6 +1183,8 @@ async function main() {
     savedSession.npcs?.some((n: { name: string; portrait?: { kind: string; mime: string; data: string } }) =>
       n.name === 'Vex' && n.portrait?.kind === 'image' && n.portrait?.mime === 'image/png' && typeof n.portrait?.data === 'string' && n.portrait.data.length > 0));
 
+  });
+  await section("Lorebook / world info", async () => {
   // ── Lorebook / world info ──
   out.length = 0;
   await bot.handle(from('u3', 'Carol', '/dm lore list'), send);
@@ -1128,6 +1218,8 @@ async function main() {
   check('persistence: lorebook saved with the session',
     Array.isArray(savedLore.lorebook) && savedLore.lorebook.some((e: { name: string }) => e.name === 'Grimble'));
 
+  });
+  await section("Card import hardening: /dm import sources are untrusted channel input", async () => {
   // ── Card import hardening: /dm import sources are untrusted channel input ──
   out.length = 0;
   await bot.handle(from('u3', 'Carol', '/dm import /etc/hostname'), send);
@@ -1149,7 +1241,7 @@ async function main() {
   check('import: non-http scheme is refused', await rejects('ftp://example.com/card.json'));
 
   const bombPath = path.join(dataDir, 'bomb.card.png');
-  const bomb = deflateSync(Buffer.alloc(8 * 1024 * 1024)); // a few KB compressed → 8 MB inflated
+  bomb = deflateSync(Buffer.alloc(8 * 1024 * 1024)); // a few KB compressed → 8 MB inflated
   await fs.writeFile(bombPath, Buffer.concat([
     Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
     pngChunk('IHDR', Buffer.alloc(13)),
@@ -1162,6 +1254,8 @@ async function main() {
   await fs.writeFile(bigPath, Buffer.alloc(MAX_CARD_BYTES + 1, 0x7b));
   check('import: oversized card file is refused', await rejects(bigPath));
 
+  });
+  await section("Portraits: /dm portrait preset catalog + player descriptor", async () => {
   // ── Portraits: /dm portrait preset catalog + player descriptor ──
   {
     const pFrom = (userId: string, userName: string, text: string) => from(userId, userName, text, 'portraits');
@@ -1186,6 +1280,8 @@ async function main() {
     check('portrait: setting a preset does not disturb other players', pSaved?.players.u2 === undefined);
   }
 
+  });
+  await section("Class + bio: /dm class defaults the portrait, /dm bio is bounded, both reach the prompt", async () => {
   // ── Class + bio: /dm class defaults the portrait, /dm bio is bounded, both reach the prompt ──
   {
     // A dedicated bot+storage so out-of-band mutations share the bot's cache.
@@ -1240,6 +1336,8 @@ async function main() {
       out.some((m) => m.speaker === 'Dungeon Master'));
   }
 
+  });
+  await section("Fog of war: per-player private narration (fresh channel)", async () => {
   // ── Fog of war: per-player private narration (fresh channel) ──
   const fogFrom = (userId: string, userName: string, text: string) => from(userId, userName, text, 'chan2');
   await bot.handle(fogFrom('u1', 'Alice', '/dm new'), send);
@@ -1322,6 +1420,8 @@ async function main() {
   await bot.handle(fogFrom('u1', 'Alice', 'I sit by the fire'), send);
   check('fog: off again — no fog instructions in the prompt', !provider.lastPrompt.includes('Fog of war'));
 
+  });
+  await section("Vector memory / RAG: recall of turns outside the recent-history window", async () => {
   // ── Vector memory / RAG: recall of turns outside the recent-history window ──
   const memFrom = (text: string) => from('u1', 'Alice', text, 'chan3');
   await bot.handle(memFrom('/dm new'), send);
@@ -1354,6 +1454,8 @@ async function main() {
     memSession.memories?.[1]?.text.includes('Thorin: I pocket the obsidian raven amulet') &&
     memSession.memories?.[1]?.text.includes('tavern falls silent'));
 
+  });
+  await section("Vector memory: embeddings backend (deterministic fake embed, no network)", async () => {
   // ── Vector memory: embeddings backend (deterministic fake embed, no network) ──
   {
     const embedProvider: LLMProvider = {
@@ -1397,6 +1499,8 @@ async function main() {
       mixedHits.some((h) => h.turn === 0));
   }
 
+  });
+  await section("Vector memory: bounded growth + compact persistence", async () => {
   // ── Vector memory: bounded growth + compact persistence ──
   {
     const retriever = new MemoryRetriever(provider);
@@ -1425,6 +1529,8 @@ async function main() {
     new OpenAICompatibleProvider({ baseUrl: 'http://mock', apiKey: 'x' }).embed === undefined &&
     typeof new OpenAICompatibleProvider({ baseUrl: 'http://mock', apiKey: 'x', embeddingsModel: 'text-embedding-3-small' }).embed === 'function');
 
+  });
+  await section("Slack adapter: module loads offline; missing tokens fail fast", async () => {
   // ── Slack adapter: module loads offline; missing tokens fail fast ──
   check('slack: constructing without tokens throws a clear error', (() => {
     try { new SlackAdapter('', ''); return false; }
@@ -1437,6 +1543,8 @@ async function main() {
       typeof slack.send === 'function' && typeof slack.onMessage === 'function');
   }
 
+  });
+  await section("Matrix adapter: module loads offline; missing config fails fast", async () => {
   // ── Matrix adapter: module loads offline; missing config fails fast ──
   check('matrix: constructing without config throws a clear error', (() => {
     try { new MatrixAdapter('', ''); return false; }
@@ -1449,6 +1557,8 @@ async function main() {
       typeof matrix.send === 'function' && typeof matrix.onMessage === 'function');
   }
 
+  });
+  await section("Mattermost adapter: module loads offline; missing config fails fast", async () => {
   // ── Mattermost adapter: module loads offline; missing config fails fast ──
   check('mattermost: constructing without config throws a clear error', (() => {
     try { new MattermostAdapter('', ''); return false; }
@@ -1461,6 +1571,166 @@ async function main() {
       typeof mm.send === 'function' && typeof mm.onMessage === 'function');
   }
 
+  });
+  await section("CLI adapter: a scripted turn through injected streams (no real tty)", async () => {
+  // ── CLI adapter: a scripted turn through injected streams (no real tty) ──
+  {
+    const cliDataDir = path.join(dataDir, 'cli-adapter');
+    const cliProvider = new MockProvider();
+    const cliStorage = new NodeFileStorage(cliDataDir);
+    const cliBot = new Bot(config, cliProvider, cliStorage);
+    const input = new PassThrough();
+    const written: string[] = [];
+    const output = new PassThrough();
+    output.on('data', (d) => written.push(d.toString('utf8')));
+    const cli = new CliAdapter(input, output);
+    check('cli: adapter exposes the PlatformAdapter surface', cli.name === 'cli' &&
+      typeof cli.start === 'function' && typeof cli.stop === 'function' &&
+      typeof cli.send === 'function' && typeof cli.onMessage === 'function');
+
+    cli.onMessage((msg) => cliBot.handle(msg, (out) => cli.send(out)));
+    const started = cli.start();
+    input.write('/dm new\n');
+    input.write('/dm join Rin\n');
+    input.write('I inspect the door\n');
+    input.end();
+    await started; // resolves once the input stream closes AND the queued handlers drain
+
+    const transcript = written.join('');
+    check('cli: greets the terminal with the help hint', transcript.includes('OmniDM CLI'));
+    check('cli: a scripted /dm join reaches the bot and echoes back', transcript.includes('Rin'));
+    check('cli: a scripted action reaches the DM narration', transcript.includes('mock narration'));
+    check('cli: the userId/userName/platform routed through are the CLI’s fixed local seat',
+      cliProvider.lastPrompt.length > 0);
+    await fs.rm(cliDataDir, { recursive: true, force: true });
+  }
+
+  });
+  await section("Discord adapter: message-in → message-out via a fake client (no network)", async () => {
+  // ── Discord adapter: message-in → message-out via a fake client (no network) ──
+  {
+    class FakeDiscordClient extends EventEmitter {
+      loginCalls: string[] = [];
+      destroyed = false;
+      dmFailFor = new Set<string>();
+      sentDMs: { userId: string; text: string }[] = [];
+      sentChannel: { channelId: string; text: string }[] = [];
+      users = {
+        fetch: async (id: string) => {
+          if (this.dmFailFor.has(id)) throw new Error('Cannot send messages to this user');
+          return { send: async (text: string) => { this.sentDMs.push({ userId: id, text }); } };
+        },
+      };
+      channels = {
+        fetch: async (id: string) => ({
+          isTextBased: () => true,
+          send: async (text: string) => { this.sentChannel.push({ channelId: id, text }); },
+        }),
+      };
+      async login(token: string) { this.loginCalls.push(token); return token; }
+      async destroy() { this.destroyed = true; }
+    }
+
+    const fakeClient = new FakeDiscordClient();
+    const discord = new DiscordAdapter('fake-token', fakeClient as unknown as Client);
+    check('discord: adapter exposes the PlatformAdapter surface', discord.name === 'discord' &&
+      typeof discord.start === 'function' && typeof discord.stop === 'function' &&
+      typeof discord.send === 'function' && typeof discord.onMessage === 'function');
+
+    const received: IncomingMessage[] = [];
+    discord.onMessage((msg) => { received.push(msg); });
+    await discord.start();
+    check('discord: start() logs in with the configured token via the injected client', fakeClient.loginCalls[0] === 'fake-token');
+
+    const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+    // A bot message must never reach the game.
+    fakeClient.emit(Events.MessageCreate, {
+      author: { bot: true, id: 'bot1', username: 'OtherBot' },
+      member: null, channelId: 'chanA', content: '/dm help',
+    });
+    await settle();
+    check('discord: messages from other bots are ignored', received.length === 0);
+
+    // A real member message translates to the canonical shape.
+    fakeClient.emit(Events.MessageCreate, {
+      author: { bot: false, id: 'u1', username: 'alice' },
+      member: { displayName: 'Alice' }, channelId: 'chanA', content: '/dm join Rin',
+    });
+    await settle();
+    check('discord: a member message-in translates to the canonical IncomingMessage',
+      received.length === 1 && received[0].platform === 'discord' && received[0].channelId === 'chanA' &&
+      received[0].userId === 'u1' && received[0].userName === 'Alice' && received[0].text === '/dm join Rin');
+
+    // Falls back to the username when no guild member display name is set (e.g. a DM).
+    fakeClient.emit(Events.MessageCreate, {
+      author: { bot: false, id: 'u2', username: 'bobby' },
+      member: undefined, channelId: 'chanA', content: 'hi',
+    });
+    await settle();
+    check('discord: userName falls back to the account username with no member display name', received[1]?.userName === 'bobby');
+
+    // A throwing handler is caught, logged, and never crashes the process — later messages still flow.
+    const origError = console.error;
+    let loggedThrow = '';
+    console.error = (...args: unknown[]) => { loggedThrow += args.join(' '); };
+    discord.onMessage(() => { throw new Error('handler boom'); });
+    fakeClient.emit(Events.MessageCreate, {
+      author: { bot: false, id: 'u3', username: 'carol' },
+      member: { displayName: 'Carol' }, channelId: 'chanA', content: 'boom',
+    });
+    await settle();
+    console.error = origError;
+    check('discord: a throwing handler is caught + logged, not left to crash the gateway listener',
+      loggedThrow.includes('[discord] message handling failed') && loggedThrow.includes('handler boom'));
+    discord.onMessage((msg) => { received.push(msg); });
+
+    // message-out: a plain (non-whisper) send reaches the channel.
+    await discord.send({ speaker: 'Dungeon Master', channelId: 'chanA', text: 'The door creaks open.' });
+    check('discord: a channel-scoped send reaches channels.fetch(...).send(...)',
+      fakeClient.sentChannel.at(-1)?.channelId === 'chanA' && fakeClient.sentChannel.at(-1)?.text === 'The door creaks open.');
+
+    // message-out: a fog-of-war whisper DMs the target user, not the channel.
+    const beforeChannelCount = fakeClient.sentChannel.length;
+    await discord.send({ speaker: 'Dungeon Master', channelId: 'chanA', targetUserId: 'u1', targetUserName: 'Alice', text: 'You spot a hidden lever.' });
+    check('discord: a targeted send DMs the user via users.fetch(...).send(...), not the channel',
+      fakeClient.sentDMs.at(-1)?.userId === 'u1' && fakeClient.sentDMs.at(-1)?.text === 'You spot a hidden lever.' &&
+      fakeClient.sentChannel.length === beforeChannelCount);
+
+    // message-out: closed DMs get a content-free channel notice, never the secret text.
+    fakeClient.dmFailFor.add('u2');
+    await discord.send({ speaker: 'Dungeon Master', channelId: 'chanA', targetUserId: 'u2', targetUserName: 'Bobby', text: 'The vault code is 4471.' });
+    const notice = fakeClient.sentChannel.at(-1);
+    check('discord: a closed-DM whisper falls back to a content-free channel notice (never the secret text)',
+      notice?.channelId === 'chanA' && notice.text.includes('u2') && !notice.text.includes('4471'));
+
+    await discord.stop();
+    check('discord: stop() destroys the underlying client', fakeClient.destroyed === true);
+  }
+
+  });
+  await section("index.ts: adapter selection + argv parsing (pure, no process started)", async () => {
+  // ── index.ts: adapter selection + argv parsing (pure, no process started) ──
+  {
+    check('index: parseAdapterArg defaults to cli with no --adapter flag', parseAdapterArg(['node', 'index.js']) === 'cli');
+    check('index: parseAdapterArg reads the flag value', parseAdapterArg(['node', 'index.js', '--adapter', 'discord']) === 'discord');
+    check('index: parseAdapterArg falls back to cli when --adapter is the last, valueless argument',
+      parseAdapterArg(['node', 'index.js', '--adapter']) === 'cli');
+
+    const pickStorage = new NodeFileStorage(path.join(dataDir, 'pick-adapter'));
+    check('index: pickAdapter("cli") returns a CliAdapter', pickAdapter('cli', config, pickStorage) instanceof CliAdapter);
+    check('index: an unrecognized adapter name falls back to CliAdapter', pickAdapter('something-unknown', config, pickStorage) instanceof CliAdapter);
+    check('index: pickAdapter("discord") returns a DiscordAdapter wired to config.discord.token',
+      pickAdapter('discord', config, pickStorage) instanceof DiscordAdapter);
+    check('index: pickAdapter("web") returns a WebAdapter sharing the passed-in storage', pickAdapter('web', config, pickStorage) instanceof WebAdapter);
+    check('index: pickAdapter("matrix") throws without homeserver/token config (fails fast, not silently)', (() => {
+      try { pickAdapter('matrix', config, pickStorage); return false; }
+      catch (e) { return e instanceof Error && e.message.includes('MATRIX_HOMESERVER_URL'); }
+    })());
+  }
+
+  });
+  await section("Web adapter: real loopback round-trip on an ephemeral port", async () => {
   // ── Web adapter: real loopback round-trip on an ephemeral port ──
   {
     const webStorage = new MemoryStorage();
@@ -2084,6 +2354,8 @@ async function main() {
     check('web: stop() releases the port', await fetch(`http://127.0.0.1:${port}/`).then(() => false, () => true));
   }
 
+  });
+  await section("Web adapter: connection cap + hello deadline (tight limits so the test is fast)", async () => {
   // ── Web adapter: connection cap + hello deadline (tight limits so the test is fast) ──
   {
     const tiny = new WebAdapter('127.0.0.1', 0, '', 2, 800); // cap: 2 sockets, 800 ms to complete hello
@@ -2108,6 +2380,8 @@ async function main() {
     await tiny.stop();
   }
 
+  });
+  await section("Provider switch: a persisted foreign model id must not brick old campaigns", async () => {
   // ── Provider switch: a persisted foreign model id must not brick old campaigns ──
   {
     const anthropic = new AnthropicProvider({ apiKey: 'x' });
@@ -2126,6 +2400,8 @@ async function main() {
       (await mgr.create({ platform: 'cli', channelId: 'oldmodel2', userId: 'u', userName: 'U', text: '' })).model === 'claude-sonnet-5');
   }
 
+  });
+  await section("/dm end must evict the live session cache, not just delete the file", async () => {
   // ── /dm end must evict the live session cache, not just delete the file ──
   out.length = 0;
   await bot.handle(from('u1', 'Alice', '/dm end'), send);
@@ -2136,6 +2412,8 @@ async function main() {
     out.at(-1)!.text.includes('No game in this channel'));
   check('end: session file stays deleted', !(await fs.readdir(dataDir)).includes(sessionFile!));
 
+  });
+  await section("Storage seam: the same bot pipeline runs unchanged on MemoryStorage", async () => {
   // ── Storage seam: the same bot pipeline runs unchanged on MemoryStorage ──
   {
     const memBot = new Bot(config, provider, new MemoryStorage());
@@ -2160,6 +2438,8 @@ async function main() {
     check('storage: /dm end deletes through MemoryStorage — no resurrection', memOut.at(-1)!.text.includes('No game in this channel'));
   }
 
+  });
+  await section("Backward compatibility: session saved before turnMode/npcs existed", async () => {
   // ── Backward compatibility: session saved before turnMode/npcs existed ──
   await fs.writeFile(
     path.join(dataDir, 'session_cli_legacy.json'),
@@ -2210,6 +2490,8 @@ async function main() {
     oldPreset?.players.u1?.portrait?.kind === 'preset' &&
     resolvePresetId((oldPreset!.players.u1!.portrait as { id: string }).id) === 'wizard');
 
+  });
+  await section("Portable engine: bundled rules registry (no node:fs on the narrator path)", async () => {
   // ── Portable engine: bundled rules registry (no node:fs on the narrator path) ──
   {
     const ruleMd = await fs.readFile('src/rules/dnd5e/system.md', 'utf8');
@@ -2228,6 +2510,8 @@ async function main() {
       provider.lastPrompt.includes('System Module — D&D 5e'));
   }
 
+  });
+  await section("Monetization scaffold: content packs + entitlements", async () => {
   // ── Monetization scaffold: content packs + entitlements ──
   {
     // Bundled example pack: byte-identical mirror of the on-disk file (no drift),
@@ -2379,6 +2663,8 @@ async function main() {
       /premium content pack and isn't unlocked/.test(hostedOut.at(-1)?.text ?? ''));
   }
 
+  });
+  await section("Portable engine: browser-safe card parsing (Uint8Array + DecompressionStream)", async () => {
   // ── Portable engine: browser-safe card parsing (Uint8Array + DecompressionStream) ──
   {
     // base64 helpers match node:Buffer exactly.
@@ -2426,6 +2712,8 @@ async function main() {
     check('card-browser: a zTXt decompression bomb is rejected by the browser inflate cap', bombRejected);
   }
 
+  });
+  await section("Portable engine: browser SessionStorage round-trips a session", async () => {
   // ── Portable engine: browser SessionStorage round-trips a session ──
   {
     // A fake Web Storage (localStorage) backing the KV adapter.
@@ -2478,6 +2766,8 @@ async function main() {
       bOut.at(-1)!.speaker === 'Dungeon Master' && /d20\+5/.test(provider.lastPrompt));
   }
 
+  });
+  await section("Portable engine: environment-neutral provider factory", async () => {
   // ── Portable engine: environment-neutral provider factory ──
   {
     check('factory: anthropic provider from LLM_PROVIDER=anthropic',
@@ -2490,6 +2780,8 @@ async function main() {
       buildProvider({ baseUrl: 'http://mock', apiKey: 'x', allowBrowser: true }).id === 'openai-compatible');
   }
 
+  });
+  await section("Portable engine: RoomEngine drives a full flow with NO node:http/ws/fs", async () => {
   // ── Portable engine: RoomEngine drives a full flow with NO node:http/ws/fs ──
   {
     /** An in-process connection collecting frames — the transport-agnostic seam. */
@@ -2609,6 +2901,8 @@ async function main() {
     check('room-engine: dropping a connection leaves the roster', (shrunk!.users as RUser[])[0]?.userName === 'Alice');
   }
 
+  });
+  await section("In-app engine: createLocalEngine (the LocalTransport's composition root)", async () => {
   // ── In-app engine: createLocalEngine (the LocalTransport's composition root) ──
   // The browser LocalTransport wraps EXACTLY this: createLocalEngine wires a Bot +
   // RoomEngine + SessionStorage + provider in one process. Injecting a mock
@@ -2679,6 +2973,8 @@ async function main() {
       Boolean(conn.last((f) => f.type === 'msg' && /Could not import|unavailable in-app|upload/i.test(String(f.text)))));
   }
 
+  });
+  await section("Desktop shell: the Tauri v2 scaffold wraps web/ in a native WebView", async () => {
   // ── Desktop shell: the Tauri v2 scaffold wraps web/ in a native WebView ──────
   // No Node sidecar — the engine runs in-WebView (the hybrid model), so this only
   // asserts the scaffold is present and correctly wired: valid config JSON that
@@ -2742,6 +3038,8 @@ async function main() {
       Boolean(pkg.scripts?.['tauri:dev']) && Boolean(pkg.scripts?.['tauri:build']) && Boolean(pkg.devDependencies?.['@tauri-apps/cli']));
   }
 
+  });
+  await section("Rules engine: engine-owned HP, narration markers, checks (fully isolated)", async () => {
   // ── Rules engine: engine-owned HP, narration markers, checks (fully isolated) ──
   // Own provider/bot/storage/channel so these turns never touch the shared
   // provider.lastPrompt / round-robin timing the scenario tests above depend on.
@@ -2829,6 +3127,8 @@ async function main() {
       mp.lastPrompt.includes('<<hp CharacterName') && mp.lastPrompt.includes('<<condition CharacterName'));
   }
 
+  });
+  await section("Desktop shell: the Electron target bundles Chromium (builds w/o system webkit)", async () => {
   // ── Desktop shell: the Electron target bundles Chromium (builds w/o system webkit) ──
   // The pragmatic desktop path: unlike the Tauri scaffold this ships its own
   // Chromium, so it builds/runs without root or system WebKit. Same hybrid model
@@ -2917,6 +3217,8 @@ async function main() {
       /npm run electron:build/.test(readme) && !/add\s+`electron-builder`\s+and configure/.test(readme));
   }
 
+  });
+  await section("Secret redaction: provider error bodies must never carry a key to players", async () => {
   // ── Secret redaction: provider error bodies must never carry a key to players ──
   // A misconfigured OpenAI-compatible gateway can echo the submitted key in its
   // 401 body, and the turn-failure notice is broadcast to every seat in server
@@ -2936,6 +3238,8 @@ async function main() {
       redactSecrets('Unknown model: meta-llama/llama-3.3-70b-instruct:free').includes('meta-llama/llama-3.3-70b-instruct:free'));
   }
 
+  });
+  await section("Server vs local turn-failure notices: allowlist, not a blocklist", async () => {
   // ── Server vs local turn-failure notices: allowlist, not a blocklist ───────
   // Server mode fans a failure out to EVERY seat, most of whom aren't the
   // operator — it must get the generic, allowlisted notice, never the
@@ -2976,6 +3280,8 @@ async function main() {
       !localOut.some((m) => m.text === SERVER_TURN_FAILURE_TEXT));
   }
 
+  });
+  await section("Mobile shell: the Capacitor (iOS + Android) scaffold wraps web/", async () => {
   // ── Mobile shell: the Capacitor (iOS + Android) scaffold wraps web/ ─────────
   // Same hybrid model as Tauri: a native WebView loads the committed web client
   // and runs the engine in-WebView. Two things are asserted here: (1) the
@@ -3066,8 +3372,13 @@ async function main() {
       (provCall?.headers?.['x-api-key']) === 'sk-native-secret');
   }
 
+  });
   await fs.rm(dataDir, { recursive: true, force: true });
-  console.log(`\n${failures === 0 ? '🎉 all checks passed' : `💥 ${failures} check(s) failed`}`);
+  const passed = total - failures;
+  console.log(
+    `\n${failures === 0 ? '🎉 all checks passed' : `💥 ${failures} check(s) failed`} — ` +
+      `${passed} passed, ${failures} failed, ${skipped} skipped (${total} asserted)`,
+  );
   process.exit(failures === 0 ? 0 : 1);
 }
 

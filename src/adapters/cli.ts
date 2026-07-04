@@ -16,13 +16,22 @@ export class CliAdapter implements PlatformAdapter {
   private rl?: readline.Interface;
   private queue: Promise<unknown> = Promise.resolve();
 
+  /**
+   * Input/output default to the real terminal; tests inject in-memory streams
+   * so a scripted turn can be driven and asserted with no real tty involved.
+   */
+  constructor(
+    private input: NodeJS.ReadableStream = process.stdin,
+    private output: NodeJS.WritableStream = process.stdout,
+  ) {}
+
   onMessage(handler: (msg: IncomingMessage) => void | Promise<void>): void {
     this.handler = handler;
   }
 
   async start(): Promise<void> {
-    this.rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    console.log('🎲 OmniDM CLI. Type `/dm help` to begin, or Ctrl+C to quit.\n');
+    this.rl = readline.createInterface({ input: this.input, output: this.output });
+    this.output.write('🎲 OmniDM CLI. Type `/dm help` to begin, or Ctrl+C to quit.\n\n');
     this.prompt();
 
     this.rl.on('line', (line) => {
@@ -59,10 +68,10 @@ export class CliAdapter implements PlatformAdapter {
     const label = msg.speaker ? `\n📖 ${msg.speaker}:` : '';
     // The terminal has one seat, so a private message is rendered as a whisper.
     const text = msg.targetUserId ? `(whisper to ${msg.targetUserName ?? msg.targetUserId}) ${msg.text}` : msg.text;
-    process.stdout.write(`${label}\n${text}\n\n`);
+    this.output.write(`${label}\n${text}\n\n`);
   }
 
   private prompt(): void {
-    process.stdout.write('> ');
+    this.output.write('> ');
   }
 }

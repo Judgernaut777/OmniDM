@@ -10,6 +10,7 @@
  *
  * Adding a platform = writing one PlatformAdapter and adding a case below.
  */
+import path from 'node:path';
 import { loadConfig } from './config.js';
 import { createProvider } from './providers/index.js';
 import { Bot } from './core/bot.js';
@@ -22,7 +23,8 @@ import { MattermostAdapter } from './adapters/mattermost.js';
 import { WebAdapter } from './adapters/web.js';
 import type { PlatformAdapter } from './core/types.js';
 
-function pickAdapter(
+/** Exported for tests: pure adapter-selection logic, no process/env access. */
+export function pickAdapter(
   name: string,
   config: ReturnType<typeof loadConfig>,
   storage: NodeFileStorage,
@@ -46,11 +48,15 @@ function pickAdapter(
   }
 }
 
+/** Exported for tests: pure argv parsing, no process access. */
+export function parseAdapterArg(argv: string[]): string {
+  const idx = argv.indexOf('--adapter');
+  return idx !== -1 && argv[idx + 1] ? argv[idx + 1] : 'cli';
+}
+
 async function main() {
   const config = loadConfig();
-  const adapterArg = process.argv.includes('--adapter')
-    ? process.argv[process.argv.indexOf('--adapter') + 1]
-    : 'cli';
+  const adapterArg = parseAdapterArg(process.argv);
 
   if (!config.llm.apiKey && config.llm.baseUrl.includes('openrouter')) {
     console.warn(
@@ -75,7 +81,20 @@ async function main() {
   await adapter.start();
 }
 
-main().catch((err) => {
-  console.error('Fatal:', err);
-  process.exit(1);
-});
+// Only run when executed directly (e.g. `tsx src/index.ts`) — importing this
+// module (as the smoke test does, to exercise pickAdapter/parseAdapterArg)
+// must not start a live adapter as a side effect.
+const isMain = (() => {
+  try {
+    return import.meta.url === `file://${process.argv[1]}` || import.meta.url === `file://${path.resolve(process.argv[1] ?? '')}`;
+  } catch {
+    return false;
+  }
+})();
+
+if (isMain) {
+  main().catch((err) => {
+    console.error('Fatal:', err);
+    process.exit(1);
+  });
+}

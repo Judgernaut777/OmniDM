@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install chromium (for headless web-ui smoke checks)
+        # Best-effort: smoke.ts explicitly counts+reports a skip for its ~8
+        # headless web-ui checks when /usr/bin/chromium is missing, so a
+        # failure to install here must not fail the job — it degrades to a
+        # reported skip instead of silently or fatally losing coverage.
+        run: |
+          sudo apt-get update || true
+          sudo apt-get install -y chromium || sudo apt-get install -y chromium-browser || true
+          CHROME_BIN=$(command -v chromium || command -v chromium-browser || true)
+          if [ -n "$CHROME_BIN" ]; then
+            sudo ln -sf "$CHROME_BIN" /usr/bin/chromium
+            echo "chromium available at /usr/bin/chromium -> $CHROME_BIN"
+          else
+            echo "::warning::no chromium binary found — headless web-ui smoke checks will report as skipped"
+          fi
+        continue-on-error: true
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build web engine bundle
+        run: npm run build:web
+
+      - name: Verify committed web/engine.bundle.js is up to date
+        run: |
+          git diff --exit-code -- web/engine.bundle.js || {
+            echo "::error::web/engine.bundle.js is stale — run 'npm run build:web' and commit the result.";
+            exit 1;
+          }
+
+      - name: Smoke
+        run: npm run smoke

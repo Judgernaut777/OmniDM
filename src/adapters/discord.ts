@@ -14,16 +14,23 @@ export class DiscordAdapter implements PlatformAdapter {
   private client: Client;
   private handler?: (msg: IncomingMessage) => void | Promise<void>;
 
-  constructor(private token: string) {
-    this.client = new Client({
-      intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent,
-        GatewayIntentBits.DirectMessages,
-      ],
-      partials: [Partials.Channel],
-    });
+  /**
+   * `client` is injectable so tests can drive real message-in/message-out
+   * behavior against a fake discord.js client — no network, no real gateway
+   * login — while production callers get the real thing by default.
+   */
+  constructor(private token: string, client?: Client) {
+    this.client =
+      client ??
+      new Client({
+        intents: [
+          GatewayIntentBits.Guilds,
+          GatewayIntentBits.GuildMessages,
+          GatewayIntentBits.MessageContent,
+          GatewayIntentBits.DirectMessages,
+        ],
+        partials: [Partials.Channel],
+      });
   }
 
   onMessage(handler: (msg: IncomingMessage) => void | Promise<void>): void {
