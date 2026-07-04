@@ -1,0 +1,649 @@
+<!doctype html>
+<!-- OmniDM marketing landing page — a static, self-contained page (no build step,
+     no external origins, no fonts/CDN) that sits beside the real app (index.html)
+     in web/. It carries its own inline CSS and inline SVG mockups so it never
+     depends on style.css or app.js; it is served by the same static file server
+     as everything else in web/ (see src/adapters/web.ts), and can also be opened
+     directly from disk. There is no script on this page at all — the mobile nav
+     toggle below is a pure CSS checkbox hack — so none of the DOM-injection risks
+     that apply to the live app (untrusted players/LLM output) apply here. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="description" content="OmniDM: an AI Dungeon Master for the Discord your group already uses. Bring any model. Real dice, engine-owned HP and checks, persistent memory, multiplayer across Discord/Slack/Matrix/web, and a desktop app. Private and self-hostable.">
+<!-- Static marketing page, no game state, no untrusted input, no LLM calls from
+     here at all — so the policy is simply as strict as it can be: same-origin
+     scripts/styles/images only (plus data: for the inlined favicon), no network
+     connections, no frames, no plugins, no forms. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; font-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'">
+<title>OmniDM — an AI Dungeon Master for your Discord</title>
+<link rel="icon" href="data:image/png;base64,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">
+<style>
+/* ── Design tokens — same palette / rhythm family as the app's style.css,
+   duplicated here so this page has zero dependency on it. ── */
+:root {
+  color-scheme: dark;
+  --bg:       #0b0806;
+  --bg-2:     #0f0b08;
+  --panel:    #17110b;
+  --panel-2:  #1f160d;
+  --line:     #3a2b1a;
+  --line-2:   #4d3a22;
+  --ink:      #ece1cb;
+  --dim:      #a4967f;
+  --gold:     #e3ba66;
+  --gold-hi:  #f7e1a4;
+  --gold-deep:#b3852f;
+  --mist:     #accbf3;
+  --blood:    #dd7b6f;
+  --ember:    #e08a3a;
+  --good:     #6bbf7a;
+
+  --serif: 'Iowan Old Style', 'Palatino Linotype', Palatino, 'Book Antiqua', Georgia, serif;
+  --ui: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+  --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+
+  --ease: cubic-bezier(.2, .8, .2, 1);
+  --dur: .2s;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+  --shadow-1: 0 2px 8px #00000059;
+  --shadow-2: 0 10px 26px #00000070, 0 1px 0 #ffffff0a inset;
+  --shadow-3: 0 30px 80px #000c, 0 0 0 1px #000;
+
+  --wrap: min(72rem, 100% - 2.5rem);
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  font: 16px/1.65 var(--ui);
+  color: var(--ink);
+  background: var(--bg);
+  position: relative;
+  overflow-x: hidden;
+}
+body::before {
+  content: ""; position: fixed; inset: 0; z-index: -2; pointer-events: none;
+  background:
+    radial-gradient(1200px 620px at 50% -8%, #4a2f12 0%, #24160c 26%, transparent 62%),
+    radial-gradient(900px 700px at 92% 20%, #2a1a0d 0%, transparent 55%),
+    radial-gradient(1000px 900px at 6% 90%, #1c130b 0%, transparent 55%),
+    linear-gradient(180deg, var(--bg-2), var(--bg));
+}
+body::after {
+  content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  background-image: var(--grain);
+  background-size: 160px 160px;
+  opacity: .05; mix-blend-mode: soft-light;
+}
+* { scrollbar-width: thin; scrollbar-color: #6e5326 transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: linear-gradient(var(--gold-deep), #5c4420); border-radius: 999px; }
+::selection { background: #e3ba6640; }
+
+h1, h2, h3 { font-family: var(--serif); color: var(--gold-hi); margin: 0 0 .5rem; text-shadow: 0 0 22px #e3ba6622; }
+p { margin: 0 0 1rem; }
+a { color: var(--gold); }
+img, svg { max-width: 100%; display: block; }
+
+/* Reduced motion: kill everything nonessential */
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: .001s !important; animation-iteration-count: 1 !important; transition-duration: .001s !important; scroll-behavior: auto !important; }
+}
+@media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
+
+/* Skip link (a11y) */
+.skip-link {
+  position: absolute; left: -999px; top: 0; z-index: 100;
+  background: var(--gold); color: #241705; padding: .6rem 1rem; border-radius: 0 0 8px 0;
+  font-weight: 700;
+}
+.skip-link:focus { left: 0; }
+
+:focus-visible { outline: 2px solid var(--gold-hi); outline-offset: 2px; }
+
+/* ── Shared gold-foil button, matching the app's chrome ── */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: .5rem;
+  cursor: pointer; font: 700 .95rem/1 var(--ui); letter-spacing: .02em;
+  padding: .8rem 1.35rem; border-radius: 9px; text-decoration: none;
+  transition: filter var(--dur) var(--ease), transform var(--dur) var(--ease);
+  border: 1px solid transparent;
+}
+.btn-primary {
+  color: #241705;
+  background: linear-gradient(180deg, #f7e1a4 0%, #e3ba66 42%, #b3852f 100%);
+  border-color: #7d5e26;
+  text-shadow: 0 1px 0 #ffffff6b;
+  box-shadow: 0 1px 0 #ffffff5c inset, 0 -6px 12px #00000030 inset, 0 6px 16px #0008;
+}
+.btn-primary:hover { filter: brightness(1.08) saturate(1.05); }
+.btn-primary:active { transform: translateY(1px); }
+.btn-ghost {
+  color: var(--gold-hi); background: #e3ba660c; border-color: var(--line-2);
+}
+.btn-ghost:hover { border-color: var(--gold-deep); background: #e3ba6618; }
+.btn svg { flex: none; }
+
+/* ── Header / nav ── */
+.site-nav {
+  position: sticky; top: 0; z-index: 20;
+  display: flex; align-items: center; gap: 1rem;
+  padding: .85rem max(1.25rem, calc((100% - 72rem) / 2));
+  background: #0b0806cc; backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--line);
+}
+.brand { display: flex; align-items: center; gap: .55rem; text-decoration: none; margin-right: auto; }
+.brand-mark { width: 30px; height: 30px; flex: none; }
+.brand-word { font: 700 1.15rem var(--serif); color: var(--gold-hi); letter-spacing: .01em; }
+.nav-panel { display: flex; align-items: center; gap: 1.5rem; }
+.nav-links { display: flex; gap: 1.5rem; list-style: none; margin: 0; padding: 0; }
+.nav-links a { color: var(--dim); text-decoration: none; font: 600 .88rem var(--ui); transition: color var(--dur) var(--ease); }
+.nav-links a:hover { color: var(--gold-hi); }
+.nav-cta { display: flex; gap: .6rem; }
+.nav-toggle-label { display: none; }
+#nav-toggle { display: none; }
+
+@media (max-width: 880px) {
+  /* Below this width the links + CTA buttons no longer fit in the bar — they
+     move into one dropdown panel opened by the hamburger (a pure-CSS
+     checkbox toggle; no script). Both stay together so they can never
+     overlap or independently overflow the viewport. */
+  .nav-panel { display: none; }
+  .nav-toggle-label {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 2.2rem; height: 2.2rem; flex: none; border: 1px solid var(--line-2); border-radius: 8px;
+    color: var(--gold-hi); cursor: pointer;
+  }
+  #nav-toggle:checked ~ .nav-panel {
+    display: flex; flex-direction: column; align-items: stretch; gap: 1rem;
+    position: absolute; left: 0; right: 0; top: 100%;
+    background: var(--panel); border-bottom: 1px solid var(--line); padding: .5rem 1.25rem 1.25rem;
+    max-height: calc(100vh - 100%); overflow-y: auto;
+  }
+  #nav-toggle:checked ~ .nav-panel .nav-links { flex-direction: column; gap: 0; }
+  #nav-toggle:checked ~ .nav-panel .nav-links a { display: block; padding: .6rem 0; border-bottom: 1px solid var(--line); }
+  #nav-toggle:checked ~ .nav-panel .nav-cta { flex-direction: column; }
+  #nav-toggle:checked ~ .nav-panel .nav-cta .btn-ghost span.long { display: inline; }
+}
+
+/* ── Layout helpers ── */
+section { padding: 4.5rem max(1.25rem, calc((100% - 72rem) / 2)); }
+.section-head { max-width: 42rem; margin: 0 auto 2.75rem; text-align: center; }
+.section-head h2 { font-size: clamp(1.6rem, 1.3rem + 1.4vw, 2.3rem); }
+.section-head p { color: var(--dim); font-size: 1.05rem; }
+.eyebrow {
+  display: inline-block; font: 700 .72rem/1 var(--ui); letter-spacing: .18em; text-transform: uppercase;
+  color: var(--gold-deep); margin-bottom: .75rem;
+}
+
+/* ── Hero ── */
+.hero {
+  padding-top: 5.5rem; padding-bottom: 3rem;
+  display: grid; gap: 3rem; align-items: center;
+}
+@media (min-width: 980px) { .hero { grid-template-columns: 1.05fr .95fr; } }
+.hero h1 {
+  font-size: clamp(2.1rem, 1.5rem + 3vw, 3.4rem); line-height: 1.08; letter-spacing: -.01em;
+}
+.hero .lede { font-size: 1.18rem; color: var(--dim); max-width: 34rem; }
+.hero-ctas { display: flex; flex-wrap: wrap; gap: .8rem; margin-top: 1.6rem; }
+.hero-badges { display: flex; flex-wrap: wrap; gap: .5rem 1.1rem; margin-top: 1.8rem; }
+.hero-badge { display: flex; align-items: center; gap: .4rem; color: var(--dim); font-size: .82rem; font-weight: 600; }
+.hero-badge .dot { width: .4rem; height: .4rem; border-radius: 50%; background: var(--good); box-shadow: 0 0 6px #6bbf7a; flex: none; }
+.hero-visual { justify-self: center; width: 100%; max-width: 30rem; }
+.hero-visual svg { filter: drop-shadow(0 20px 50px #000a); }
+
+/* ── Feature grid ── */
+.features-grid { display: grid; gap: 1.1rem; grid-template-columns: repeat(auto-fit, minmax(15.5rem, 1fr)); }
+.feature-card {
+  padding: 1.5rem; border: 1px solid var(--line); border-radius: var(--radius-lg);
+  background: linear-gradient(180deg, var(--panel-2), var(--panel));
+  box-shadow: var(--shadow-1);
+  transition: transform var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+.feature-card:hover { transform: translateY(-3px); border-color: var(--gold-deep); }
+.feature-icon {
+  width: 2.6rem; height: 2.6rem; border-radius: 9px; margin-bottom: .9rem;
+  display: flex; align-items: center; justify-content: center;
+  background: radial-gradient(circle at 30% 20%, #e3ba6633, #e3ba6608);
+  border: 1px solid var(--line-2);
+}
+.feature-card h3 { font-size: 1.05rem; margin-bottom: .4rem; }
+.feature-card p { color: var(--dim); font-size: .92rem; margin: 0; }
+
+/* ── How it works ── */
+.steps { display: grid; gap: 1.4rem; grid-template-columns: repeat(auto-fit, minmax(13.5rem, 1fr)); counter-reset: step; }
+.step { position: relative; padding: 1.5rem 1.3rem 1.3rem; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--panel); }
+.step-num {
+  counter-increment: step; content: counter(step);
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 2.1rem; height: 2.1rem; border-radius: 50%; margin-bottom: .8rem;
+  font: 800 1rem var(--serif); color: #241705;
+  background: linear-gradient(180deg, var(--gold-hi), var(--gold-deep));
+  box-shadow: 0 0 0 4px #e3ba6614;
+}
+.step h3 { font-size: 1rem; }
+.step p { color: var(--dim); font-size: .9rem; margin: 0; }
+
+/* ── Showcase mockups ── */
+.showcase-grid { display: grid; gap: 2rem; }
+@media (min-width: 900px) { .showcase-grid { grid-template-columns: 1fr 1fr; } }
+.mockup {
+  border: 1px solid var(--line); border-radius: var(--radius-xl); overflow: hidden;
+  background: var(--panel); box-shadow: var(--shadow-2);
+}
+.mockup-caption { padding: .9rem 1.2rem; color: var(--dim); font-size: .85rem; border-top: 1px solid var(--line); }
+.mockup-caption strong { color: var(--gold-hi); }
+
+/* ── Pricing ── */
+.pricing-grid { display: grid; gap: 1.4rem; grid-template-columns: repeat(auto-fit, minmax(16.5rem, 1fr)); align-items: stretch; }
+.price-card {
+  display: flex; flex-direction: column; gap: 1rem;
+  padding: 1.8rem; border: 1px solid var(--line); border-radius: var(--radius-lg);
+  background: var(--panel);
+}
+.price-card.featured { border-color: var(--gold-deep); background: linear-gradient(180deg, #241a0c, var(--panel)); box-shadow: 0 0 0 1px #e3ba6622, var(--shadow-2); }
+.price-name { font: 700 1.1rem var(--serif); color: var(--gold-hi); }
+.price-tag { font: 800 1.9rem/1 var(--ui); }
+.price-tag small { font: 600 .8rem var(--ui); color: var(--dim); }
+.price-badge {
+  display: inline-block; align-self: flex-start; font: 700 .68rem/1 var(--ui); letter-spacing: .1em; text-transform: uppercase;
+  padding: .3rem .55rem; border-radius: 999px; color: var(--gold-deep); background: #e3ba6618; border: 1px solid var(--line-2);
+}
+.price-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: .55rem; color: var(--dim); font-size: .9rem; flex: 1; }
+.price-list li { display: flex; gap: .55rem; align-items: flex-start; }
+.price-list li::before { content: "✓"; color: var(--good); font-weight: 800; flex: none; }
+.price-cta { margin-top: auto; }
+.price-soon { text-align: center; padding: .7rem; color: var(--dim); font-size: .85rem; font-style: italic; border: 1px dashed var(--line-2); border-radius: 8px; }
+
+/* ── Final CTA band ── */
+.cta-band {
+  text-align: center; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
+  background: radial-gradient(600px 260px at 50% 0%, #e3ba6614, transparent);
+}
+.cta-band h2 { font-size: clamp(1.5rem, 1.2rem + 1.2vw, 2rem); }
+.cta-band .hero-ctas { justify-content: center; }
+
+/* ── Footer ── */
+footer { padding: 2.5rem max(1.25rem, calc((100% - 72rem) / 2)) 3rem; color: var(--dim); font-size: .85rem; }
+.footer-grid { display: flex; flex-wrap: wrap; gap: 1.5rem; justify-content: space-between; align-items: center; border-top: 1px solid var(--line); padding-top: 1.5rem; }
+.footer-links { display: flex; flex-wrap: wrap; gap: 1.2rem; list-style: none; margin: 0; padding: 0; }
+.footer-links a { color: var(--dim); text-decoration: none; }
+.footer-links a:hover { color: var(--gold-hi); }
+</style>
+</head>
+<body>
+<a class="skip-link" href="#content">Skip to content</a>
+
+<header>
+  <nav class="site-nav" aria-label="Primary">
+    <a class="brand" href="#top">
+      <svg class="brand-mark" viewBox="0 0 60 60" role="img" aria-label="OmniDM crest">
+        <polygon points="30,4 47,16 40,44 20,44 13,16" fill="none" stroke="#b3852f" stroke-width="2"/>
+        <polygon points="30,10 41,18 36,40 24,40 19,18" fill="url(#navGrad)"/>
+        <defs>
+          <linearGradient id="navGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%" stop-color="#f7e1a4"/>
+            <stop offset="55%" stop-color="#e3ba66"/>
+            <stop offset="100%" stop-color="#b3852f"/>
+          </linearGradient>
+        </defs>
+        <text x="30" y="31" text-anchor="middle" font-family="Georgia, serif" font-weight="700" font-size="13" fill="#241705">20</text>
+      </svg>
+      <span class="brand-word">OmniDM</span>
+    </a>
+    <input type="checkbox" id="nav-toggle">
+    <label class="nav-toggle-label" for="nav-toggle" aria-label="Toggle navigation menu">
+      <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M2 5h16M2 10h16M2 15h16" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+    </label>
+    <!-- Grouped so the mobile dropdown (below the 880px breakpoint) toggles
+         links AND CTA buttons together as one panel, instead of the two
+         needing independent positioning that could overlap or overflow. -->
+    <div class="nav-panel">
+      <ul class="nav-links">
+        <li><a href="#features">Features</a></li>
+        <li><a href="#how">How it works</a></li>
+        <li><a href="#pricing">Pricing</a></li>
+        <li><a href="https://github.com/Judgernaut777/OmniDM">GitHub</a></li>
+      </ul>
+      <div class="nav-cta">
+        <a class="btn btn-ghost" href="https://github.com/Judgernaut777/OmniDM"><span class="long">Star on</span> GitHub</a>
+        <a class="btn btn-primary" href="index.html">Play now</a>
+      </div>
+    </div>
+  </nav>
+</header>
+
+<main id="content">
+
+<!-- ── Hero ─────────────────────────────────────────────────────────── -->
+<section class="hero" id="top">
+  <div>
+    <span class="eyebrow">Free · open source · bring your own model</span>
+    <h1>An AI Dungeon Master for the Discord your group already uses.</h1>
+    <p class="lede">Bring any model. Private and self-hostable. Real dice, real HP, a
+      DM that remembers the whole campaign — running wherever your party already
+      talks, from Discord to a browser tab to a desktop app.</p>
+    <div class="hero-ctas">
+      <a class="btn btn-primary" href="index.html">Play now, free</a>
+      <a class="btn btn-ghost" href="https://github.com/Judgernaut777/OmniDM#desktop--mobile-apps">Get the desktop app</a>
+      <a class="btn btn-ghost" href="https://github.com/Judgernaut777/OmniDM">Star on GitHub</a>
+    </div>
+    <div class="hero-badges">
+      <span class="hero-badge"><span class="dot"></span>No install to try it — runs in your browser</span>
+      <span class="hero-badge"><span class="dot"></span>Your API key never leaves your device</span>
+      <span class="hero-badge"><span class="dot"></span>Discord · Slack · Matrix · Mattermost · Web</span>
+    </div>
+  </div>
+  <div class="hero-visual">
+    <!-- Stylized d20, matching the app icon's dark-fantasy gem-cut style, with unique ids so it never collides with other inline SVGs on this page. -->
+    <svg viewBox="0 0 200 200" role="img" aria-label="A gold, gem-cut twenty-sided die glowing on a dark background">
+      <defs>
+        <radialGradient id="heroGlow" cx="50%" cy="50%" r="70%">
+          <stop offset="0%" stop-color="#e3ba66" stop-opacity=".35"/>
+          <stop offset="100%" stop-color="#e3ba66" stop-opacity="0"/>
+        </radialGradient>
+        <linearGradient id="heroDie" x1="0%" y1="0%" x2="0%" y2="100%">
+          <stop offset="0%" stop-color="#f7e1a4"/>
+          <stop offset="45%" stop-color="#e3ba66"/>
+          <stop offset="100%" stop-color="#b3852f"/>
+        </linearGradient>
+        <filter id="heroShadow" x="-40%" y="-40%" width="180%" height="180%">
+          <feGaussianBlur in="SourceAlpha" stdDeviation="3"/>
+          <feOffset dx="0" dy="4" result="off"/>
+          <feComponentTransfer><feFuncA type="linear" slope="0.35"/></feComponentTransfer>
+          <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+      </defs>
+      <circle cx="100" cy="100" r="95" fill="url(#heroGlow)"/>
+      <g filter="url(#heroShadow)" transform="translate(100,100)">
+        <polygon points="0,-70 -51,-19 0,-32" fill="#f7e1a4" stroke="#b3852f" stroke-width=".6"/>
+        <polygon points="0,-70 51,-19 0,-32" fill="#f7e1a4" stroke="#b3852f" stroke-width=".6"/>
+        <polygon points="-51,-19 -76,25 -25,19" fill="url(#heroDie)" stroke="#8a6d2f" stroke-width=".6"/>
+        <polygon points="51,-19 76,25 25,19" fill="url(#heroDie)" stroke="#8a6d2f" stroke-width=".6"/>
+        <polygon points="-76,25 -63,63 -25,19" fill="#e3ba66" stroke="#8a6d2f" stroke-width=".6"/>
+        <polygon points="76,25 63,63 25,19" fill="#e3ba66" stroke="#8a6d2f" stroke-width=".6"/>
+        <polygon points="-63,63 -38,82 0,57" fill="#d4a860" stroke="#8a6d2f" stroke-width=".6"/>
+        <polygon points="63,63 38,82 0,57" fill="#d4a860" stroke="#8a6d2f" stroke-width=".6"/>
+        <polygon points="0,57 -38,82 38,82" fill="#b3852f" stroke="#6d4e1f" stroke-width=".6"/>
+        <polygon points="0,-32 -25,19 0,6 25,19" fill="#f7e1a4" opacity=".92" stroke="#d4a860" stroke-width=".6"/>
+        <circle cx="0" cy="0" r="73" fill="none" stroke="#b3852f" stroke-width="1.4" opacity=".55"/>
+        <text x="0" y="10" text-anchor="middle" font-family="Georgia, serif" font-size="30" font-weight="700" fill="#241705" opacity=".85">20</text>
+      </g>
+    </svg>
+  </div>
+</section>
+
+<!-- ── Features ─────────────────────────────────────────────────────── -->
+<section id="features">
+  <div class="section-head">
+    <span class="eyebrow">Under the hood</span>
+    <h2>A real rules engine, not just a chatty narrator</h2>
+    <p>The language model tells the story. Code — not the model — rolls the dice,
+      tracks HP, and resolves checks, so the numbers are exact every time.</p>
+  </div>
+  <div class="features-grid">
+    <article class="feature-card">
+      <div class="feature-icon"><svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><polygon points="11,1 20,7 17,19 5,19 2,7" fill="none" stroke="#e3ba66" stroke-width="1.6"/><text x="11" y="15" text-anchor="middle" font-size="9" font-weight="700" fill="#e3ba66">20</text></svg></div>
+      <h3>Real dice, engine-owned HP &amp; checks</h3>
+      <p>Rolls, HP, conditions, and DC-resolved ability checks are computed by
+        deterministic code (<code>/dm damage</code>, <code>/dm heal</code>,
+        <code>/dm check STR 15</code>) — the model narrates the outcome, it
+        doesn't invent it.</p>
+    </article>
+    <article class="feature-card">
+      <div class="feature-icon"><svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><path d="M4 4h14v11l-4 4H4z" fill="none" stroke="#e3ba66" stroke-width="1.6"/><path d="M7 8h8M7 11h8M7 14h5" stroke="#e3ba66" stroke-width="1.3" stroke-linecap="round"/></svg></div>
+      <h3>Persistent campaign memory</h3>
+      <p>A rolling "living summary" plus per-turn recall means your DM
+        remembers what happened ten sessions ago — without you replaying the
+        whole log every time you sit down.</p>
+    </article>
+    <article class="feature-card">
+      <div class="feature-icon"><svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><circle cx="7" cy="8" r="3" fill="none" stroke="#e3ba66" stroke-width="1.5"/><circle cx="15" cy="8" r="3" fill="none" stroke="#e3ba66" stroke-width="1.5"/><path d="M2 19c0-4 3.5-6 5-6s5 2 5 6M10 19c0-4 3.5-6 5-6s5 2 5 6" fill="none" stroke="#e3ba66" stroke-width="1.4"/></svg></div>
+      <h3>Multiplayer, wherever your group talks</h3>
+      <p>Discord, Slack, Matrix, Mattermost, or the browser — one party, one
+        campaign, shared dice and a shared battle map, with private
+        fog-of-war whispers only the target player sees.</p>
+    </article>
+    <article class="feature-card">
+      <div class="feature-icon"><svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><rect x="3" y="3" width="16" height="12" rx="2" fill="none" stroke="#e3ba66" stroke-width="1.6"/><path d="M7 19h8M11 15v4" stroke="#e3ba66" stroke-width="1.5" stroke-linecap="round"/></svg></div>
+      <h3>Model-agnostic — bring your own key</h3>
+      <p>OpenAI-compatible providers, native Anthropic, a local Ollama model,
+        or a free OpenRouter key. Switch models mid-campaign; your key stays
+        on your device by default and is sent only to the endpoint you chose.</p>
+    </article>
+    <article class="feature-card">
+      <div class="feature-icon"><svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><rect x="4" y="2" width="14" height="18" rx="2" fill="none" stroke="#e3ba66" stroke-width="1.6"/><circle cx="11" cy="16.5" r=".9" fill="#e3ba66"/></svg></div>
+      <h3>A real desktop app, same engine</h3>
+      <p>Electron (and a lighter Tauri build) wraps the identical table UI and
+        rules engine so solo or hotseat play works fully offline, with no
+        server required — the same code that runs the browser client.</p>
+    </article>
+    <article class="feature-card">
+      <div class="feature-icon"><svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><circle cx="11" cy="7" r="4" fill="none" stroke="#e3ba66" stroke-width="1.6"/><path d="M3 20c0-5 4-8 8-8s8 3 8 8" fill="none" stroke="#e3ba66" stroke-width="1.6"/></svg></div>
+      <h3>Character creator &amp; portraits</h3>
+      <p>Twelve classic classes, a procedural heraldic portrait for every
+        character (or your own art / an imported character card), visible to
+        the whole party on a shared token board.</p>
+    </article>
+  </div>
+</section>
+
+<!-- ── How it works ─────────────────────────────────────────────────── -->
+<section id="how">
+  <div class="section-head">
+    <span class="eyebrow">Start in minutes</span>
+    <h2>How it works</h2>
+    <p>No account, no signup — just a model and a place to talk.</p>
+  </div>
+  <div class="steps">
+    <div class="step">
+      <div class="step-num">1</div>
+      <h3>Bring a model</h3>
+      <p>Paste a free OpenRouter key, point at a local Ollama model, or use
+        your own OpenAI/Anthropic key. It's yours — never stored on a server.</p>
+    </div>
+    <div class="step">
+      <div class="step-num">2</div>
+      <h3>Open your table</h3>
+      <p>Invite the bot to Discord, Slack, Matrix, or Mattermost — or just
+        open the browser or desktop app, solo or with friends.</p>
+    </div>
+    <div class="step">
+      <div class="step-num">3</div>
+      <h3>Say <code>/dm new</code></h3>
+      <p>Then just describe what you do in plain language, like you would at
+        a real table.</p>
+    </div>
+    <div class="step">
+      <div class="step-num">4</div>
+      <h3>The engine resolves it</h3>
+      <p>Dice, HP, and DC checks are computed by code, not guessed by the
+        model — the AI narrates whatever actually happened.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ── Showcase mockups (inline SVG — no screenshots, nothing fabricated) ── -->
+<section aria-labelledby="showcase-head">
+  <div class="section-head">
+    <span class="eyebrow">A look at the table</span>
+    <h2 id="showcase-head">The table, illustrated</h2>
+    <p>Stylized mockups of the actual browser UI's layout and motifs — not
+      screenshots, just a preview of the shape of the thing.</p>
+  </div>
+  <div class="showcase-grid">
+    <figure class="mockup">
+      <svg viewBox="0 0 560 340" role="img" aria-label="Mockup of the campaign log: a DM narration message, a player reply, and a resolved dice-check result reading seventeen plus three equals twenty, success">
+        <defs>
+          <linearGradient id="mockDieA" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%" stop-color="#f7e1a4"/><stop offset="100%" stop-color="#b3852f"/>
+          </linearGradient>
+        </defs>
+        <rect width="560" height="340" fill="#17110b"/>
+        <rect width="560" height="34" fill="#1f160d"/>
+        <circle cx="18" cy="17" r="4" fill="#dd7b6f"/><circle cx="34" cy="17" r="4" fill="#e08a3a"/><circle cx="50" cy="17" r="4" fill="#6bbf7a"/>
+        <text x="280" y="21" text-anchor="middle" font-family="system-ui,sans-serif" font-size="12" fill="#a4967f">The Rusty Anchor — room: tavern</text>
+
+        <!-- DM message -->
+        <rect x="18" y="52" width="524" height="70" rx="10" fill="#1f160d" stroke="#3a2b1a"/>
+        <rect x="18" y="52" width="4" height="70" fill="#e3ba66"/>
+        <text x="34" y="72" font-family="system-ui,sans-serif" font-size="11" font-weight="700" letter-spacing="1" fill="#e3ba66">DUNGEON MASTER</text>
+        <text x="34" y="93" font-family="Georgia,serif" font-style="italic" font-size="13" fill="#ece1cb">The tavern door creaks open. Firelight catches the</text>
+        <text x="34" y="111" font-family="Georgia,serif" font-style="italic" font-size="13" fill="#ece1cb">edge of a blade across the room.</text>
+
+        <!-- player message -->
+        <rect x="118" y="134" width="424" height="46" rx="10" fill="#1f160d" stroke="#3a2b1a"/>
+        <rect x="538" y="134" width="4" height="46" fill="#b3852f"/>
+        <text x="134" y="153" font-family="system-ui,sans-serif" font-size="11" font-weight="700" letter-spacing="1" fill="#b3852f">THORIN</text>
+        <text x="134" y="171" font-family="Georgia,serif" font-size="13" fill="#ece1cb">I step forward, hand on my hilt.</text>
+
+        <!-- roll card -->
+        <rect x="18" y="192" width="524" height="118" rx="10" fill="#1a140c" stroke="#e3ba6655"/>
+        <text x="280" y="216" text-anchor="middle" font-family="system-ui,sans-serif" font-size="11" font-weight="700" letter-spacing="1.5" fill="#a4967f">PERCEPTION CHECK · DC 13</text>
+        <g transform="translate(240,230)">
+          <polygon points="40,0 74,20 62,58 18,58 6,20" fill="url(#mockDieA)" stroke="#8a6d2f"/>
+          <text x="40" y="38" text-anchor="middle" font-family="Georgia,serif" font-weight="700" font-size="22" fill="#241705">17</text>
+        </g>
+        <text x="280" y="278" text-anchor="middle" font-family="ui-monospace,monospace" font-size="12" fill="#a4967f">17 + 3 mod = <tspan font-weight="700" fill="#f7e1a4" font-size="16">20</tspan></text>
+        <text x="280" y="300" text-anchor="middle" font-family="system-ui,sans-serif" font-size="11" font-weight="700" letter-spacing="1.5" fill="#6bbf7a">SUCCESS</text>
+
+        <!-- HP bar -->
+        <text x="18" y="330" font-family="system-ui,sans-serif" font-size="11" fill="#a4967f">Thorin</text>
+        <rect x="70" y="322" width="200" height="9" rx="4.5" fill="#3a2b1a"/>
+        <rect x="70" y="322" width="160" height="9" rx="4.5" fill="url(#mockDieA)"/>
+        <text x="280" y="330" font-family="ui-monospace,monospace" font-size="11" fill="#a4967f">24 / 30 HP</text>
+      </svg>
+      <figcaption class="mockup-caption"><strong>The campaign log.</strong> DM narration, player turns, and an engine-resolved dice check, side by side.</figcaption>
+    </figure>
+
+    <figure class="mockup">
+      <svg viewBox="0 0 560 340" role="img" aria-label="Mockup of the shared battle map with three tokens and a party roster showing whose turn it is">
+        <rect width="560" height="340" fill="#17110b"/>
+        <rect width="560" height="34" fill="#1f160d"/>
+        <text x="18" y="21" font-family="system-ui,sans-serif" font-size="11" font-weight="700" letter-spacing="1.5" fill="#a4967f">BATTLE MAP</text>
+        <!-- map area -->
+        <rect x="18" y="50" width="340" height="272" rx="10" fill="#0f0b08" stroke="#3a2b1a"/>
+        <g stroke="#2a1f13" stroke-width="1">
+          <path d="M18 118h340M18 186h340M18 254h340"/>
+          <path d="M96 50v272M188 50v272M280 50v272"/>
+        </g>
+        <!-- PC token (gold rim) -->
+        <g transform="translate(120,160)">
+          <circle r="20" fill="#1f160d" stroke="#e3ba66" stroke-width="2.5"/>
+          <circle r="20" fill="none" stroke="#e3ba66" stroke-width="6" opacity=".25"/>
+          <text y="5" text-anchor="middle" font-family="Georgia,serif" font-weight="700" font-size="12" fill="#e3ba66">T</text>
+        </g>
+        <text x="120" y="196" text-anchor="middle" font-family="system-ui,sans-serif" font-size="10" fill="#a4967f">Thorin</text>
+        <!-- NPC token (dashed steel rim) -->
+        <g transform="translate(240,230)">
+          <circle r="18" fill="#1f160d" stroke="#8fa6c9" stroke-width="2" stroke-dasharray="3 3"/>
+          <text y="5" text-anchor="middle" font-family="Georgia,serif" font-weight="700" font-size="11" fill="#accbf3">B</text>
+        </g>
+        <text x="240" y="262" text-anchor="middle" font-family="system-ui,sans-serif" font-size="10" fill="#a4967f">Bandit</text>
+        <!-- actor glow token -->
+        <g transform="translate(300,110)">
+          <circle r="22" fill="none" stroke="#e3ba66" stroke-width="2" opacity=".7"/>
+          <circle r="18" fill="#1f160d" stroke="#e3ba66" stroke-width="2.5"/>
+          <text y="5" text-anchor="middle" font-family="Georgia,serif" font-weight="700" font-size="12" fill="#e3ba66">M</text>
+        </g>
+        <text x="300" y="146" text-anchor="middle" font-family="system-ui,sans-serif" font-size="10" fill="#a4967f">Mira</text>
+
+        <!-- roster -->
+        <text x="378" y="70" font-family="system-ui,sans-serif" font-size="11" font-weight="700" letter-spacing="1.5" fill="#a4967f">PARTY — TURN ORDER</text>
+        <g font-family="system-ui,sans-serif" font-size="12" fill="#ece1cb">
+          <rect x="378" y="82" width="164" height="30" rx="6" fill="#e3ba6614" stroke="#e3ba6655"/>
+          <text x="392" y="101">▸ Mira</text>
+          <rect x="378" y="118" width="164" height="30" rx="6" fill="none" stroke="#3a2b1a"/>
+          <text x="392" y="137" fill="#a4967f">Thorin</text>
+          <rect x="378" y="154" width="164" height="30" rx="6" fill="none" stroke="#3a2b1a"/>
+          <text x="392" y="173" fill="#a4967f">Bandit (NPC)</text>
+        </g>
+      </svg>
+      <figcaption class="mockup-caption"><strong>The shared battle map.</strong> Portrait tokens for every PC and NPC, server-authoritative moves, and a round-robin turn order.</figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- ── Pricing ──────────────────────────────────────────────────────── -->
+<section id="pricing">
+  <div class="section-head">
+    <span class="eyebrow">Honest pricing</span>
+    <h2>Free to run. Simple if you'd rather not.</h2>
+    <p>OmniDM is open source today. A hosted option and optional content are
+      on the roadmap — nothing here is sold yet.</p>
+  </div>
+  <div class="pricing-grid">
+    <div class="price-card">
+      <div><span class="price-badge">Available now</span></div>
+      <div class="price-name">Free · self-host</div>
+      <div class="price-tag">$0</div>
+      <ul class="price-list">
+        <li>Full source, MIT-friendly to run yourself</li>
+        <li>Discord, Slack, Matrix, Mattermost &amp; web adapters</li>
+        <li>Bring your own model — free or paid</li>
+        <li>Runs on a laptop, a Pi, or a cheap VPS</li>
+      </ul>
+      <a class="btn btn-primary price-cta" href="https://github.com/Judgernaut777/OmniDM">Get the code</a>
+    </div>
+    <div class="price-card featured">
+      <div><span class="price-badge">Coming soon</span></div>
+      <div class="price-name">Hosted</div>
+      <div class="price-tag">TBD</div>
+      <ul class="price-list">
+        <li>OmniDM runs the server, you just invite the bot</li>
+        <li>No VPS, no port-forwarding, no maintenance</li>
+        <li>Same engine, same rules, same BYO-model options</li>
+      </ul>
+      <div class="price-soon">Not launched yet — watch the repo for updates.</div>
+    </div>
+    <div class="price-card">
+      <div><span class="price-badge">Planned</span></div>
+      <div class="price-name">Premium content packs</div>
+      <div class="price-tag">TBD</div>
+      <ul class="price-list">
+        <li>Curated adventures, hand-tuned rules modules</li>
+        <li>Extra portrait art and battle-map themes</li>
+        <li>Core engine stays free either way</li>
+      </ul>
+      <div class="price-soon">Nothing to buy yet — the core stays free.</div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Final CTA ────────────────────────────────────────────────────── -->
+<section class="cta-band">
+  <h2>Pull up a chair. The table's ready.</h2>
+  <p style="color:var(--dim); max-width: 34rem; margin: 0 auto 1.5rem;">Free to play, free to self-host, and no account required to try it.</p>
+  <div class="hero-ctas">
+    <a class="btn btn-primary" href="index.html">Play now</a>
+    <a class="btn btn-ghost" href="https://github.com/Judgernaut777/OmniDM#desktop--mobile-apps">Get the desktop app</a>
+    <a class="btn btn-ghost" href="https://github.com/Judgernaut777/OmniDM">Star on GitHub</a>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="footer-grid">
+    <span>© 2026 OmniDM. Open source — bring your own model, keep your own data.</span>
+    <ul class="footer-links">
+      <li><a href="index.html">Play</a></li>
+      <li><a href="https://github.com/Judgernaut777/OmniDM">GitHub</a></li>
+      <li><a href="https://github.com/Judgernaut777/OmniDM#readme">Docs</a></li>
+      <li><a href="https://github.com/Judgernaut777/OmniDM#get-omnidm">Self-host guide</a></li>
+    </ul>
+  </div>
+</footer>
+
+</body>
+</html>

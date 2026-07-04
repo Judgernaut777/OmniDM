@@ -21,6 +21,7 @@
 import { promises as fs } from 'node:fs';
 import { connect } from 'node:net';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { deflateSync } from 'node:zlib';
 import type { Config } from './config.js';
 import type { CompletionRequest, GameSession, IncomingMessage, LLMProvider, ModelInfo, OutgoingMessage, TurnRecord } from './core/types.js';
@@ -48,6 +49,9 @@ import { buildProvider } from './providers/factory.js';
 import { RoomEngine, type Frame as RoomFrame, type RoomConnection } from './core/room/room-engine.js';
 import { createLocalEngine } from './browser/local-engine.js';
 import { isCapacitorNative, getCapacitorHttp, makeNativeFetch, selectFetch, type CapacitorHttpLike } from './browser/native-http.js';
+
+/** The committed static web client directory (src/smoke.ts -> ../web). */
+const WEB_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'web');
 
 let failures = 0;
 function check(label: string, cond: boolean) {
@@ -1495,6 +1499,29 @@ async function main() {
     const srcHrefs = [...html.matchAll(/(?:src|href)\s*=\s*"([^"]*)"/gi)].map((m) => m[1]);
     check('web-ui: every asset reference is same-origin (relative), never an external origin',
       srcHrefs.length >= 4 && srcHrefs.every((v) => !/^(?:https?:)?\/\//i.test(v)));
+
+    // ── Marketing landing page (web/landing.html) ──
+    // A separate static page, served by the same generic static handler as
+    // everything else in web/. It must actually exist on disk (not just be
+    // implied by the server not 404ing) and, like index.html, must load NO
+    // external RESOURCE (script/style/image/frame) — only a plain <a href>
+    // out to GitHub is allowed, since that's a normal outbound navigation a
+    // visitor clicks, not a fetch this untrusted-input-free static page makes
+    // on its own; CSP's script/style/img/connect-src stay locked to
+    // self/data: with no https: scheme allowance at all (unlike index.html,
+    // this page never needs to reach a user-configured LLM endpoint).
+    check('web-ui: web/landing.html exists on disk', await fs.access(path.join(WEB_ROOT, 'landing.html')).then(() => true, () => false));
+    const landingRes = await fetch(`http://127.0.0.1:${port}/landing.html`);
+    check('web-ui: landing.html served as text/html', landingRes.ok && Boolean(landingRes.headers.get('content-type')?.startsWith('text/html')));
+    const landingHtml = await landingRes.text();
+    const landingResourceSrcs = [...landingHtml.matchAll(/<(?:script|img|link|iframe|source|embed|object)\b[^>]*\s(?:src|href)\s*=\s*"([^"]*)"/gi)].map((m) => m[1]);
+    check('web-ui: landing.html loads no external resource (script/style/image/frame) — same-origin or data: only',
+      landingResourceSrcs.every((v) => v.startsWith('data:') || v.startsWith('#') || !/^[a-z][a-z0-9+.-]*:\/\//i.test(v)));
+    check('web-ui: landing.html sets a strict CSP with no external origin in script/style/img/connect-src',
+      /Content-Security-Policy/.test(landingHtml) && !/(script-src|style-src|img-src|connect-src)[^;"]*https?:\/\//i.test(landingHtml));
+    check('web-ui: landing.html links to the real app, the desktop app, and GitHub (no fabricated metrics/testimonials)',
+      /href="index\.html"/.test(landingHtml) && /github\.com\/Judgernaut777\/OmniDM/.test(landingHtml) &&
+      !/testimonial|★★★★★|\d[,.]?\d*\s*(?:stars|users|downloads|players)\b/i.test(landingHtml));
     // The client is DOM code smoke can't execute, so pin its two reconnect-UX
     // fixes statically: Leave must not depend on a close event (a CLOSED socket
     // fires none), and a trailing close must not wipe a shown join error.
