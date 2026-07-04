@@ -34,6 +34,18 @@ export interface Config {
     password: string;
   };
   dataDir: string;
+  monetization: {
+    /**
+     * Self-host (default, false) unlocks every content pack/feature — there is
+     * no billing today, so nothing should gate a self-hosted operator's own
+     * game. A future hosted deployment sets this true to switch on the
+     * (currently stub) hosted entitlements gate. See
+     * `core/entitlements/entitlements.ts`.
+     */
+    hosted: boolean;
+    /** Pack/feature ids explicitly unlocked when `hosted` is true; `'*'` unlocks everything. */
+    unlockedPackIds: string[];
+  };
 }
 
 export function loadConfig(): Config {
@@ -67,5 +79,12 @@ export function loadConfig(): Config {
       password: process.env.WEB_PASSWORD || '',
     },
     dataDir: process.env.DATA_DIR || './data',
+    monetization: {
+      hosted: /^(1|true)$/i.test(process.env.OMNIDM_HOSTED_TIER || ''),
+      unlockedPackIds: (process.env.OMNIDM_UNLOCKED_PACKS || '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
+    },
   };
 }

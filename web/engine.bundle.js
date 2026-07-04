@@ -483,9 +483,13 @@
   var BUNDLED_RULES = {
     dnd5e: DND5E_SYSTEM
   };
+  var runtimeRules = {};
+  function registerRulesModule(systemId, markdown) {
+    runtimeRules[systemId] = markdown;
+  }
   var bundledRulesProvider = {
     system(systemId) {
-      return BUNDLED_RULES[systemId] ?? "";
+      return runtimeRules[systemId] ?? BUNDLED_RULES[systemId] ?? "";
     }
   };
 
@@ -893,6 +897,300 @@ Return the updated summary.`
     }
   };
 
+  // src/core/content-packs/types.ts
+  var CONTENT_PACK_FORMAT_VERSION = 1;
+
+  // src/core/content-packs/validate.ts
+  var ContentPackError = class extends Error {
+    constructor(message) {
+      super(message);
+      this.name = "ContentPackError";
+    }
+  };
+  var MAX_PACK_BYTES = 2 * 1024 * 1024;
+  var MAX_LOREBOOK_ENTRIES = 200;
+  var MAX_NPCS = 50;
+  var MAX_KEYWORDS_PER_ENTRY = 50;
+  var MAX_SHORT_FIELD_CHARS = 200;
+  var MAX_LONG_FIELD_CHARS = 2e4;
+  var MAX_RULES_MARKDOWN_CHARS = 5e4;
+  var isObj = (v) => Boolean(v) && typeof v === "object" && !Array.isArray(v);
+  var str2 = (v) => typeof v === "string" ? v.trim() : "";
+  function requireStr(v, field, max = MAX_SHORT_FIELD_CHARS) {
+    const s = str2(v);
+    if (!s) throw new ContentPackError(`content pack "${field}" is required`);
+    if (s.length > max) throw new ContentPackError(`content pack "${field}" is too long (max ${max} chars)`);
+    return s;
+  }
+  function optStr(v, field, max = MAX_LONG_FIELD_CHARS) {
+    if (v === void 0) return void 0;
+    const s = str2(v);
+    if (s.length > max) throw new ContentPackError(`content pack "${field}" is too long (max ${max} chars)`);
+    return s || void 0;
+  }
+  var ID_RE = /^[a-z0-9][a-z0-9-]{1,63}$/;
+  function validateLoreEntry(raw, index) {
+    if (!isObj(raw)) throw new ContentPackError(`content pack lorebook[${index}] must be an object`);
+    const name2 = requireStr(raw.name, `lorebook[${index}].name`);
+    const content = requireStr(raw.content, `lorebook[${index}].content`, MAX_LONG_FIELD_CHARS);
+    const rawKeywords = raw.keywords;
+    if (rawKeywords !== void 0 && !Array.isArray(rawKeywords))
+      throw new ContentPackError(`content pack lorebook[${index}].keywords must be an array of strings`);
+    const keywordArr = Array.isArray(rawKeywords) ? rawKeywords : [];
+    if (keywordArr.length > MAX_KEYWORDS_PER_ENTRY)
+      throw new ContentPackError(`content pack lorebook[${index}].keywords has too many entries (max ${MAX_KEYWORDS_PER_ENTRY})`);
+    const keywords = keywordArr.map((k) => str2(k)).filter(Boolean);
+    const enabled = raw.enabled === void 0 ? true : Boolean(raw.enabled);
+    return { name: name2, keywords, content, enabled };
+  }
+  function validateNpc(raw, index) {
+    if (!isObj(raw)) throw new ContentPackError(`content pack npcs[${index}] must be an object`);
+    return {
+      name: requireStr(raw.name, `npcs[${index}].name`),
+      description: optStr(raw.description, `npcs[${index}].description`),
+      personality: optStr(raw.personality, `npcs[${index}].personality`),
+      scenario: optStr(raw.scenario, `npcs[${index}].scenario`),
+      firstMes: optStr(raw.firstMes, `npcs[${index}].firstMes`),
+      mesExample: optStr(raw.mesExample, `npcs[${index}].mesExample`),
+      systemPrompt: optStr(raw.systemPrompt, `npcs[${index}].systemPrompt`)
+    };
+  }
+  function validateRulesModule(raw) {
+    if (raw === void 0) return void 0;
+    if (!isObj(raw)) throw new ContentPackError('content pack "rulesModule" must be an object');
+    const id = requireStr(raw.id, "rulesModule.id");
+    if (!ID_RE.test(id)) throw new ContentPackError('content pack "rulesModule.id" must be a short lowercase-kebab identifier');
+    return {
+      id,
+      name: requireStr(raw.name, "rulesModule.name"),
+      markdown: requireStr(raw.markdown, "rulesModule.markdown", MAX_RULES_MARKDOWN_CHARS)
+    };
+  }
+  function validateCampaignStarter(raw) {
+    if (raw === void 0) return void 0;
+    if (!isObj(raw)) throw new ContentPackError('content pack "campaignStarter" must be an object');
+    return {
+      title: requireStr(raw.title, "campaignStarter.title"),
+      summary: requireStr(raw.summary, "campaignStarter.summary", MAX_LONG_FIELD_CHARS),
+      openingNarration: optStr(raw.openingNarration, "campaignStarter.openingNarration"),
+      systemId: raw.systemId === void 0 ? void 0 : requireStr(raw.systemId, "campaignStarter.systemId")
+    };
+  }
+  function validateContentPack(raw) {
+    if (!isObj(raw)) throw new ContentPackError("content pack must be a JSON object");
+    if (raw.formatVersion !== CONTENT_PACK_FORMAT_VERSION)
+      throw new ContentPackError(`unsupported content pack formatVersion (this build supports ${CONTENT_PACK_FORMAT_VERSION})`);
+    const id = requireStr(raw.id, "id");
+    if (!ID_RE.test(id)) throw new ContentPackError('content pack "id" must be a short lowercase-kebab identifier');
+    const lorebookRaw = raw.lorebook;
+    if (lorebookRaw !== void 0 && !Array.isArray(lorebookRaw))
+      throw new ContentPackError('content pack "lorebook" must be an array');
+    const lorebookArr = Array.isArray(lorebookRaw) ? lorebookRaw : [];
+    if (lorebookArr.length > MAX_LOREBOOK_ENTRIES)
+      throw new ContentPackError(`content pack "lorebook" has too many entries (max ${MAX_LOREBOOK_ENTRIES})`);
+    const npcsRaw = raw.npcs;
+    if (npcsRaw !== void 0 && !Array.isArray(npcsRaw))
+      throw new ContentPackError('content pack "npcs" must be an array');
+    const npcsArr = Array.isArray(npcsRaw) ? npcsRaw : [];
+    if (npcsArr.length > MAX_NPCS) throw new ContentPackError(`content pack "npcs" has too many entries (max ${MAX_NPCS})`);
+    return {
+      formatVersion: CONTENT_PACK_FORMAT_VERSION,
+      id,
+      name: requireStr(raw.name, "name"),
+      version: requireStr(raw.version, "version", 32),
+      description: optStr(raw.description, "description"),
+      author: optStr(raw.author, "author"),
+      premium: raw.premium === void 0 ? false : Boolean(raw.premium),
+      rulesModule: validateRulesModule(raw.rulesModule),
+      lorebook: lorebookArr.map((e, i) => validateLoreEntry(e, i)),
+      npcs: npcsArr.map((e, i) => validateNpc(e, i)),
+      campaignStarter: validateCampaignStarter(raw.campaignStarter)
+    };
+  }
+  function parseContentPackJson(text) {
+    if (text.length > MAX_PACK_BYTES) throw new ContentPackError("content pack file is too large");
+    let json;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      throw new ContentPackError("content pack is not valid JSON");
+    }
+    return validateContentPack(json);
+  }
+
+  // src/core/content-packs/bundled-sources.ts
+  var FRONTIER_OUTPOST_PACK_JSON = `{
+  "formatVersion": 1,
+  "id": "frontier-outpost",
+  "name": "Frontier Outpost",
+  "version": "1.0.0",
+  "author": "OmniDM",
+  "description": "A self-contained one-shot: a fog-bound trading outpost, a missing caravan, and the watchtower everyone in town is too afraid to enter. Original setting and rules-lite system module \u2014 no third-party IP.",
+  "premium": true,
+  "rulesModule": {
+    "id": "frontier-lite",
+    "name": "Frontier Lite",
+    "markdown": "# System Module \u2014 Frontier Lite (original homebrew)\\n\\nYou are the Game Master for Frontier Lite, a light, narrative-forward system for\\nrunning small frontier-town adventures. This module defines the rules context;\\ngeneric GM craft is in the narrator's base prompt.\\n\\n## Your role\\n- Narrate the world, voice NPCs, and adjudicate the fiction.\\n- Keep responses tight: 2-4 short paragraphs. End by inviting the players to act.\\n- Address the party as a group, but acknowledge individual players by their\\n  character names when they act.\\n\\n## Dice \u2014 IMPORTANT\\n- You do NOT roll dice. Dice are rolled by the game engine and the results are\\n  given to you under \\"RESOLVED ROLLS\\". Narrate the outcome those numbers dictate\\n  \u2014 never invent a different result, and never pretend a roll happened that\\n  isn't listed.\\n- When a player attempts something uncertain, ask them to roll, e.g. \\"Make a\\n  Grit check \u2014 roll d20.\\" The engine resolves it on their next message.\\n\\n## Core resolution\\n- d20 + a relevant modifier vs a target Difficulty Class (DC).\\n- Natural 20 = critical success; natural 1 = critical failure.\\n\\n## Checks \u2014 use the engine, don't adjudicate pass/fail yourself\\n- For an uncertain action, prefer asking for \`/dm check <character> <ABILITY> <DC>\`\\n  (ABILITY is STR, DEX, CON, INT, WIS, or CHA \u2014 Frontier Lite reuses the same six).\\n  The engine rolls d20, compares it to the DC, and hands you the outcome under\\n  \\"RESOLVED CHECKS\\" as PASS or FAIL. State that exact result \u2014 never decide\\n  success or failure yourself.\\n\\n## Mechanical state \u2014 HP and conditions\\n- HP, damage, healing, and conditions are owned by the game engine, not by you.\\n  When your narration deals damage, heals someone, or imposes a condition, end\\n  your reply with a machine marker ALONE on its own line, naming the character\\n  exactly as it appears in \\"The party\\": \`<<hp CharacterName -7>>\` (damage,\\n  negative), \`<<heal CharacterName 4>>\` (healing, positive), \`<<condition\\n  CharacterName rattled>>\` (a condition). These markers are stripped before\\n  players ever see them \u2014 never mention the marker syntax in your prose.\\n\\n## Tone\\n- This is a frontier of fog, mud, and hard-won trust. Reward creative and bold\\n  play. Telegraph danger before it strikes.\\n- Never decide a player character's thoughts, words, or actions for them.\\n"
+  },
+  "lorebook": [
+    {
+      "name": "Kestrel's Reach",
+      "keywords": ["kestrel", "outpost", "town", "reach"],
+      "content": "Kestrel's Reach is a palisaded trading outpost at the edge of the Long Fog, the last stop before the frontier proper. It exists to trade with the fog-farmers and river caravans, and everyone here has a stake in the caravan road staying open.",
+      "enabled": true
+    },
+    {
+      "name": "The Old Watchtower",
+      "keywords": ["watchtower", "tower", "old tower"],
+      "content": "A collapsed stone watchtower a mile north of town, built before the outpost and abandoned for two generations. Locals say lights move inside it on foggy nights and nobody who has gone in after dark has come back with a straight story.",
+      "enabled": true
+    },
+    {
+      "name": "The Missing Caravan",
+      "keywords": ["caravan", "missing caravan", "wagons"],
+      "content": "The autumn supply caravan \u2014 three wagons and six drivers \u2014 left Kestrel's Reach eight days ago and never reached the next town. The road between here and there passes within sight of the Old Watchtower.",
+      "enabled": true
+    },
+    {
+      "name": "The Fog Wardens",
+      "keywords": ["fog warden", "wardens", "corven"],
+      "content": "A small volunteer company that patrols the Long Fog's edge and keeps the caravan road clear of whatever wanders out of the mist. They are underfunded, underslept, and taken far too much for granted by the town they protect.",
+      "enabled": true
+    },
+    {
+      "name": "The Long Fog",
+      "keywords": [],
+      "content": "A permanent, unnaturally still fogbank that has sat along the frontier for as long as anyone can remember. It never fully lifts, never fully thickens, and nothing that lives out past its edge has ever been reliably described the same way twice.",
+      "enabled": true
+    }
+  ],
+  "npcs": [
+    {
+      "name": "Mirelle Ashgrove",
+      "description": "The outpost's quartermaster: a sharp-eyed woman in her fifties who keeps Kestrel's Reach fed, armed, and (mostly) honest.",
+      "personality": "Brisk, transactional, secretly generous to anyone who's actually trying to help. No patience for bravado.",
+      "scenario": "She hires the party to find the missing caravan before the town runs short on salt, nails, and medicine.",
+      "firstMes": "Mirelle doesn't look up from her ledger. \\"Three wagons and six good people, eight days gone. I'll pay in coin or in trade \u2014 I don't much care which, as long as somebody actually goes and looks.\\"",
+      "systemPrompt": "Mirelle never sugar-coats bad news and never pays for a job before it's done, but she keeps every promise she makes."
+    },
+    {
+      "name": "Corven Thale",
+      "description": "Captain of the Fog Wardens: a tired, competent frontier soldier who has stopped expecting thanks.",
+      "personality": "Dry-humored, protective of his few remaining wardens, quietly frightened of the Old Watchtower.",
+      "scenario": "He warns the party away from the watchtower, then admits he can't spare anyone to go with them if they insist on going anyway.",
+      "firstMes": "\\"Whatever you're planning near that tower,\\" Corven says, \\"plan on doing it in daylight, and plan on being wrong about what you find.\\"",
+      "systemPrompt": "Corven respects competence over confidence, and will quietly start taking a bold party more seriously if they show either."
+    }
+  ],
+  "campaignStarter": {
+    "title": "The Fog Takes the Caravan",
+    "summary": "The party has arrived in Kestrel's Reach, a frontier trading outpost on the edge of the Long Fog. The autumn supply caravan is eight days overdue on a road that passes the abandoned Old Watchtower, and the town's quartermaster, Mirelle Ashgrove, is hiring anyone willing to go look.",
+    "openingNarration": "The gate of Kestrel's Reach creaks shut behind you as the last caravan bell of the day goes unanswered. Lantern light pools in the mud of the yard, and somewhere past the palisade the Long Fog sits the way it always sits: still, close, and giving nothing back. Mirelle Ashgrove is still at her ledger table when you find her, and she already knows why you've come.",
+    "systemId": "frontier-lite"
+  }
+}
+`;
+  var BUNDLED_CONTENT_PACK_SOURCES = {
+    "frontier-outpost": FRONTIER_OUTPOST_PACK_JSON
+  };
+
+  // src/core/content-packs/registry.ts
+  var BUNDLED_CONTENT_PACKS = Object.fromEntries(
+    Object.entries(BUNDLED_CONTENT_PACK_SOURCES).map(([id, json]) => [id, parseContentPackJson(json)])
+  );
+  function getBundledContentPack(id) {
+    return BUNDLED_CONTENT_PACKS[id];
+  }
+  function listBundledContentPacks() {
+    return Object.values(BUNDLED_CONTENT_PACKS).map(({ id, name: name2, version, description, premium }) => ({
+      id,
+      name: name2,
+      version,
+      description,
+      premium
+    }));
+  }
+
+  // src/core/entitlements/entitlements.ts
+  var selfHostEntitlements = {
+    id: "self-host",
+    isUnlocked() {
+      return true;
+    }
+  };
+  function createHostedEntitlements(cfg = {}) {
+    const unlocked = new Set(cfg.unlockedKeys ?? []);
+    const enforce = cfg.enforcePremium ?? false;
+    return {
+      id: "hosted",
+      isUnlocked(key) {
+        if (!enforce) return true;
+        return unlocked.has("*") || unlocked.has(key);
+      }
+    };
+  }
+  function selectEntitlements(sel = {}) {
+    if (!sel.hosted) return selfHostEntitlements;
+    return createHostedEntitlements({ unlockedKeys: sel.unlockedPackIds, enforcePremium: true });
+  }
+
+  // src/core/content-packs/loader.ts
+  var PackLockedError = class extends Error {
+    constructor(packId) {
+      super(`Content pack "${packId}" is a premium pack and isn't unlocked.`);
+      __publicField(this, "packId", packId);
+      this.name = "PackLockedError";
+    }
+  };
+  function npcToCard(npc) {
+    return {
+      specVersion: "2.0",
+      name: npc.name,
+      description: npc.description,
+      personality: npc.personality,
+      scenario: npc.scenario,
+      firstMes: npc.firstMes,
+      mesExample: npc.mesExample,
+      systemPrompt: npc.systemPrompt
+    };
+  }
+  function loadContentPack(pack, session, entitlements = selfHostEntitlements) {
+    if (pack.premium && !entitlements.isUnlocked(pack.id)) throw new PackLockedError(pack.id);
+    let lorebookAdded = 0;
+    for (const e of pack.lorebook) {
+      if (session.lorebook.some((existing) => existing.content === e.content)) continue;
+      const entry = makeEntry(e.name, e.keywords, e.content);
+      entry.enabled = e.enabled ?? true;
+      session.lorebook.push(entry);
+      lorebookAdded++;
+    }
+    let npcsAdded = 0;
+    for (const npc of pack.npcs) {
+      if (session.npcs.some((existing) => existing.name === npc.name)) continue;
+      session.npcs.push(npcToCard(npc));
+      npcsAdded++;
+    }
+    let rulesRegistered = false;
+    if (pack.rulesModule) {
+      registerRulesModule(pack.rulesModule.id, pack.rulesModule.markdown);
+      rulesRegistered = true;
+    }
+    let starterApplied = false;
+    const starter = pack.campaignStarter;
+    if (starter && session.history.length === 0) {
+      session.summary = session.summary ? `${session.summary}
+
+${starter.summary}` : starter.summary;
+      if (starter.systemId) session.systemId = starter.systemId;
+      if (starter.openingNarration) {
+        const turn = { actions: [], rolls: [], narration: starter.openingNarration, ts: Date.now() };
+        session.history.push(turn);
+      }
+      starterApplied = true;
+    }
+    return { packId: pack.id, lorebookAdded, npcsAdded, rulesRegistered, starterApplied };
+  }
+
   // src/core/bot.ts
   function redactSecrets(text) {
     return String(text).replace(/\b(sk|pk|rk)-[A-Za-z0-9_-]{6,}/gi, "$1-\u2026redacted").replace(/\bBearer\s+[A-Za-z0-9._-]{6,}/gi, "Bearer \u2026redacted").replace(/\b(api[-_]?key|authorization|x-api-key)(["']?\s*[:=]\s*["']?)[A-Za-z0-9._-]{6,}/gi, "$1$2\u2026redacted").replace(/\b[A-Za-z0-9_-]{28,}\b/g, "\u2026redacted");
@@ -906,9 +1204,11 @@ Return the updated summary.`
       __publicField(this, "mode", mode);
       __publicField(this, "sessions");
       __publicField(this, "pipeline");
+      __publicField(this, "entitlements");
       this.sessions = new SessionManager(storage, config.llm.model, provider);
       const narrator = new Narrator(provider);
       this.pipeline = new TurnPipeline(this.sessions, narrator, provider);
+      this.entitlements = selectEntitlements(config.monetization);
     }
     /** Resolve a card source. Uses the injected importer, else lazy-loads the Node one. */
     async importCard(source, baseDir) {
@@ -1109,6 +1409,38 @@ ${list || "(empty \u2014 add with `/dm lore add <name> | <keywords> | <content>`
               return reply("Lore commands: `/dm lore add <name> | <keywords> | <content>`, `/dm lore list`, `/dm lore remove <id-or-name>`.");
           }
         }
+        case "pack": {
+          const session = await this.sessions.get(msg);
+          if (!session) return reply("No game here yet \u2014 `/dm new` first.");
+          const sub = (parts.shift() || "list").toLowerCase();
+          const arg = parts.join(" ").trim();
+          if (sub === "list") {
+            const packs = listBundledContentPacks();
+            const list = packs.map((p) => `\u2022 \`${p.id}\` **${p.name}** v${p.version}${p.premium ? " \u{1F512} premium" : ""}${this.entitlements.isUnlocked(p.id) ? "" : " (locked)"} \u2014 ${p.description || ""}`).join("\n");
+            return reply(`**Content packs:**
+${list || "(none bundled)"}
+Load one with \`/dm pack load <id>\`.`);
+          }
+          if (sub === "load") {
+            const pack = arg ? getBundledContentPack(arg) : void 0;
+            if (!pack) return reply(`No bundled content pack matches \`${arg || "(nothing)"}\` \u2014 see \`/dm pack list\`.`);
+            try {
+              const result = loadContentPack(pack, session, this.entitlements);
+              await this.sessions.save(session);
+              const bits = [
+                result.lorebookAdded ? `${result.lorebookAdded} lore entr${result.lorebookAdded === 1 ? "y" : "ies"}` : "",
+                result.npcsAdded ? `${result.npcsAdded} NPC${result.npcsAdded === 1 ? "" : "s"}` : "",
+                result.rulesRegistered ? "a rules module" : "",
+                result.starterApplied ? "its campaign starter" : ""
+              ].filter(Boolean);
+              return reply(`\u{1F4E6} Loaded **${pack.name}** \u2014 added ${bits.join(", ") || "nothing new (already loaded)"}.`);
+            } catch (e) {
+              if (e instanceof PackLockedError) return reply(`\u{1F512} **${pack.name}** is a premium content pack and isn't unlocked here.`);
+              throw e;
+            }
+          }
+          return reply("Pack commands: `/dm pack list`, `/dm pack load <id>`.");
+        }
         case "models": {
           const models = await this.provider.listModels();
           if (!models.length) return reply("Could not list models (check LLM_BASE_URL / LLM_API_KEY). You can still set one with `/dm model <id>`.");
@@ -1289,6 +1621,7 @@ Set yours with \`/dm portrait <id>\` (e.g. \`/dm portrait fighter\`), or upload 
 \`/dm portrait [<preset>]\` \u2014 set your portrait to a class preset (no arg lists them); upload your own picture in the browser
 \`/dm import <file-or-URL>\` \u2014 import a Character Card V2/V3 (JSON or PNG): your persona if joined, an NPC otherwise
 \`/dm lore add <name> | <keywords> | <content>\` \u2014 world info, injected when a keyword comes up (also \`list\`, \`remove <id-or-name>\`)
+\`/dm pack list\` \u2014 list bundled content packs (rules + lorebook + NPCs + a campaign starter); \`/dm pack load <id>\` to import one
 \`/dm models [filter]\` \u2014 list models you can use (\u{1F193} = free)
 \`/dm model <id>\` \u2014 pick the model for this game
 \`/dm roll <notation>\` \u2014 roll dice (e.g. \`d20+5\`, \`2d6\`, \`d20 adv\`)
@@ -1693,15 +2026,15 @@ ${m.content}`;
     return array;
   })();
   var limit = 1024;
-  var encode = (str3, _defaultEncoder, charset, _kind, format) => {
-    if (str3.length === 0) {
-      return str3;
+  var encode = (str4, _defaultEncoder, charset, _kind, format) => {
+    if (str4.length === 0) {
+      return str4;
     }
-    let string = str3;
-    if (typeof str3 === "symbol") {
-      string = Symbol.prototype.toString.call(str3);
-    } else if (typeof str3 !== "string") {
-      string = String(str3);
+    let string = str4;
+    if (typeof str4 === "symbol") {
+      string = Symbol.prototype.toString.call(str4);
+    } else if (typeof str4 !== "string") {
+      string = String(str4);
     }
     if (charset === "iso-8859-1") {
       return escape(string).replace(/%u[0-9a-f]{4}/gi, function($0) {
@@ -2654,12 +2987,12 @@ ${m.content}`;
       return null;
     }
   };
-  function partition(str3, delimiter) {
-    const index = str3.indexOf(delimiter);
+  function partition(str4, delimiter) {
+    const index = str4.indexOf(delimiter);
     if (index !== -1) {
-      return [str3.substring(0, index), delimiter, str3.substring(index + delimiter.length)];
+      return [str4.substring(0, index), delimiter, str4.substring(index + delimiter.length)];
     }
-    return [str3, "", ""];
+    return [str4, "", ""];
   }
 
   // node_modules/openai/uploads.mjs
@@ -3519,7 +3852,7 @@ ${m.content}`;
       return Array.from(new Float32Array(bytes.buffer));
     }
   };
-  function isObj(obj) {
+  function isObj2(obj) {
     return obj != null && typeof obj === "object" && !Array.isArray(obj);
   }
 
@@ -4222,7 +4555,7 @@ ${m.content}`;
           accValue += deltaValue;
         } else if (typeof accValue === "number" && typeof deltaValue === "number") {
           accValue += deltaValue;
-        } else if (isObj(accValue) && isObj(deltaValue)) {
+        } else if (isObj2(accValue) && isObj2(deltaValue)) {
           accValue = this.accumulateDelta(accValue, deltaValue);
         } else if (Array.isArray(accValue) && Array.isArray(deltaValue)) {
           if (accValue.every((x) => typeof x === "string" || typeof x === "number")) {
@@ -4230,7 +4563,7 @@ ${m.content}`;
             continue;
           }
           for (const deltaEntry of deltaValue) {
-            if (!isObj(deltaEntry)) {
+            if (!isObj2(deltaEntry)) {
               throw new Error(`Expected array delta entry to be an object but got: ${deltaEntry}`);
             }
             const index = deltaEntry["index"];
@@ -5744,19 +6077,19 @@ ${m.content}`;
                 const { arguments: args, name: name2, ...fnRest } = fn || {};
                 if (id2 == null) {
                   throw new OpenAIError(`missing choices[${index}].tool_calls[${i}].id
-${str2(snapshot)}`);
+${str3(snapshot)}`);
                 }
                 if (type == null) {
                   throw new OpenAIError(`missing choices[${index}].tool_calls[${i}].type
-${str2(snapshot)}`);
+${str3(snapshot)}`);
                 }
                 if (name2 == null) {
                   throw new OpenAIError(`missing choices[${index}].tool_calls[${i}].function.name
-${str2(snapshot)}`);
+${str3(snapshot)}`);
                 }
                 if (args == null) {
                   throw new OpenAIError(`missing choices[${index}].tool_calls[${i}].function.arguments
-${str2(snapshot)}`);
+${str3(snapshot)}`);
                 }
                 return { ...toolRest, id: id2, type, function: { ...fnRest, name: name2, arguments: args } };
               })
@@ -5778,7 +6111,7 @@ ${str2(snapshot)}`);
     };
     return maybeParseChatCompletion(completion, params);
   }
-  function str2(x) {
+  function str3(x) {
     return JSON.stringify(x);
   }
   function assertIsEmpty(obj) {
@@ -8236,7 +8569,10 @@ ${str2(snapshot)}`);
       matrix: { homeserverUrl: "", accessToken: "" },
       mattermost: { url: "", token: "" },
       web: { host: "", port: 0, password: "" },
-      dataDir: ""
+      dataDir: "",
+      // Self-host default: everything unlocked. In-app play has no billing
+      // surface, so premium packs load like any other pack.
+      monetization: { hosted: false, unlockedPackIds: [] }
     };
     const bot = new Bot(config, provider, storage, rejectUrlImport, "local");
     const imageCache = /* @__PURE__ */ new Map();

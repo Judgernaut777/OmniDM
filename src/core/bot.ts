@@ -17,6 +17,9 @@ import { TurnPipeline } from './engine/turn-pipeline.js';
 import { normalizeAbility, rollCheck } from './engine/dice.js';
 import { applyDamage, applyHeal, findPartyMember } from './rules/mechanics.js';
 import { classPreset, MAX_BIO_CHARS, normalizePresetId, PORTRAIT_PRESETS } from './portraits.js';
+import { getBundledContentPack, listBundledContentPacks } from './content-packs/registry.js';
+import { loadContentPack, PackLockedError } from './content-packs/loader.js';
+import { selectEntitlements, type Entitlements } from './entitlements/entitlements.js';
 
 type Send = (msg: OutgoingMessage) => Promise<void>;
 
@@ -60,6 +63,7 @@ export const SERVER_TURN_FAILURE_TEXT =
 export class Bot {
   private sessions: SessionManager;
   private pipeline: TurnPipeline;
+  private entitlements: Entitlements;
 
   constructor(
     private config: Config,
@@ -82,6 +86,7 @@ export class Bot {
     this.sessions = new SessionManager(storage, config.llm.model, provider);
     const narrator = new Narrator(provider);
     this.pipeline = new TurnPipeline(this.sessions, narrator, provider);
+    this.entitlements = selectEntitlements(config.monetization);
   }
 
   /** Resolve a card source. Uses the injected importer, else lazy-loads the Node one. */
@@ -324,6 +329,39 @@ export class Bot {
         }
       }
 
+      case 'pack': {
+        const session = await this.sessions.get(msg);
+        if (!session) return reply('No game here yet — `/dm new` first.');
+        const sub = (parts.shift() || 'list').toLowerCase();
+        const arg = parts.join(' ').trim();
+        if (sub === 'list') {
+          const packs = listBundledContentPacks();
+          const list = packs
+            .map((p) => `• \`${p.id}\` **${p.name}** v${p.version}${p.premium ? ' 🔒 premium' : ''}${this.entitlements.isUnlocked(p.id) ? '' : ' (locked)'} — ${p.description || ''}`)
+            .join('\n');
+          return reply(`**Content packs:**\n${list || '(none bundled)'}\nLoad one with \`/dm pack load <id>\`.`);
+        }
+        if (sub === 'load') {
+          const pack = arg ? getBundledContentPack(arg) : undefined;
+          if (!pack) return reply(`No bundled content pack matches \`${arg || '(nothing)'}\` — see \`/dm pack list\`.`);
+          try {
+            const result = loadContentPack(pack, session, this.entitlements);
+            await this.sessions.save(session);
+            const bits = [
+              result.lorebookAdded ? `${result.lorebookAdded} lore entr${result.lorebookAdded === 1 ? 'y' : 'ies'}` : '',
+              result.npcsAdded ? `${result.npcsAdded} NPC${result.npcsAdded === 1 ? '' : 's'}` : '',
+              result.rulesRegistered ? 'a rules module' : '',
+              result.starterApplied ? 'its campaign starter' : '',
+            ].filter(Boolean);
+            return reply(`📦 Loaded **${pack.name}** — added ${bits.join(', ') || 'nothing new (already loaded)'}.`);
+          } catch (e) {
+            if (e instanceof PackLockedError) return reply(`🔒 **${pack.name}** is a premium content pack and isn't unlocked here.`);
+            throw e;
+          }
+        }
+        return reply('Pack commands: `/dm pack list`, `/dm pack load <id>`.');
+      }
+
       case 'models': {
         const models = await this.provider.listModels();
         if (!models.length) return reply('Could not list models (check LLM_BASE_URL / LLM_API_KEY). You can still set one with `/dm model <id>`.');
@@ -548,6 +586,7 @@ const HELP = `**OmniDM — commands**
 \`/dm portrait [<preset>]\` — set your portrait to a class preset (no arg lists them); upload your own picture in the browser
 \`/dm import <file-or-URL>\` — import a Character Card V2/V3 (JSON or PNG): your persona if joined, an NPC otherwise
 \`/dm lore add <name> | <keywords> | <content>\` — world info, injected when a keyword comes up (also \`list\`, \`remove <id-or-name>\`)
+\`/dm pack list\` — list bundled content packs (rules + lorebook + NPCs + a campaign starter); \`/dm pack load <id>\` to import one
 \`/dm models [filter]\` — list models you can use (🆓 = free)
 \`/dm model <id>\` — pick the model for this game
 \`/dm roll <notation>\` — roll dice (e.g. \`d20+5\`, \`2d6\`, \`d20 adv\`)

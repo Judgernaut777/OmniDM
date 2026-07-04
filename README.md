@@ -373,6 +373,9 @@ for their own usage. Local models are free.
                         add world info, injected when a keyword comes up
 /dm lore list           show the lorebook (ids, names, trigger keywords)
 /dm lore remove <id>    remove a lore entry (by id or name)
+/dm pack list           list bundled content packs (rules + lorebook + NPCs +
+                        a campaign starter)
+/dm pack load <id>      import a content pack into this session
 /dm models [filter]     list usable models (🆓 = free)
 /dm model <id>          pick the model for this game
 /dm roll <notation>     roll dice (d20+5, 2d6, d20 adv, 4d6kh3)
@@ -393,6 +396,12 @@ addresses, no redirects), and downloads are size-capped.
 pattern): when an entry's keyword appears in the current action or recent
 turns, its content is injected into the DM prompt as a bounded `WORLD INFO`
 block. Entries with no keywords are always injected.
+
+`/dm pack` loads a **content pack**: a versioned JSON bundle of a rules/system
+module, lorebook entries, NPCs, and an optional campaign starter — see
+[MONETIZATION.md](MONETIZATION.md) for the format and how packs relate to a
+future hosted tier (self-hosting unlocks every pack today; nothing is gated
+unless you turn on the hosted stub).
 
 `/dm fog on` (daicer's `player_perspectives`) lets the DM append
 `[PRIVATE:<CharacterName>] … [/PRIVATE]` sections to its narration. The public

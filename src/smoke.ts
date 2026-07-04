@@ -42,6 +42,12 @@ import { MattermostAdapter } from './adapters/mattermost.js';
 import { MAX_CARD_SUMMARY_CHARS, MAX_FRAME_BYTES, MAX_NAME_CHARS, MAX_PORTRAIT_BYTES, MAX_TEXT_CHARS, RATE_LIMIT_PER_SEC, UNJOINED_FRAMES_PER_SEC, WebAdapter } from './adapters/web.js';
 import { MAX_BIO_CHARS, PORTRAIT_PRESETS, resolvePresetId } from './core/portraits.js';
 import { BUNDLED_RULES, bundledRulesProvider } from './core/rules/registry.js';
+import { validateContentPack, parseContentPackJson, ContentPackError } from './core/content-packs/validate.js';
+import { loadContentPack, PackLockedError } from './core/content-packs/loader.js';
+import { BUNDLED_CONTENT_PACKS, getBundledContentPack, listBundledContentPacks } from './core/content-packs/registry.js';
+import { FRONTIER_OUTPOST_PACK_JSON } from './core/content-packs/bundled-sources.js';
+import { loadContentPackFile } from './core/content-packs/node.js';
+import { createHostedEntitlements, selectEntitlements, selfHostEntitlements } from './core/entitlements/entitlements.js';
 import { base64ToBytes, bytesToBase64 } from './core/cards/card-parse.js';
 import { loadCardFromBytes } from './core/cards/card-browser.js';
 import { BrowserSessionStorage, webStorageKeyValue, type AsyncKeyValue, type WebStorageLike } from './core/session/browser-storage.js';
@@ -715,6 +721,7 @@ async function main() {
     mattermost: { url: '', token: '' },
     web: { host: '127.0.0.1', port: 0, password: '' },
     dataDir,
+    monetization: { hosted: false, unlockedPackIds: [] },
   };
   const provider = new MockProvider();
   const bot = new Bot(config, provider, new NodeFileStorage(dataDir));
@@ -2219,6 +2226,157 @@ async function main() {
     await rBot.handle(rMsg('I look around'), async (m) => void rOut.push(m));
     check('rules: bundled system module reaches the narrator prompt without node:fs',
       provider.lastPrompt.includes('System Module — D&D 5e'));
+  }
+
+  // ── Monetization scaffold: content packs + entitlements ──
+  {
+    // Bundled example pack: byte-identical mirror of the on-disk file (no drift),
+    // same discipline as the rules-module bundling above.
+    const packJsonOnDisk = await fs.readFile('content-packs/frontier-outpost.pack.json', 'utf8');
+    check('content-packs: bundled frontier-outpost pack is byte-identical to content-packs/frontier-outpost.pack.json',
+      FRONTIER_OUTPOST_PACK_JSON === packJsonOnDisk);
+
+    // The Node file loader validates the same on-disk pack and agrees with the bundled one.
+    const packFromFile = await loadContentPackFile('content-packs/frontier-outpost.pack.json');
+    check('content-packs: loadContentPackFile validates the on-disk pack (Node loader)',
+      packFromFile.id === 'frontier-outpost' && packFromFile.premium === true);
+
+    // Eager module-load validation succeeded, and the catalog surfaces it correctly.
+    const bundled = BUNDLED_CONTENT_PACKS['frontier-outpost'];
+    check('content-packs: bundled catalog validated the example pack at module load',
+      bundled?.id === 'frontier-outpost' && bundled.lorebook.length === 5 && bundled.npcs.length === 2 &&
+      bundled.rulesModule?.id === 'frontier-lite' && bundled.campaignStarter?.systemId === 'frontier-lite');
+    check('content-packs: getBundledContentPack looks up by id; unknown id is undefined',
+      getBundledContentPack('frontier-outpost') === bundled && getBundledContentPack('nope') === undefined);
+    const catalog = listBundledContentPacks();
+    check('content-packs: listBundledContentPacks surfaces catalog metadata (premium flagged)',
+      catalog.some((p) => p.id === 'frontier-outpost' && p.premium === true));
+
+    // Malformed packs are rejected — one representative case per validated field,
+    // and the error never echoes the (untrusted) raw input back.
+    const malformed: [string, unknown][] = [
+      ['not an object', 'nope'],
+      ['wrong formatVersion', { formatVersion: 2, id: 'x', name: 'X', version: '1.0.0' }],
+      ['missing id', { formatVersion: 1, name: 'X', version: '1.0.0' }],
+      ['id with illegal characters (echo-bait payload)', { formatVersion: 1, id: '<script>alert(1)</script>', name: 'X', version: '1.0.0' }],
+      ['missing name', { formatVersion: 1, id: 'x', version: '1.0.0' }],
+      ['missing version', { formatVersion: 1, id: 'x', name: 'X' }],
+      ['lorebook not an array', { formatVersion: 1, id: 'x', name: 'X', version: '1.0.0', lorebook: 'nope' }],
+      ['lorebook entry missing content', { formatVersion: 1, id: 'x', name: 'X', version: '1.0.0', lorebook: [{ name: 'A', keywords: [] }] }],
+      ['npc missing name', { formatVersion: 1, id: 'x', name: 'X', version: '1.0.0', npcs: [{ description: 'no name' }] }],
+      ['rulesModule missing markdown', { formatVersion: 1, id: 'x', name: 'X', version: '1.0.0', rulesModule: { id: 'sys', name: 'Sys' } }],
+      ['too many lorebook entries', { formatVersion: 1, id: 'x', name: 'X', version: '1.0.0', lorebook: Array.from({ length: 201 }, (_, i) => ({ name: `E${i}`, keywords: [], content: 'c' })) }],
+    ];
+    let allRejected = true;
+    let anyLeakedInput = false;
+    for (const [label, raw] of malformed) {
+      try {
+        validateContentPack(raw);
+        allRejected = false;
+        console.log(`  ⚠️ malformed pack NOT rejected: ${label}`);
+      } catch (e) {
+        if (!(e instanceof ContentPackError)) allRejected = false;
+        if (String((e as Error).message).includes('<script>')) anyLeakedInput = true;
+      }
+    }
+    check('content-packs: every malformed pack shape is rejected with ContentPackError', allRejected);
+    check('content-packs: validation errors never echo untrusted input back', !anyLeakedInput);
+    check('content-packs: malformed top-level JSON text is rejected without echoing it',
+      (() => { try { parseContentPackJson('{ not json'); return false; } catch (e) { return e instanceof ContentPackError && !String((e as Error).message).includes('not json'); } })());
+
+    // Entitlements: self-host unlocks everything (no billing = nothing gated).
+    check('entitlements: self-host unlocks any pack/feature key',
+      selfHostEntitlements.id === 'self-host' && selfHostEntitlements.isUnlocked('frontier-outpost') && selfHostEntitlements.isUnlocked('anything-at-all'));
+    check('entitlements: selectEntitlements({}) defaults to self-host (unlocked)',
+      selectEntitlements().id === 'self-host' && selectEntitlements().isUnlocked('frontier-outpost'));
+
+    // Hosted stub: a bare flag with no enforcement is a no-op (never locks anyone out by accident).
+    check('entitlements: hosted stub without enforcePremium behaves like self-host',
+      createHostedEntitlements().isUnlocked('frontier-outpost') === true);
+    // Hosted stub WITH the flag set actually gates premium content...
+    const hostedGated = createHostedEntitlements({ enforcePremium: true });
+    check('entitlements: hosted stub with the flag set gates a premium pack by default',
+      hostedGated.id === 'hosted' && hostedGated.isUnlocked('frontier-outpost') === false);
+    // ...unless the pack id (or '*') is on the unlocked list.
+    check('entitlements: hosted stub unlocks a pack explicitly listed',
+      createHostedEntitlements({ enforcePremium: true, unlockedKeys: ['frontier-outpost'] }).isUnlocked('frontier-outpost') === true);
+    check('entitlements: hosted stub\'s "*" unlocks everything',
+      createHostedEntitlements({ enforcePremium: true, unlockedKeys: ['*'] }).isUnlocked('anything') === true);
+    check('entitlements: selectEntitlements({hosted:true}) gates with no unlocked ids',
+      selectEntitlements({ hosted: true }).isUnlocked('frontier-outpost') === false);
+
+    // The loader: importing the pack into a session, reusing lorebook/card/rules types.
+    const freshSession: GameSession = {
+      id: 'pk1', platform: 'cli', channelId: 'pack-test', systemId: 'dnd5e', model: 'mock/free-model',
+      players: {}, npcs: [], lorebook: [], history: [], summary: '', memories: [],
+      turnMode: 'immediate', turnIndex: 0, fogOfWar: false, createdAt: Date.now(),
+    };
+    const result = loadContentPack(bundled, freshSession, selfHostEntitlements);
+    check('content-packs: loadContentPack imports the pack\'s lorebook entries',
+      result.lorebookAdded === 5 && freshSession.lorebook.some((e) => e.name === "Kestrel's Reach"));
+    check('content-packs: loadContentPack imports the pack\'s NPCs as CharacterCards',
+      result.npcsAdded === 2 && freshSession.npcs.some((n) => n.name === 'Mirelle Ashgrove' && n.specVersion === '2.0'));
+    check('content-packs: loadContentPack registers the pack\'s rules module into the shared rules registry',
+      result.rulesRegistered === true && bundledRulesProvider.system('frontier-lite').includes('Frontier Lite'));
+    check('content-packs: loadContentPack applies the campaign starter on a fresh (history-less) session',
+      result.starterApplied === true &&
+      freshSession.systemId === 'frontier-lite' &&
+      freshSession.summary.includes('Kestrel') &&
+      freshSession.history.length === 1 &&
+      freshSession.history[0].narration.includes('Mirelle Ashgrove'));
+
+    // Loading the same pack again is idempotent: no duplicate lore/NPCs, and the
+    // starter does not re-apply once the session already has history.
+    const again = loadContentPack(bundled, freshSession, selfHostEntitlements);
+    check('content-packs: reloading the same pack is a no-op (dedup by content/name, starter already applied)',
+      again.lorebookAdded === 0 && again.npcsAdded === 0 && again.starterApplied === false &&
+      freshSession.lorebook.length === 5 && freshSession.npcs.length === 2);
+
+    // A premium pack is refused outright when entitlements don't unlock it — the
+    // session must be left untouched (no partial import on a locked pack).
+    const lockedSession: GameSession = {
+      id: 'pk2', platform: 'cli', channelId: 'pack-locked', systemId: 'dnd5e', model: 'mock/free-model',
+      players: {}, npcs: [], lorebook: [], history: [], summary: '', memories: [],
+      turnMode: 'immediate', turnIndex: 0, fogOfWar: false, createdAt: Date.now(),
+    };
+    let lockedThrew = false;
+    try {
+      loadContentPack(bundled, lockedSession, hostedGated);
+    } catch (e) {
+      lockedThrew = e instanceof PackLockedError && (e as PackLockedError).packId === 'frontier-outpost';
+    }
+    check('content-packs: a premium pack throws PackLockedError under hosted entitlements without unlock',
+      lockedThrew && lockedSession.lorebook.length === 0 && lockedSession.npcs.length === 0);
+
+    // End-to-end through the Bot: `/dm pack list` + `/dm pack load` on both a
+    // self-host (unlocked) and a hosted-gated (locked) configuration.
+    const pkOut: OutgoingMessage[] = [];
+    const pkSend = async (m: OutgoingMessage) => void pkOut.push(m);
+    const pkBot = new Bot(config, provider, new MemoryStorage());
+    const pkMsg = (t: string): IncomingMessage => ({ platform: 'cli', channelId: 'pack-bot', userId: 'u1', userName: 'Alice', text: t });
+    await pkBot.handle(pkMsg('/dm new'), pkSend);
+    await pkBot.handle(pkMsg('/dm pack list'), pkSend);
+    check('content-packs: `/dm pack list` shows the bundled pack unlocked under self-host',
+      /frontier-outpost/.test(pkOut.at(-1)?.text ?? '') && !/locked/.test(pkOut.at(-1)?.text ?? ''));
+    await pkBot.handle(pkMsg('/dm pack load frontier-outpost'), pkSend);
+    check('content-packs: `/dm pack load` succeeds under self-host default entitlements',
+      /Loaded \*\*Frontier Outpost\*\*/.test(pkOut.at(-1)?.text ?? ''));
+    await pkBot.handle(pkMsg('/dm pack load nope-such-pack'), pkSend);
+    check('content-packs: `/dm pack load` on an unknown id replies without throwing',
+      /No bundled content pack/.test(pkOut.at(-1)?.text ?? ''));
+
+    const hostedConfig: Config = { ...config, monetization: { hosted: true, unlockedPackIds: [] } };
+    const hostedOut: OutgoingMessage[] = [];
+    const hostedSend = async (m: OutgoingMessage) => void hostedOut.push(m);
+    const hostedBot = new Bot(hostedConfig, provider, new MemoryStorage());
+    const hostedMsg = (t: string): IncomingMessage => ({ platform: 'cli', channelId: 'pack-hosted', userId: 'u1', userName: 'Alice', text: t });
+    await hostedBot.handle(hostedMsg('/dm new'), hostedSend);
+    await hostedBot.handle(hostedMsg('/dm pack list'), hostedSend);
+    check('content-packs: `/dm pack list` flags the pack "(locked)" under a hosted config with nothing unlocked',
+      /\(locked\)/.test(hostedOut.at(-1)?.text ?? ''));
+    await hostedBot.handle(hostedMsg('/dm pack load frontier-outpost'), hostedSend);
+    check('content-packs: `/dm pack load` refuses a premium pack under hosted entitlements without unlock',
+      /premium content pack and isn't unlocked/.test(hostedOut.at(-1)?.text ?? ''));
   }
 
   // ── Portable engine: browser-safe card parsing (Uint8Array + DecompressionStream) ──

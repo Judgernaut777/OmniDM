@@ -22,9 +22,28 @@ export const BUNDLED_RULES: Record<string, string> = {
   dnd5e: DND5E_SYSTEM,
 };
 
-/** The default, dependency-free rules provider backed by {@link BUNDLED_RULES}. */
+/**
+ * Rules modules registered AT RUNTIME by content packs (see
+ * `content-packs/loader.ts`). Kept separate from {@link BUNDLED_RULES} (the
+ * compiled-in set) so a pack can add a homebrew system without touching that
+ * static catalog. Checked first, so a pack could also intentionally override
+ * a bundled system id.
+ */
+const runtimeRules: Record<string, string> = {};
+
+/** Register (or replace) a rules module's markdown under `systemId` — what content packs call to add their own system. */
+export function registerRulesModule(systemId: string, markdown: string): void {
+  runtimeRules[systemId] = markdown;
+}
+
+/** Testing/reset hook: drop all runtime-registered rules modules. */
+export function clearRuntimeRules(): void {
+  for (const key of Object.keys(runtimeRules)) delete runtimeRules[key];
+}
+
+/** The default, dependency-free rules provider backed by runtime + {@link BUNDLED_RULES}. */
 export const bundledRulesProvider: RulesProvider = {
   system(systemId: string): string {
-    return BUNDLED_RULES[systemId] ?? '';
+    return runtimeRules[systemId] ?? BUNDLED_RULES[systemId] ?? '';
   },
 };
