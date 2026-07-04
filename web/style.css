@@ -190,6 +190,33 @@ select:focus { outline: none; border-color: var(--gold-deep); box-shadow: inset 
 }
 .mode-fields legend small { text-transform: none; letter-spacing: .02em; color: var(--dim); font-weight: 400; }
 .mode-fields label { color: var(--gold-deep); }
+/* "Free options" guidance inside the model fieldset — plain text, no links. */
+.model-hint {
+  margin: 0; padding: .55rem .7rem; font: .78rem/1.5 var(--ui); color: var(--dim);
+  background: #e3ba660c; border: 1px solid var(--line); border-radius: 8px;
+}
+.model-hint strong { color: var(--gold-deep); }
+.model-hint code {
+  font-family: var(--mono); font-size: .84em; color: var(--gold-hi);
+  background: #0c0805; border: 1px solid var(--line-2); border-radius: 5px; padding: .04em .35em;
+}
+/* Proactive "no key set" warning line in the log — visible, but not an error. */
+.msg.warn { color: var(--ember); border: 1px solid #5c4420; border-left: 3px solid var(--ember); background: #e3ba660c; font-size: .9rem; padding: .55rem 1rem; }
+
+/* Join-screen Help/About link. */
+.help-link {
+  margin-top: -.2rem; padding: 0; cursor: pointer; align-self: center;
+  background: none; border: none; color: var(--dim); font: .78rem/1 var(--ui);
+  text-decoration: underline; text-underline-offset: .2em; transition: color .15s;
+}
+.help-link:hover { color: var(--gold-hi); }
+.help-link:focus-visible { outline: 2px solid var(--gold-hi); outline-offset: 2px; }
+#help-btn {
+  padding: .3rem .8rem; cursor: pointer;
+  background: #ffffff05; border: 1px solid var(--line-2); border-radius: 7px; color: var(--dim);
+  transition: color .15s, border-color .15s, background .15s;
+}
+#help-btn:hover { color: var(--gold-hi); border-color: var(--gold-deep); background: #e3ba6612; }
 /* Topbar mode badge + Settings button. */
 .mode-badge {
   font: 600 .68rem/1 var(--ui); letter-spacing: .08em; color: var(--gold);
@@ -627,10 +654,47 @@ main { flex: 1; display: flex; min-height: 0; }
 }
 .crest-choice.selected .crest-cap { color: var(--gold-hi); }
 
+/* ── Help / About ─────────────────────────────────────────────────────────── */
+#help-sheet {
+  position: fixed; inset: 0; z-index: 33;
+  background: #000000cc; backdrop-filter: blur(3px);
+  display: flex; align-items: center; justify-content: center; padding: 1.2rem;
+  animation: fade .18s ease;
+}
+#help-inner {
+  position: relative; width: min(34rem, 100%); max-height: 88dvh; overflow-y: auto;
+  padding: 1.6rem 1.6rem 1.4rem;
+  background: radial-gradient(120% 60% at 50% 0%, #241a10, transparent 62%), linear-gradient(180deg, var(--panel-2), var(--panel));
+  border: 1px solid var(--line-2); border-radius: 16px;
+  box-shadow: 0 30px 80px #000c, 0 0 0 1px #000, 0 0 60px #e3ba6614;
+  animation: sheet .24s cubic-bezier(.2, .8, .2, 1);
+}
+#help-close {
+  position: absolute; top: .7rem; right: .7rem; width: 2rem; height: 2rem; cursor: pointer;
+  color: var(--dim); background: #ffffff08; border: 1px solid var(--line-2); border-radius: 8px;
+  transition: color .15s, border-color .15s;
+}
+#help-close:hover { color: var(--blood); border-color: #7a3c37; }
+.help-title { margin: 0 0 1rem; font: 700 1.4rem/1.15 var(--serif); letter-spacing: .04em; color: var(--gold-hi); }
+.help-section { margin-bottom: 1.1rem; }
+.help-section:last-child { margin-bottom: 0; }
+.help-section h3 {
+  margin: 0 0 .4rem; font: 700 .72rem/1.2 var(--ui); letter-spacing: .14em; text-transform: uppercase; color: var(--gold-deep);
+}
+.help-section p { margin: 0 0 .5rem; color: #efe6d2; font: .92rem/1.55 var(--serif); }
+.help-section p:last-child { margin-bottom: 0; }
+.help-section code {
+  font-family: var(--mono); font-size: .84em; color: var(--gold-hi);
+  background: #0c0805; border: 1px solid var(--line-2); border-radius: 5px; padding: .04em .35em;
+}
+.help-cmd-btn { padding: .5rem 1rem; font-size: .88rem; }
+
 /* ── Mobile ──────────────────────────────────────────────────────────────── */
 @media (max-width: 760px) {
   .creator-btn { font-size: .74rem; padding: .3rem .55rem; }
+  #help-btn { font-size: .78rem; padding: .3rem .55rem; }
   #creator-inner { padding: 1.2rem 1rem 1.1rem; }
+  #help-inner { padding: 1.2rem 1rem 1.1rem; }
   .creator-preview { width: 100%; }
   .creator-preview .card-portrait { width: 7.5rem; height: 7.5rem; }
   main { flex-direction: column; }

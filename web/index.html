@@ -56,6 +56,12 @@
          stored ONLY on this device and sent ONLY to the endpoint below. -->
     <fieldset id="local-settings" class="mode-fields">
       <legend>Your AI model <small>bring your own</small></legend>
+      <p class="model-hint">
+        <strong>Free options:</strong> a local model needs no key — install
+        Ollama and set Base URL to <code>http://localhost:11434/v1</code>. Or
+        get a free key at <code>openrouter.ai/keys</code> and paste it below;
+        the defaults here already point at a free OpenRouter model.
+      </p>
       <label>Provider
         <select id="llm-provider">
           <option value="">OpenAI-compatible (OpenRouter, OpenAI, Ollama, LM Studio…)</option>
@@ -65,7 +71,7 @@
       <label>Base URL
         <input id="llm-baseurl" maxlength="200" placeholder="https://openrouter.ai/api/v1" autocomplete="off">
       </label>
-      <label>API key <small>stored on this device only; sent only to the endpoint above</small>
+      <label>API key <small>stored on this device only, sent only to the endpoint above — leave blank for a local model (Ollama, LM Studio)</small>
         <input id="llm-apikey" type="password" maxlength="400" placeholder="sk-…  (leave blank for local models)" autocomplete="off">
       </label>
       <label>Model
@@ -86,6 +92,7 @@
 
     <button type="submit" class="btn-gold" id="launch-btn">Begin your adventure</button>
     <p id="join-error" class="join-error" role="alert"></p>
+    <button type="button" id="help-btn-join" class="help-link">❔ What is this? / Help</button>
   </form>
 </section>
 
@@ -97,6 +104,7 @@
     <span id="status" class="status"></span>
     <span id="mode-badge" class="mode-badge" title="How this table is running"></span>
     <button id="creator-btn" type="button" class="creator-btn" title="Create or edit your character">⚔ Your character</button>
+    <button id="help-btn" type="button" title="Help / About OmniDM">❔ Help</button>
     <button id="settings-btn" type="button" title="Change how you play (mode, model, server)">⚙ Settings</button>
     <button id="leave-btn" type="button" title="Leave the table">Leave</button>
   </header>
@@ -207,6 +215,47 @@
         </div>
         <div id="creator-import-status" class="card-upload-status" role="status" aria-live="polite"></div>
       </form>
+    </div>
+  </div>
+</div>
+
+<!-- Help / About: reachable from the join screen and the topbar. Static,
+     trusted copy only (no user/model text), so it is authored directly as
+     HTML rather than built via textContent. Explains what OmniDM is, reuses
+     the command palette for the full /dm reference, and states plainly where
+     game state and the API key live. -->
+<div id="help-sheet" hidden>
+  <div id="help-inner" role="dialog" aria-modal="true" aria-label="Help and about OmniDM">
+    <button id="help-close" type="button" aria-label="Close">✕</button>
+    <h2 class="help-title">❔ About OmniDM</h2>
+    <div class="help-section">
+      <p>OmniDM is an AI Dungeon Master. Describe what your character does in
+      plain language, and the DM narrates what happens. Dice rolls are real —
+      the engine rolls them, the model only narrates the result — so a "d20"
+      is never re-rolled to fit the story.</p>
+    </div>
+    <div class="help-section">
+      <h3>Getting started</h3>
+      <p>Type <code>/dm new</code> to start a campaign, then set up your
+      character with <code>⚔ Your character</code> (or <code>/dm join &lt;name&gt;</code>).
+      After that, anything you type that isn't a <code>/dm</code> command is
+      your character's action.</p>
+    </div>
+    <div class="help-section">
+      <h3>Commands</h3>
+      <p>Every <code>/dm</code> command, with no syntax to memorize:</p>
+      <button type="button" id="help-open-palette" class="btn-gold help-cmd-btn">⚔ Open the command menu</button>
+    </div>
+    <div class="help-section">
+      <h3>Where your data lives</h3>
+      <p><strong>Playing on this device:</strong> your campaign (party, log,
+      characters) is stored only in this browser, never on a server. Your
+      model API key is stored only on this device, sent only to the LLM
+      endpoint you configured, and is never logged, shown again, or saved
+      into a game.</p>
+      <p><strong>Connected to a server:</strong> the campaign lives on that
+      server for everyone in the room — the model is whatever the person
+      running the server configured, not a key you enter here.</p>
     </div>
   </div>
 </div>

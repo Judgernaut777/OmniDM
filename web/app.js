@@ -117,10 +117,15 @@ function onFrame(f) {
     $('room-label').textContent = String(f.channelId);
     setStatus('connected');
     const mine = state.chars.get(state.join.userName);
-    addLine('sys', '', state.welcomedOnce
-      ? `Reconnected.${mine ? ` Re-claim your seat with /dm join ${mine}.` : ''}`
-      : 'You take a seat at the table. Tap ⚔ Your character to create your hero, or start a campaign from the ⚔ command menu with /dm new.');
+    const firstJoin = !state.welcomedOnce;
+    addLine('sys', '', firstJoin
+      ? 'You take a seat at the table. Tap ⚔ Your character to create your hero, or start a campaign from the ⚔ command menu with /dm new.'
+      : `Reconnected.${mine ? ` Re-claim your seat with /dm join ${mine}.` : ''}`);
     state.welcomedOnce = true;
+    // First-run guidance: catch the most common dead end (the default endpoint
+    // needs a key, and none is set) BEFORE the first turn silently fails, so a
+    // brand-new user isn't left guessing why nothing happened.
+    if (firstJoin && state.mode === 'local') warnIfNoKeyForRemoteEndpoint();
     $('say').focus();
   } else if (f.type === 'roster') {
     state.roster = Array.isArray(f.users) ? f.users : [];
@@ -148,12 +153,60 @@ function onChat(f) {
   const text = typeof f.text === 'string' ? f.text : '';
   if (!speaker) parseNotice(text); // bot notices carry party/turn facts
   if (speaker && speaker !== 'Dungeon Master') parseRelay(speaker, text);
+  // The engine reports a failed turn (bad key/model/endpoint, unreachable host,
+  // …) as a plain notice, not a socket-level 'error' frame — catch it here and
+  // show a friendly, actionable line instead of the raw provider/SDK message.
+  if (!speaker) {
+    const friendly = friendlyEngineError(text);
+    if (friendly) return addLine('warn', '', friendly);
+  }
   let kind;
   if (f.private) kind = 'whisper';
   else if (speaker === 'Dungeon Master') kind = 'dm';
   else if (speaker) kind = speaker === state.join.userName ? 'player me' : 'player';
   else kind = 'sys';
   addLine(kind, speaker, text);
+}
+
+/* ── First-run guidance: no key + a non-local endpoint, and engine failures ── */
+
+/** True for loopback hosts (Ollama/LM Studio) that need no API key. */
+function isLocalEndpoint(url) {
+  const s = String(url || '').trim();
+  if (!s) return false;
+  try {
+    const u = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(s) ? s : `http://${s}`);
+    return /^(localhost|127(?:\.\d{1,3}){3}|\[?::1\]?|0\.0\.0\.0)$/i.test(u.hostname);
+  } catch {
+    return false;
+  }
+}
+
+/** Proactively flag the single most common dead end: the default/typed
+ * endpoint is a real (non-local) host, but no API key was entered. Shown once,
+ * right after the first welcome — before the player's first action can fail. */
+function warnIfNoKeyForRemoteEndpoint() {
+  const llm = (state.settings && state.settings.llm) || {};
+  if (llm.apiKey || isLocalEndpoint(llm.baseUrl)) return;
+  addLine('warn', '', 'No API key is set, and your model endpoint isn’t a local one — the DM’s first reply will likely fail. Open ⚙ Settings and either paste a free key from openrouter.ai/keys, or set Base URL to a local model (e.g. http://localhost:11434/v1 for Ollama, no key needed).');
+}
+
+const STUMBLE_RE = /^⚠️ The DM stumbled \(model\/call error\): ([\s\S]*)/;
+
+/** Rewrite the engine's generic turn-failure notice into a short, actionable
+ * message for the browser client — never the raw provider/SDK text verbatim,
+ * and never a stack trace. Returns null when `text` isn't that notice. */
+function friendlyEngineError(text) {
+  const m = STUMBLE_RE.exec(String(text));
+  if (!m) return null;
+  // Defensive: keep only the first line and cap its length, so even an
+  // unusually verbose provider error can't dump a stack-shaped blob into the log.
+  let detail = m[1].split(/\r?\n/)[0].replace(/\s+at\s+\S+.*$/, '').trim();
+  if (detail.length > 220) detail = `${detail.slice(0, 220)}…`;
+  const fix = state.mode === 'local'
+    ? 'Open ⚙ Settings and check your API key, Base URL and Model — or leave the key blank and point Base URL at a local model (e.g. http://localhost:11434/v1 for Ollama).'
+    : 'Ask whoever runs this table to check the model/API key configured on the server.';
+  return `The DM couldn’t reach the model: ${detail}\n${fix}`;
 }
 
 /* The adapter has no game-state frames, so the sidebar is fed heuristically:
@@ -582,6 +635,18 @@ $('creator-btn')?.addEventListener('click', openCreator);
 $('creator-close')?.addEventListener('click', closeCreator);
 $('creator')?.addEventListener('click', (e) => { if (e.target === $('creator')) closeCreator(); });
 
+/* ── Help / About ──────────────────────────────────────────────────────────
+ * Reachable from the join screen (first-run) and the topbar (any time). Static
+ * trusted copy lives in the HTML itself; the only dynamic bit is handing off
+ * to the existing command palette so the /dm reference isn't duplicated. */
+function openHelp() { $('help-sheet').hidden = false; }
+function closeHelp() { $('help-sheet').hidden = true; }
+$('help-btn')?.addEventListener('click', openHelp);
+$('help-btn-join')?.addEventListener('click', openHelp);
+$('help-close')?.addEventListener('click', closeHelp);
+$('help-sheet')?.addEventListener('click', (e) => { if (e.target === $('help-sheet')) closeHelp(); });
+$('help-open-palette')?.addEventListener('click', () => { closeHelp(); $('palette').hidden = false; });
+
 $('creator-name-form')?.addEventListener('submit', (e) => {
   e.preventDefault();
   const name = $('creator-name').value.trim();
@@ -878,6 +943,7 @@ function showJoin(error) {
   $('palette').hidden = true;
   $('creator').hidden = true;
   $('card-sheet').hidden = true;
+  $('help-sheet').hidden = true;
   state.creatorPrompted = false;
   state.creator.pendingClass = null;
   state.creator.pendingName = null;
@@ -1075,4 +1141,4 @@ const COMMANDS = [
 
 $('palette-btn').addEventListener('click', () => { $('palette').hidden = !$('palette').hidden; });
 $('palette').addEventListener('click', (e) => { if (e.target === $('palette')) $('palette').hidden = true; });
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { $('palette').hidden = true; closeCard(); closeCreator(); } });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { $('palette').hidden = true; closeCard(); closeCreator(); closeHelp(); } });

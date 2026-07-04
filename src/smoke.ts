@@ -558,6 +558,81 @@ async function headlessServerTurnCheck(
   check('web-ui: headless "Connect to a server" mode drives RemoteTransport against a real loopback WebAdapter and renders a turn', dom.includes('SERVER_OK=true'));
 }
 
+/**
+ * Best-effort offline proof of the onboarding-polish work: with an INJECTED
+ * provider whose `complete()` REJECTS (simulating a bad key/model/unreachable
+ * endpoint — no network, deterministic), a real turn in "Play on this device"
+ * surfaces a friendly, actionable message in the log instead of a raw
+ * stack/hang; and the Help/About affordance opens from the topbar, mentions
+ * where state/keys live, and hands off to the real command palette. Skipped
+ * (never failed) when chromium is unavailable.
+ */
+async function headlessLocalErrorAndHelpCheck(
+  html: string,
+  srcs: { engine: string; transport: string; portraits: string; app: string },
+): Promise<void> {
+  const probe = `
+    (async () => {
+      var out = document.getElementById('probe-out');
+      var waitFor = function (fn, ms) { return new Promise(function (res) {
+        var t0 = Date.now(); var iv = setInterval(function () { var ok = false; try { ok = fn(); } catch (e) {}
+          if (ok || Date.now() - t0 > ms) { clearInterval(iv); res(ok); } }, 15); }); };
+      try {
+        // A provider whose complete() REJECTS — simulates a bad key/model/host.
+        window.__omnidmTestProvider = { id: 'mock',
+          listModels: function () { return Promise.resolve([{ id: 'mock/free-model', free: true }]); },
+          complete: function () { return Promise.reject(new Error('401 Unauthorized: invalid API key')); } };
+        window.__omnidmTestStorage = (function () { var m = new Map(); return {
+          load: function (k) { return Promise.resolve(m.has(k) ? m.get(k) : null); },
+          save: function (k, s) { m.set(k, s); return Promise.resolve(); },
+          delete: function (k) { m.delete(k); return Promise.resolve(); } }; })();
+        document.getElementById('mode-local').click();
+        document.getElementById('j-name').value = 'Solo';
+        document.getElementById('j-room').value = 'roomErr';
+        document.getElementById('join-form').dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
+        await waitFor(function () { return document.getElementById('table').hidden === false; }, 3000);
+        sendSay('/dm new');
+        await waitFor(function () { return false; }, 60);
+        sendSay('/dm join Hero');
+        await waitFor(function () { return document.querySelector('#roster-list .seat') != null; }, 3000);
+        sendSay('I swing at the training dummy');
+        var errored = await waitFor(function () {
+          return document.querySelector('#log .msg.warn .body') != null;
+        }, 4000);
+        var errNode = document.querySelector('#log .msg.warn .body');
+        var errBody = errNode ? errNode.textContent : '';
+        // Never a raw stack: no "at <fn> (file:line)" frames, no bare .js: locations.
+        var noStack = errBody.indexOf('    at ') === -1 && !/\\.(?:js|ts):\\d/.test(errBody);
+        var mentionsFix = /settings/i.test(errBody) && /(key|model|url)/i.test(errBody);
+
+        // Help/About: opens from the topbar, names where data/keys live, and
+        // hands off to the REAL command palette (reused, not duplicated).
+        document.getElementById('help-btn').click();
+        var helpOpen = document.getElementById('help-sheet').hidden === false;
+        var helpText = document.getElementById('help-sheet').textContent || '';
+        var mentionsDevice = /device/i.test(helpText) && /key/i.test(helpText);
+        document.getElementById('help-open-palette').click();
+        var paletteOpened = document.getElementById('palette').hidden === false;
+        var helpClosedForPalette = document.getElementById('help-sheet').hidden === true;
+
+        out.textContent = 'ERRHELP_OK=' + (errored && noStack && mentionsFix && helpOpen && mentionsDevice && paletteOpened && helpClosedForPalette) +
+          ' errored=' + errored + ' noStack=' + noStack + ' mentionsFix=' + mentionsFix +
+          ' helpOpen=' + helpOpen + ' mentionsDevice=' + mentionsDevice + ' paletteOpened=' + paletteOpened +
+          ' errBody=' + JSON.stringify(errBody.slice(0, 160));
+      } catch (e) { out.textContent = 'ERRHELP_OK=false:' + e; }
+    })();
+  `;
+  const dom = await runHeadlessClient('local-error-help', html, srcs, probe);
+  if (dom === null || !dom.includes('ERRHELP_OK=')) {
+    console.log('⏭  web-ui: headless local-error/help check skipped (chromium produced no output)');
+    return;
+  }
+  check(
+    'web-ui: headless "Play on this device" shows a friendly, actionable error (not a raw stack/hang) on a model failure, and Help/About opens with device/key info + the real command menu',
+    dom.includes('ERRHELP_OK=true'),
+  );
+}
+
 async function main() {
   const dataDir = path.join('data', 'smoke');
   await fs.rm(dataDir, { recursive: true, force: true });
@@ -1448,9 +1523,42 @@ async function main() {
     check('local-engine: the in-app Config carries no secret (apiKey lives only inside the provider)',
       engineSrc.includes('createLocalEngine'));
 
+    // ── First-run onboarding polish ──
+    // The launch card must spell out the free-model path as plain TEXT (never a
+    // fetched external origin: no <a href>/<script src>/<link href> to it — the
+    // asset-origin check above already proves every src/href is same-origin).
+    check('web-ui: the launch card shows free-model guidance (local/Ollama + a free OpenRouter key) as plain text',
+      html.includes('localhost:11434/v1') && /openrouter\.ai\/keys/.test(html) &&
+      !/<a\s[^>]*href="https?:\/\/[^"]*openrouter/i.test(html));
+    check('web-ui: the API key field explains the local-model (no key) case inline',
+      /leave blank for a local model/i.test(html));
+    // Help/About: reachable from the join screen AND the topbar, explains what
+    // OmniDM is, reuses the command palette (no duplicated /dm reference), and
+    // states where state + the key live.
+    check('web-ui: index.html has a Help/About affordance (join screen + topbar) and modal',
+      html.includes('id="help-btn-join"') && html.includes('id="help-btn"') &&
+      html.includes('id="help-sheet"') && html.includes('id="help-open-palette"'));
+    check('web-ui: the Help modal explains device-only storage and key secrecy, textContent-safe (static HTML, no innerHTML)',
+      /stored only in this browser/i.test(html) && /never.*logged/i.test(html) && !/innerHTML/.test(appSrc.match(/openHelp[\s\S]{0,300}/)?.[0] ?? ''));
+    check('web-ui: app.js wires the Help modal open/close (join screen, topbar, Escape, backdrop click) and hands off to the palette',
+      appSrc.includes('function openHelp()') && appSrc.includes('function closeHelp()') &&
+      appSrc.includes("'help-btn-join'") && appSrc.includes("'help-btn'") &&
+      /Escape'\)[\s\S]{0,120}closeHelp\(\)/.test(appSrc) &&
+      appSrc.includes("'help-open-palette'"));
+    // Graceful errors: a proactive check for the single most common dead end
+    // (default/typed endpoint isn't local, no key entered) plus a rewrite of the
+    // engine's generic turn-failure notice into an actionable, non-stack message.
+    check('web-ui: app.js proactively warns (once, on first join) when a non-local endpoint has no API key',
+      appSrc.includes('function isLocalEndpoint(') && appSrc.includes('function warnIfNoKeyForRemoteEndpoint(') &&
+      appSrc.includes('warnIfNoKeyForRemoteEndpoint()'));
+    check('web-ui: app.js turns a failed turn into a friendly, Settings-pointing message — never the raw text verbatim',
+      appSrc.includes('function friendlyEngineError(') && appSrc.includes('⚙ Settings') &&
+      appSrc.includes("addLine('warn', '', friendly)"));
+
     const clientSrcs = { engine: engineSrc, transport: transportSrc, portraits: portraitSrc, app: appSrc };
     await headlessLocalTurnCheck(html, clientSrcs);
     await headlessServerTurnCheck(html, clientSrcs, url, 'hunter2');
+    await headlessLocalErrorAndHelpCheck(html, clientSrcs);
 
     const bad = new WsClient(url);
     await bad.open();
