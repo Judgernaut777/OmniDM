@@ -6,24 +6,24 @@ number of players. Test for free; bring your own model when you're ready.
 
 > Working name — rename freely. This is an early scaffold, not a finished product.
 
-## Why this exists
+## Get OmniDM
 
-The open-source landscape has lots of AI DMs, but each one is locked to **one
-platform** (Discord *or* web) **or one model** (one vendor). None is all three of:
-multi-platform, multi-player, and model-agnostic. OmniDM is built around that gap.
+Pick your preferred way to play:
 
-The design borrows deliberately from prior art (see [`docs` credits](#prior-art-studied)):
+| Mode | What you get | How to run |
+|------|--------------|-----------|
+| **Browser** | Web table UI, play in any browser (PC/phone). "Play on this device" with your own model, or "Connect to a server" for multiplayer. | `npm run web`, open <http://127.0.0.1:8787> |
+| **Desktop** (Electron) | Standalone app for PC/Mac/Linux. Same table UI as the web build, bundled with Chromium — no system WebKit deps needed. "Play on this device" (your model locally) or "Connect to a server" (multiplayer). | `npm run electron` |
+| **Desktop** (Tauri, lightweight) | Alternative lightweight desktop app: smaller bundle but needs `webkit2gtk` on Linux. Same hybrid model — play locally or join a server. | Run on a machine with Tauri prereqs (see below), then `npm run tauri:dev` |
+| **Mobile** (iOS/Android) | Native app via Capacitor. Same AI DM engine in the native WebView. On-device play with your model, or join a server. iOS requires a Mac to build. | Android: `npm run cap:sync && npm run cap:android` • iOS: run on Mac with Xcode |
 
-| Layer | Pattern | Borrowed from |
-|------|---------|---------------|
-| **Turn engine** | "Sandwich": lock → resolve dice (pure) → persist → LLM narrates the *resolved* outcome | daicer |
-| **Dice/rules** | Standalone deterministic resolver; rules as swappable markdown modules | open-tabletop-gm |
-| **Providers** | One canonical message format → per-backend converter | SillyTavern |
-| **Memory** | Rolling "living summary" compaction + per-turn RAG recall (embedding or lexical) | NeverEndingQuest / NarrativeEngine-P |
-| **Multiplayer** | Per-channel lock; shared session; targeted broadcast | Agnai / daicer |
-| **Platform layer** | One `PlatformAdapter` interface; add a platform = add one file | *new — the moat* |
+**Two play modes (all platforms):**
+- **🕯 Play on this device**: the AI DM engine runs locally with your own LLM API key (stored on your device only, never on a server). Solo or hotseat, no network needed except to your model.
+- **🌐 Connect to a server**: point your app at an OmniDM server running elsewhere for real multiplayer — everyone in a room code shares one party, fog-of-war whispers are private.
 
-## Quick start (free, ~2 minutes)
+## Quick start — CLI (free, ~2 minutes)
+
+For a quick test before running a full app:
 
 ```bash
 npm install
@@ -43,6 +43,27 @@ I push open the tavern door and look for trouble.
 The default model is a free OpenRouter model, so this costs nothing. Type
 `/dm models` to see what else you can use, and `/dm model <id>` to switch — the
 same dropdown includes Claude, GPT, Gemini, and local models.
+
+## Why this exists
+
+The open-source landscape has lots of AI DMs, but each one is locked to **one
+platform** (Discord *or* web) **or one model** (one vendor). None is all three of:
+multi-platform, multi-player, and model-agnostic. OmniDM is built around that gap.
+
+The design borrows deliberately from prior art (see [`docs` credits](#prior-art-studied)):
+
+| Layer | Pattern | Borrowed from |
+|------|---------|---------------|
+| **Turn engine** | "Sandwich": lock → resolve dice (pure) → persist → LLM narrates the *resolved* outcome | daicer |
+| **Dice/rules** | Standalone deterministic resolver; rules as swappable markdown modules | open-tabletop-gm |
+| **Providers** | One canonical message format → per-backend converter | SillyTavern |
+| **Memory** | Rolling "living summary" compaction + per-turn RAG recall (embedding or lexical) | NeverEndingQuest / NarrativeEngine-P |
+| **Multiplayer** | Per-channel lock; shared session; targeted broadcast | Agnai / daicer |
+| **Platform layer** | One `PlatformAdapter` interface; add a platform = add one file | *new — the moat* |
+
+## Running with other platforms
+
+Beyond the web client, you can run OmniDM as a bot in any chat channel:
 
 ### Run on Discord
 
@@ -158,104 +179,127 @@ inside a socket frame.
 
 ## Desktop & mobile apps
 
-The same `web/` client is wrapped as native **desktop (Tauri)** and **mobile
-(Capacitor iOS + Android)** apps with **no rewrite**. Both use the same **hybrid
-model** as the browser: a native WebView loads the committed client and runs the
-whole AI-DM engine (`web/engine.bundle.js`) **inside the WebView**. There is **no
-Node sidecar and no bundled server** — the shells are thin (a WebView + a small
-Rust crate for Tauri; a WebView + a native project for Capacitor).
+The same `web/` client is wrapped as native desktop and mobile apps with **no
+rewrite**. All use the same **hybrid model**: a native WebView loads the
+committed client and runs the whole AI-DM engine (`web/engine.bundle.js`)
+**inside the WebView**. There is **no Node sidecar and no bundled server**.
 
-- **Play on this device** — the engine runs in-app with *your* provider, base
-  URL, model and **API key**, stored only on that device (WebView localStorage)
-  and sent only to the LLM endpoint you configured. Solo / hotseat, no server.
+**Both play modes work on all platforms:**
+- **Play on this device** — the engine runs in-app with *your* provider, base URL,
+  model and **API key**, stored only on that device (WebView localStorage) and sent
+  only to the LLM endpoint you configured. Solo / hotseat, no server needed.
 - **Connect to a server** — point the app at an OmniDM server (`npm run web`
   running elsewhere) for multiplayer over the unchanged WebSocket protocol.
 
-Both shells install `identifier`/`appId` `com.omnidm.app` and point at the
-committed `web/` directory, so no separate build/copy of the front end is needed;
-rerun `npm run build:web` only after changing the shared engine under `src/core`
-or `src/providers`.
+All shells use the same `com.omnidm.app` identifier and point at the committed
+`web/` directory; no separate build/copy is needed. Rerun `npm run build:web`
+only after changing the shared engine under `src/core` or `src/providers`.
 
-The native project outputs (`src-tauri/target/`, Capacitor's `android/` and
-`ios/`) are **not committed** and are **not built on this Linux box** — it has no
-Rust/Cargo, no `webkit2gtk-4.1`, no Android SDK and no macOS/Xcode. What is
-committed is the complete scaffold (configs, scripts, a Rust crate, icons, and
-per-platform READMEs); a device build needs only the toolchain below. Each
-platform also ships an **offline headless-chromium check** that runs here with no
-native toolchain (`node src-tauri/webview-check.mjs`, `node
-capacitor/webview-check.mjs`) — they serve `web/` under the exact app CSP / a
-simulated native runtime and drive a real in-app turn through the actual bundle.
+The native project outputs are **not committed** and **not built on this Linux
+box**:
+- Electron bundles Chromium, so it builds without system WebKit deps.
+- Tauri uses system WebKit (none available here; needs `webkit2gtk` on Linux,
+  system WKWebView on macOS, WebView2 on Windows).
+- Capacitor's `android/` and `ios/` need an Android SDK / macOS+Xcode respectively.
 
-### Desktop — Tauri v2 (`src-tauri/`)
+What **is** committed: complete scaffolds (configs, scripts, app icons, per-platform
+READMEs). Each also ships an **offline headless-chromium verification**
+(`node electron/webview-check.mjs`, `node src-tauri/webview-check.mjs`, `node
+capacitor/webview-check.mjs`) that runs without native toolchains — they serve
+`web/` under the exact app CSP / simulated WebView and drive a real in-app turn
+through the actual bundle.
 
-Toolchain (a developer machine, not this CI box):
+### Desktop — Electron (easiest, cross-platform)
+
+Electron bundles Chromium, so it builds on **any OS** without system WebKit
+dependencies. Start with this if you're new to native desktop apps.
+
+**Prerequisites:**
+- **Node ≥ 22** + `npm install` (installs `electron`)
+- That's it — Chromium is bundled. Builds on PC/Mac/Linux with zero extra system packages.
+
+**Build & run:**
+
+```bash
+npm install                 # installs electron
+npm run build:web           # refresh web/engine.bundle.js if the engine changed
+npm run electron            # launch for development (live window)
+npm run electron -- <args>  # pass Electron flags if needed (e.g., --help)
+```
+
+**Details:** The Electron shell is a thin `electron/main.cjs` that loads
+`web/index.html` and applies strict CSP (`script-src 'self'`). The user's LLM
+API key lives in WebView localStorage, is sent only to the configured endpoint,
+and never reaches the Node process. See [electron/main.cjs](electron/main.cjs)
+for the security model (context isolation, no preload, no nodeIntegration,
+sandboxing enabled).
+
+**To bundle for distribution:** the current setup supports development launches
+via `npm run electron`. For signed distribution bundles (`.exe` / `.msi` on
+Windows, `.dmg` / `.app` on macOS, `.AppImage` / `.deb` on Linux), you'd add
+`electron-builder` and configure code signing per platform — this is out of
+scope for v1 but the scaffold is ready.
+
+### Desktop — Tauri v2 (lightweight alternative, `src-tauri/`)
+
+Tauri builds a smaller binary than Electron by using the system WebKit instead of
+bundling Chromium. **If Electron works, use it.** Choose Tauri if you need a
+lighter bundle and your OS already has the WebKit libraries (it does on macOS and
+Windows 11; on Linux you install them once).
+
+**Prerequisites (per-OS):**
 
 | Requirement | Detail |
 |---|---|
 | **Rust** stable ≥ 1.77.2 | install via <https://rustup.rs> |
 | **Node ≥ 22** + `npm install` | provides `@tauri-apps/cli` |
-| **Linux** deps | `webkit2gtk-4.1`, `librsvg2`, build tooling — on Debian/Ubuntu: `sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev` |
-| **macOS** deps | Xcode Command Line Tools (`xcode-select --install`); system WKWebView, nothing else — produces `.app` / `.dmg` |
-| **Windows** deps | MSVC C++ Build Tools + the **WebView2** runtime (bundled on Win11) — produces `.msi` / `.exe` |
+| **Linux** only | `webkit2gtk-4.1`, `librsvg2`, build tooling — on Debian/Ubuntu: `sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev` |
+| **macOS** | Xcode Command Line Tools (`xcode-select --install`); system WKWebView is built-in |
+| **Windows** | MSVC C++ Build Tools + **WebView2** runtime (bundled on Win11, free download on Win10) |
+
+**Build & run:**
 
 ```bash
 npm install            # installs @tauri-apps/cli
 npm run build:web      # refresh web/engine.bundle.js if the engine changed
-npm run tauri:dev      # launch the desktop app (devtools)
+npm run tauri:dev      # launch for development (devtools available)
 npm run tauri:build    # release bundle → src-tauri/target/release/bundle/
 npm run tauri -- info  # verify your toolchain
 ```
 
-`frontendDist` points straight at the static `web/` directory, so there is no dev
-server or `beforeDevCommand`. The window is CSP-locked exactly like the web
-client (`script-src 'self'` keeps XSS shut; `connect-src` allows `https:` +
-loopback so the in-app engine can reach the *user-configured* LLM host — a scheme
-allowance, no baked-in origin), and the capability set is Tauri **core defaults
-only** (no fs/shell/http reach). Details in
-[`src-tauri/README.md`](src-tauri/README.md).
+The frontend is served from the committed `web/` directory (no build step, no
+dev server). The window enforces strict CSP and **core-default permissions only**
+(no filesystem/shell/http access). Full details in [`src-tauri/README.md`](src-tauri/README.md).
 
 ### Mobile — Capacitor iOS + Android (`capacitor.config.ts`, `capacitor/`)
 
-Toolchain:
+**Prerequisites:**
 
 | Target | Requirements |
 |---|---|
-| **Android** | **Android SDK** (`ANDROID_HOME` set: platform-tools, `platforms;android-34`, `build-tools;34.0.0`) + **JDK 21** (Capacitor 8 / AGP 8 require Java 21 — JDK 17 fails with `invalid source release: 21`). Gradle wrapper is generated. All of this installs **user-space, no root** (SDK cmdline-tools, a JDK tarball). Emulator (needs `/dev/kvm`) or a USB-debug device. |
-| **iOS** | **macOS** + **Xcode** + CocoaPods (`sudo gem install cocoapods`), a simulator or a device + an Apple signing profile. **iOS cannot be built off a Mac.** |
-| **Both** | Node ≥ 22 + this repo's `npm install` (provides `@capacitor/cli`). |
+| **Android** | Android SDK (set `ANDROID_HOME` with platform-tools, `platforms;android-34`, `build-tools;34.0.0`) + JDK 21. All install user-space (no root). Gradle wrapper generated. Emulator (needs `/dev/kvm`) or USB debug device. |
+| **iOS** | **macOS only** + **Xcode** + CocoaPods (`sudo gem install cocoapods`). Simulator or a device + an Apple signing profile. iOS **cannot** be built off a Mac. |
+| **Common** | Node ≥ 22 + this repo's `npm install` (provides `@capacitor/cli`). |
 
-#### Reproducible Android build (ARM64 caveat)
+**ARM64 Linux caveat:** Google's `aapt2` is x86-64 only. Workaround: `sudo apt install qemu-user-static` (transparent binfmt registration) or configure box64 (already set in `android/gradle.properties` for ARM64). On x86-64 / macOS / Windows, no caveat.
 
-> **On ARM64 Linux hosts** (e.g. Debian aarch64): Google ships the Android **`aapt2`** resource compiler as an **x86-64-only** ELF with no aarch64 variant. A native ARM64 Gradle build gets all the way through dependency resolution and Java compilation, then fails at `AAPT2 … Daemon startup failed`. **Two proven fixes:**
-> 
-> 1. **qemu-user-static** (transparent, one-time): `sudo apt install qemu-user-static` to register x86-64 ELF execution via binfmt — then the x86-64 `aapt2` runs transparently. No build config needed.
-> 2. **box64** (user-space emulator): use `android.aapt2FromMavenOverride` in `gradle.properties` to point Gradle at a box64-wrapped aapt2. Already configured in this repo's `android/gradle.properties` if ARM64 detected.
->
-> On x86-64 Linux / macOS / Windows this caveat does not apply.
-
-**Android build (works with ARM64 prerequisites above):**
+**Build:**
 
 ```bash
 npm install            # brings in @capacitor/{core,cli,android,ios}
 npm run build:web      # refresh web/engine.bundle.js if the engine changed
 
-npm run cap:add:android   # one-time: generate android/ from template (not committed)
-npm run cap:sync          # copy web/ into the native project + update plugins
-npm run cap:android       # build & launch on an emulator/device
-#   …or open android/ in Android Studio for a signed APK/AAB build
-npm run cap:add:android && npm run cap:sync && npm run cap:android
-```
+# Android
+npm run cap:add:android   # one-time: generate android/ (not committed)
+npm run cap:sync          # sync web/ into the native project
+npm run cap:android       # build & launch
+#   or open android/ in Android Studio for a signed APK/AAB
 
-**iOS build (macOS only):**
-
-```bash
-npm install            # brings in @capacitor/{core,cli,android,ios}
-npm run build:web      # refresh web/engine.bundle.js if the engine changed
-
-npm run cap:add:ios    # one-time: generate ios/ (needs macOS)
-npm run cap:sync       # copy web/ into the native project + update plugins
-npm run cap:ios        # build & launch on a simulator/device
-#   …or open ios/ in Xcode to pick a signing team
+# iOS (macOS only)
+npm run cap:add:ios       # one-time: generate ios/ (macOS only)
+npm run cap:sync
+npm run cap:ios           # build & launch
+#   or open ios/ in Xcode to pick a signing team
 ```
 
 **LLM CORS on device.** A mobile WebView is still a browser, so a plain `fetch`
