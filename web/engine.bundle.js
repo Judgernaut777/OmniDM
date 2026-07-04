@@ -46,6 +46,14 @@
 
   // src/core/session/session-manager.ts
   var MAX_CHARACTER_NAME_CHARS = 40;
+  var MAX_RESUME_TOKEN_CHARS = 64;
+  var SeatTakenError = class extends Error {
+    constructor(characterName) {
+      super(`Character "${characterName}" is already claimed by another player.`);
+      __publicField(this, "characterName", characterName);
+      this.name = "SeatTakenError";
+    }
+  };
   var SessionManager = class {
     constructor(store, defaultModel, provider) {
       __publicField(this, "store", store);
@@ -109,12 +117,30 @@
      * `/dm join <name>` would otherwise leave a ghost entry that deadlocks
      * round-robin and swallows fog whispers): the old entry migrates to the new
      * userId in its original join-order slot, keeping hp/card and the turn
-     * pointer intact. A member already in the party renaming themselves never
-     * takes over someone else's seat.
+     * pointer intact.
+     *
+     * SECURITY: a reclaim is authorized ONLY when the joining client presents the
+     * same `resumeToken` the seat was created with. Without it — a stranger simply
+     * naming someone else's character — the join is refused with {@link
+     * SeatTakenError} rather than migrating the seat, which previously let any
+     * room member seize a character and intercept its private fog whispers. A
+     * member already in the party (matched by userId) updates their own seat and
+     * never consults reclaim-by-name, so renaming never takes another seat.
      */
     async join(session, msg, characterName) {
       const name2 = characterName === void 0 ? void 0 : characterName.slice(0, MAX_CHARACTER_NAME_CHARS);
-      const prior = session.players[msg.userId] ?? (name2 ? this.reclaimable(session, name2) : void 0);
+      const token = typeof msg.resumeToken === "string" && msg.resumeToken ? msg.resumeToken.slice(0, MAX_RESUME_TOKEN_CHARS) : void 0;
+      let prior = session.players[msg.userId];
+      if (!prior && name2) {
+        const named = this.reclaimable(session, name2);
+        if (named) {
+          if (token && named.resumeToken && token === named.resumeToken) {
+            prior = named;
+          } else {
+            throw new SeatTakenError(named.characterName || named.userName || name2);
+          }
+        }
+      }
       const player = {
         userId: msg.userId,
         userName: msg.userName,
@@ -130,7 +156,12 @@
         // across too — a preset OR uploaded image lives on the Player, and the web
         // adapter mints a fresh userId per reconnect. Dropping it here reverts the
         // portrait to the default crest and strands the uploaded bytes.
-        portrait: prior?.portrait
+        portrait: prior?.portrait,
+        // Preserve the seat's ownership secret across a reclaim; establish it from
+        // the joining client's token on a brand-new seat. Stable-id adapters send
+        // no token, so their seats stay non-reclaimable-by-name (undefined token
+        // never satisfies the match above) — correct, they reconnect by userId.
+        resumeToken: prior?.resumeToken ?? token
       };
       if (prior && prior.userId !== msg.userId) {
         session.players = Object.fromEntries(
@@ -770,6 +801,9 @@ Return the updated summary.`
   };
 
   // src/core/bot.ts
+  function redactSecrets(text) {
+    return String(text).replace(/\b(sk|pk|rk)-[A-Za-z0-9_-]{6,}/gi, "$1-\u2026redacted").replace(/\bBearer\s+[A-Za-z0-9._-]{6,}/gi, "Bearer \u2026redacted").replace(/\b(api[-_]?key|authorization|x-api-key)(["']?\s*[:=]\s*["']?)[A-Za-z0-9._-]{6,}/gi, "$1$2\u2026redacted").replace(/\b[A-Za-z0-9_-]{28,}\b/g, "\u2026redacted");
+  }
   var Bot = class {
     constructor(config, provider, storage, cardImporter) {
       __publicField(this, "config", config);
@@ -803,7 +837,7 @@ Return the updated summary.`
         }
         await this.playAction(session, msg, text, send);
       } catch (err) {
-        const detail = err?.message || String(err);
+        const detail = redactSecrets(err?.message || String(err));
         console.error("[bot] handle failed:", detail);
         await send({
           channelId: msg.channelId,
@@ -871,8 +905,17 @@ Others can join with \`/dm join <name>\`. When ready, just describe what you do.
         case "join": {
           const session = await this.sessions.get(msg);
           if (!session) return reply("No game here yet \u2014 `/dm new` first.");
-          const player = await this.sessions.join(session, msg, rest || void 0);
-          return reply(`\u2705 ${player.characterName || player.userName} joins the party.`);
+          try {
+            const player = await this.sessions.join(session, msg, rest || void 0);
+            return reply(`\u2705 ${player.characterName || player.userName} joins the party.`);
+          } catch (e) {
+            if (e instanceof SeatTakenError) {
+              return reply(
+                `\u{1F6AB} "${e.characterName}" is already claimed by another player. Pick a different name, or reconnect from the device that created that character.`
+              );
+            }
+            throw e;
+          }
         }
         case "who": {
           const session = await this.sessions.get(msg);
@@ -1107,6 +1150,7 @@ Otherwise, just type what your character does.`;
   var MOVE_RATE_LIMIT_PER_SEC = 30;
   var MAX_NAME_CHARS = 40;
   var MAX_ROOM_CHARS = 64;
+  var MAX_RESUME_TOKEN_CHARS2 = 64;
   var MAX_TEXT_CHARS = 4e3;
   var MAX_CARD_SUMMARY_CHARS = 240;
   var RoomEngine = class {
@@ -1155,7 +1199,8 @@ Otherwise, just type what your character does.`;
       if (userName.length > MAX_NAME_CHARS || channelId.length > MAX_ROOM_CHARS)
         return this.error(conn, `hello fields too long (userName \u2264 ${MAX_NAME_CHARS}, channelId \u2264 ${MAX_ROOM_CHARS} chars).`);
       if (this.seats.has(conn)) return this.error(conn, "Already joined \u2014 one hello per connection.");
-      const seat = { conn, userId: `web-${nanoid(8)}`, userName, channelId, uploadToken: nanoid(24), saidAt: [], movedAt: [] };
+      const resumeToken = typeof frame.resumeToken === "string" && frame.resumeToken ? frame.resumeToken.slice(0, MAX_RESUME_TOKEN_CHARS2) : void 0;
+      const seat = { conn, userId: `web-${nanoid(8)}`, userName, channelId, uploadToken: nanoid(24), resumeToken, saidAt: [], movedAt: [] };
       this.seats.set(conn, seat);
       conn.send({ type: "welcome", userId: seat.userId, channelId, uploadToken: seat.uploadToken });
       void this.broadcastRoster(channelId);
@@ -1174,7 +1219,7 @@ Otherwise, just type what your character does.`;
       const relay = { type: "msg", speaker: seat.userName, text };
       for (const s of this.seats.values()) if (s.channelId === seat.channelId) s.conn.send(relay);
       Promise.resolve(
-        this.handler?.({ platform: this.platform, channelId: seat.channelId, userId: seat.userId, userName: seat.userName, text })
+        this.handler?.({ platform: this.platform, channelId: seat.channelId, userId: seat.userId, userName: seat.userName, text, resumeToken: seat.resumeToken })
       ).catch((err) => console.error("[room] message handling failed:", err?.message ?? err)).finally(() => void this.broadcastRoster(seat.channelId));
     }
     /** Reposition a token on the shared board — authoritative: clamp + rebroadcast. */
@@ -1449,7 +1494,13 @@ ${m.content}`;
         headers: {
           "content-type": "application/json",
           "x-api-key": this.apiKey,
-          "anthropic-version": API_VERSION
+          "anthropic-version": API_VERSION,
+          // Anthropic's API blocks browser-origin (CORS) requests unless the caller
+          // explicitly opts in with this header. The in-app "Play on this device"
+          // engine runs in a browser context (web build AND the Tauri desktop
+          // WebView, where the plain global fetch is used), so without it every
+          // Anthropic turn is blocked by the preflight. Harmless on Node/native.
+          "anthropic-dangerous-direct-browser-access": "true"
         },
         body: JSON.stringify({
           model: req.model,

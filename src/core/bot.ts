@@ -7,7 +7,7 @@
  */
 import type { Config } from '../config.js';
 import type { GameSession, IncomingMessage, LLMProvider, OutgoingMessage, OutgoingRoll, Player, RollResult } from './types.js';
-import { SessionManager } from './session/session-manager.js';
+import { SessionManager, SeatTakenError } from './session/session-manager.js';
 import type { SessionStorage } from './session/storage.js';
 import { Narrator } from './narrator/narrator.js';
 import type { CharacterCard } from './cards/card-parse.js';
@@ -171,8 +171,18 @@ export class Bot {
       case 'join': {
         const session = await this.sessions.get(msg);
         if (!session) return reply('No game here yet — `/dm new` first.');
-        const player = await this.sessions.join(session, msg, rest || undefined);
-        return reply(`✅ ${player.characterName || player.userName} joins the party.`);
+        try {
+          const player = await this.sessions.join(session, msg, rest || undefined);
+          return reply(`✅ ${player.characterName || player.userName} joins the party.`);
+        } catch (e) {
+          if (e instanceof SeatTakenError) {
+            return reply(
+              `🚫 "${e.characterName}" is already claimed by another player. Pick a different name, ` +
+              `or reconnect from the device that created that character.`,
+            );
+          }
+          throw e;
+        }
       }
 
       case 'who': {

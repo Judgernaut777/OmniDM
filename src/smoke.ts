@@ -26,7 +26,7 @@ import type { Config } from './config.js';
 import type { CompletionRequest, GameSession, IncomingMessage, LLMProvider, ModelInfo, OutgoingMessage, TurnRecord } from './core/types.js';
 import { Bot, redactSecrets } from './core/bot.js';
 import { roll, extractRolls } from './core/engine/dice.js';
-import { MAX_CHARACTER_NAME_CHARS, SessionManager } from './core/session/session-manager.js';
+import { MAX_CHARACTER_NAME_CHARS, SeatTakenError, SessionManager } from './core/session/session-manager.js';
 import { NodeFileStorage } from './core/session/store.js';
 import { MemoryStorage } from './core/session/storage.js';
 import { loadCard, MAX_CARD_BYTES, renderCard } from './core/cards/card.js';
@@ -845,20 +845,55 @@ async function main() {
   // the dead entry and fog whispers target a userId with no socket.)
   {
     const mgr = new SessionManager(new MemoryStorage(), 'mock/free-model');
-    const rm = (userId: string, userName: string): IncomingMessage => ({ platform: 'web', channelId: 'reclaim', userId, userName, text: '' });
-    const s = await mgr.create(rm('w1', 'Alice'));
-    await mgr.join(s, rm('w1', 'Alice'), 'Thorin');
-    await mgr.join(s, rm('w2', 'Bob'), 'Elaria');
+    // A reconnect presents the SAME per-browser ownership token it first joined
+    // with — that's what authorizes reclaiming the seat under a fresh userId.
+    const ALICE = 'tok-alice-000000000000000000';
+    const BOB = 'tok-bob-1111111111111111111';
+    const rm = (userId: string, userName: string, resumeToken?: string): IncomingMessage =>
+      ({ platform: 'web', channelId: 'reclaim', userId, userName, text: '', resumeToken });
+    const s = await mgr.create(rm('w1', 'Alice', ALICE));
+    await mgr.join(s, rm('w1', 'Alice', ALICE), 'Thorin');
+    await mgr.join(s, rm('w2', 'Bob', BOB), 'Elaria');
     s.players.w1.hp = 3;
     s.players.w1.portrait = { kind: 'preset', id: 'mage' }; // set a portrait BEFORE the reconnect
-    await mgr.join(s, rm('w9', 'Alice'), 'thorin'); // reconnected: new userId, same character (case-insensitive)
+    await mgr.join(s, rm('w9', 'Alice', ALICE), 'thorin'); // reconnected: new userId, same token + character (case-insensitive)
     check('reclaim: migrated seat keeps hp and its join-order slot, dead userId is gone',
       !s.players.w1 && s.players.w9?.hp === 3 && Object.keys(s.players).join(',') === 'w9,w2');
     check('reclaim: the portrait survives the seat re-claim (not reverted to the default crest)',
       s.players.w9?.portrait?.kind === 'preset' && (s.players.w9!.portrait as { id: string }).id === 'mage');
-    await mgr.join(s, rm('w2', 'Bob'), 'Thorin'); // a member renaming to a taken name is NOT a takeover
+    await mgr.join(s, rm('w2', 'Bob', BOB), 'Thorin'); // a member renaming to a taken name is NOT a takeover
     check('reclaim: an existing member renaming keeps their own seat',
       Boolean(s.players.w9) && s.players.w2?.characterName === 'Thorin' && Object.keys(s.players).length === 2);
+  }
+
+  // ── Seat-hijack prevention: reclaim-by-name REQUIRES the ownership token ──
+  // Previously any room member could seize a character (and intercept its private
+  // fog whispers) just by naming it in `/dm join`. A reclaim now needs the same
+  // per-client token the seat was created with.
+  {
+    const mgr = new SessionManager(new MemoryStorage(), 'mock/free-model');
+    const im = (userId: string, userName: string, resumeToken?: string): IncomingMessage =>
+      ({ platform: 'web', channelId: 'hijack', userId, userName, text: '', resumeToken });
+    const OWNER = 'owner-secret-token-abcdef0123';
+    const s = await mgr.create(im('a1', 'Alice', OWNER));
+    await mgr.join(s, im('a1', 'Alice', OWNER), 'Gandalf');
+
+    // Attacker: a fresh userId with NO token must not take the seat.
+    let noTok = false;
+    try { await mgr.join(s, im('m1', 'Mallory'), 'Gandalf'); } catch (e) { noTok = e instanceof SeatTakenError; }
+    check('hijack: a token-less reclaim of a taken character is refused (SeatTakenError)', noTok);
+    check('hijack: the victim keeps their seat after a token-less reclaim attempt',
+      Boolean(s.players.a1) && s.players.a1?.characterName === 'Gandalf' && !s.players.m1);
+
+    // Attacker with a WRONG token — still refused.
+    let wrongTok = false;
+    try { await mgr.join(s, im('m2', 'Mallory', 'not-the-real-token'), 'Gandalf'); } catch (e) { wrongTok = e instanceof SeatTakenError; }
+    check('hijack: a wrong-token reclaim is refused and adds no ghost seat', wrongTok && !s.players.m2);
+
+    // The true owner reconnecting WITH the matching token still reclaims.
+    await mgr.join(s, im('a2', 'Alice', OWNER), 'Gandalf');
+    check('hijack: the true owner (matching token) still reclaims across a reconnect',
+      Boolean(s.players.a2) && !s.players.a1 && s.players.a2?.characterName === 'Gandalf' && Object.keys(s.players).length === 1);
   }
 
   // ── Character name is length-capped server-side (client maxlength is advisory) ──
@@ -879,31 +914,43 @@ async function main() {
     const rcBot = new Bot(config, provider, new MemoryStorage());
     const rcOut: OutgoingMessage[] = [];
     const rcSend = async (m: OutgoingMessage) => void rcOut.push(m);
-    const rc = (userId: string, userName: string, text: string): IncomingMessage =>
-      ({ platform: 'web', channelId: 'rc', userId, userName, text });
-    await rcBot.handle(rc('web-a1', 'Alice', '/dm new'), rcSend);
-    await rcBot.handle(rc('web-a1', 'Alice', '/dm join Thorin'), rcSend);
-    await rcBot.handle(rc('web-b1', 'Bob', '/dm join Elaria'), rcSend);
-    await rcBot.handle(rc('web-a1', 'Alice', '/dm mode round-robin'), rcSend);
-    // Bob's browser reconnects: new userId, and he re-claims as the client instructs.
-    await rcBot.handle(rc('web-b2', 'Bob', '/dm join Elaria'), rcSend);
+    // Per-browser ownership tokens: a reconnect re-presents the same one.
+    const A_TOK = 'alice-browser-token-aaaa';
+    const B_TOK = 'bob-browser-token-bbbb';
+    const rc = (userId: string, userName: string, text: string, resumeToken?: string): IncomingMessage =>
+      ({ platform: 'web', channelId: 'rc', userId, userName, text, resumeToken });
+    await rcBot.handle(rc('web-a1', 'Alice', '/dm new', A_TOK), rcSend);
+    await rcBot.handle(rc('web-a1', 'Alice', '/dm join Thorin', A_TOK), rcSend);
+    await rcBot.handle(rc('web-b1', 'Bob', '/dm join Elaria', B_TOK), rcSend);
+    await rcBot.handle(rc('web-a1', 'Alice', '/dm mode round-robin', A_TOK), rcSend);
+    // Bob's browser reconnects: new userId, SAME token, so he re-claims his seat.
+    await rcBot.handle(rc('web-b2', 'Bob', '/dm join Elaria', B_TOK), rcSend);
     rcOut.length = 0;
-    await rcBot.handle(rc('web-b2', 'Bob', '/dm who'), rcSend);
+    await rcBot.handle(rc('web-b2', 'Bob', '/dm who', B_TOK), rcSend);
     check('reclaim: re-joining after a reconnect does not duplicate the character',
       (rcOut.at(-1)!.text.match(/Elaria/g) ?? []).length === 1);
     rcOut.length = 0;
-    await rcBot.handle(rc('web-a1', 'Alice', 'I advance'), rcSend);
+    await rcBot.handle(rc('web-a1', 'Alice', 'I advance', A_TOK), rcSend);
     check('reclaim: after Thorin acts the turn reaches the re-claimed seat', rcOut.at(-1)!.text.includes('Elaria'));
     rcOut.length = 0;
-    await rcBot.handle(rc('web-b2', 'Bob', 'I loose an arrow'), rcSend);
+    await rcBot.handle(rc('web-b2', 'Bob', 'I loose an arrow', B_TOK), rcSend);
     check('reclaim: the reconnected userId can act on its turn — no ghost deadlock',
       rcOut.some((m) => m.speaker === 'Dungeon Master'));
-    await rcBot.handle(rc('web-a1', 'Alice', '/dm fog on'), rcSend);
+    // A stranger (fresh userId, NO token) tries to seize Elaria — must be refused,
+    // so it cannot become the target of her private whispers.
+    rcOut.length = 0;
+    await rcBot.handle(rc('web-evil', 'Mallory', '/dm join Elaria'), rcSend);
+    check('hijack (bot): a token-less `/dm join` of a taken character is refused, not migrated',
+      rcOut.some((m) => /already claimed/i.test(String(m.text))));
+    await rcBot.handle(rc('web-a1', 'Alice', '/dm fog on', A_TOK), rcSend);
     provider.narration = 'Shadows shift. [PRIVATE:Elaria]You spot a tripwire.[/PRIVATE]';
     rcOut.length = 0;
-    await rcBot.handle(rc('web-a1', 'Alice', 'I press on'), rcSend);
+    await rcBot.handle(rc('web-a1', 'Alice', 'I press on', A_TOK), rcSend);
+    const whisper = rcOut.find((m) => m.targetUserId);
     check('reclaim: fog whisper targets the live reconnected userId, not the dead one',
-      rcOut.find((m) => m.targetUserId)?.targetUserId === 'web-b2');
+      whisper?.targetUserId === 'web-b2');
+    check('hijack (bot): the stranger never becomes the whisper target',
+      whisper?.targetUserId !== 'web-evil');
     provider.narration = 'The tavern falls silent as you act. (mock narration)';
   }
 
@@ -1816,9 +1863,10 @@ async function main() {
       await keep.open();
       keep.send({ type: 'hello', userName: 'Keeper', channelId: 'posroom', password: 'hunter2' });
       await keep.next((f) => f.type === 'welcome');
+      const patToken = 'pat-resume-token-123456';
       const p1 = new WsClient(url);
       await p1.open();
-      p1.send({ type: 'hello', userName: 'Pat', channelId: 'posroom', password: 'hunter2' });
+      p1.send({ type: 'hello', userName: 'Pat', channelId: 'posroom', password: 'hunter2', resumeToken: patToken });
       const p1id = (await p1.next((f) => f.type === 'welcome'))!.userId as string;
       await new Promise((r) => setTimeout(r, 1100));
       p1.send({ type: 'say', text: '/dm new' });
@@ -1836,10 +1884,10 @@ async function main() {
       await p1.closed();
       const p2 = new WsClient(url);
       await p2.open();
-      p2.send({ type: 'hello', userName: 'Pat', channelId: 'posroom', password: 'hunter2' });
+      p2.send({ type: 'hello', userName: 'Pat', channelId: 'posroom', password: 'hunter2', resumeToken: patToken });
       const p2id = (await p2.next((f) => f.type === 'welcome'))!.userId as string;
       await new Promise((r) => setTimeout(r, 1100));
-      p2.send({ type: 'say', text: '/dm join Ranger' }); // re-claim the seat under a fresh userId
+      p2.send({ type: 'say', text: '/dm join Ranger' }); // re-claim the seat under a fresh userId (matching token)
       await p2.next((f) => f.type === 'msg' && String(f.text).includes('Ranger joins'));
       const reScene = await p2.next((f) => f.type === 'scene' && (f.tokens as SToken[]).some((t) => t.id === `pc:${p2id}`));
       const reTok = (reScene!.tokens as SToken[]).find((t) => t.id === `pc:${p2id}`);

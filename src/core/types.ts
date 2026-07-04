@@ -21,6 +21,15 @@ export interface IncomingMessage {
   userName: string;       // display name
   text: string;           // raw text the user typed
   raw?: unknown;          // original platform payload, if an adapter needs it
+  /**
+   * A per-client ownership secret, carried by adapters (like web) that mint a
+   * FRESH userId on every connection. It authorizes reclaiming a character seat
+   * by name across a reconnect: only a client that presents the same token the
+   * seat was created with may take it over — a stranger naming the character
+   * cannot. Absent for stable-id adapters (Discord/CLI), which reconnect by
+   * userId and so never reclaim by name.
+   */
+  resumeToken?: string;
 }
 
 /**
@@ -143,6 +152,15 @@ export interface Player {
    * imported card's own portrait (if any) is used as a fallback.
    */
   portrait?: Portrait;
+  /**
+   * The ownership secret this seat was created with (from the joining client's
+   * `IncomingMessage.resumeToken`). A fresh userId may RE-CLAIM this character by
+   * name only by presenting the same token — this is what stops another room
+   * member from seizing the seat (and its private fog whispers) via
+   * `/dm join <name>`. Absent for stable-id adapters, whose seats are therefore
+   * not reclaimable-by-name at all (they reconnect by userId).
+   */
+  resumeToken?: string;
 }
 
 export interface RollResult {

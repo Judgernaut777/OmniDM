@@ -73,10 +73,36 @@ function connect() {
   state.transport.open();
 }
 
+/**
+ * A stable per-browser ownership secret, sent in every hello. The server records
+ * it on the seat it creates; on a reconnect (which mints a fresh server userId)
+ * re-presenting the same token is what authorizes reclaiming our character by
+ * name. A different browser can't reclaim our seat because it can't produce this
+ * token — it's random, stored only here, and never rebroadcast. Persisted so it
+ * survives a socket drop; regenerated only if localStorage is cleared.
+ */
+function resumeToken() {
+  const KEY = 'omnidm-resume';
+  try {
+    let t = localStorage.getItem(KEY);
+    if (!t) {
+      const b = new Uint8Array(18);
+      (window.crypto || {}).getRandomValues?.(b);
+      t = Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+      localStorage.setItem(KEY, t);
+    }
+    return t;
+  } catch {
+    return undefined; // private mode: no persistence → reclaim-by-name simply won't be available
+  }
+}
+
 /** The transport is ready to receive frames — send the hello handshake. */
 function onTransportOpen() {
   setStatus('joining…');
   const hello = { type: 'hello', userName: state.join.userName, channelId: state.join.channelId };
+  const tok = resumeToken();
+  if (tok) hello.resumeToken = tok;
   // A room password is a SERVER concept; the in-app engine is open (this device).
   if (state.mode === 'server' && state.join.password) hello.password = state.join.password;
   state.transport.send(hello);

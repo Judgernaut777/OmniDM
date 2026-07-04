@@ -34,6 +34,8 @@ export const MOVE_RATE_LIMIT_PER_SEC = 30;
 /** Server-side field caps — a client's maxlength attributes are advisory only over a raw socket. */
 export const MAX_NAME_CHARS = 40;
 export const MAX_ROOM_CHARS = 64;
+/** Bound on the client-supplied seat-ownership token (a ~24-char nanoid). */
+export const MAX_RESUME_TOKEN_CHARS = 64;
 export const MAX_TEXT_CHARS = 4000;
 /** Web userIds are `web-<nanoid>` (~12 chars); bound the path component anyway. */
 export const MAX_USER_CHARS = 128;
@@ -59,6 +61,7 @@ export interface InboundFrame {
   userName?: unknown;
   channelId?: unknown;
   password?: unknown;
+  resumeToken?: unknown;
   text?: unknown;
   id?: unknown;
   x?: unknown;
@@ -87,6 +90,12 @@ interface Seat {
   channelId: string;
   /** Per-seat secret minted at hello, delivered only on this connection's welcome. */
   uploadToken: string;
+  /**
+   * The client-supplied ownership token (from the `hello` frame), forwarded on
+   * every message so the session manager can authorize a seat re-claim by name
+   * across a reconnect. Never rebroadcast to other seats — it stays secret.
+   */
+  resumeToken?: string;
   saidAt: number[]; // recent `say` timestamps, for the rate limit
   movedAt: number[]; // recent `move` timestamps, for the separate move allowance
 }
@@ -162,7 +171,12 @@ export class RoomEngine {
     if (userName.length > MAX_NAME_CHARS || channelId.length > MAX_ROOM_CHARS)
       return this.error(conn, `hello fields too long (userName ≤ ${MAX_NAME_CHARS}, channelId ≤ ${MAX_ROOM_CHARS} chars).`);
     if (this.seats.has(conn)) return this.error(conn, 'Already joined — one hello per connection.');
-    const seat: Seat = { conn, userId: `web-${nanoid(8)}`, userName, channelId, uploadToken: nanoid(24), saidAt: [], movedAt: [] };
+    // Ownership token for seat re-claims across reconnects — client-owned secret,
+    // never echoed back or rebroadcast. Bounded like every other hello field.
+    const resumeToken = typeof frame.resumeToken === 'string' && frame.resumeToken
+      ? frame.resumeToken.slice(0, MAX_RESUME_TOKEN_CHARS)
+      : undefined;
+    const seat: Seat = { conn, userId: `web-${nanoid(8)}`, userName, channelId, uploadToken: nanoid(24), resumeToken, saidAt: [], movedAt: [] };
     this.seats.set(conn, seat);
     conn.send({ type: 'welcome', userId: seat.userId, channelId, uploadToken: seat.uploadToken });
     void this.broadcastRoster(channelId);
@@ -184,7 +198,7 @@ export class RoomEngine {
     const relay: Frame = { type: 'msg', speaker: seat.userName, text };
     for (const s of this.seats.values()) if (s.channelId === seat.channelId) s.conn.send(relay);
     Promise.resolve(
-      this.handler?.({ platform: this.platform, channelId: seat.channelId, userId: seat.userId, userName: seat.userName, text }),
+      this.handler?.({ platform: this.platform, channelId: seat.channelId, userId: seat.userId, userName: seat.userName, text, resumeToken: seat.resumeToken }),
     )
       .catch((err) => console.error('[room] message handling failed:', (err as Error)?.message ?? err))
       // The line may have changed character/portrait/persona state; refresh the roster.

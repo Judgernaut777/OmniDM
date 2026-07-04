@@ -16,6 +16,23 @@ import type { SessionStorage } from './storage.js';
  */
 export const MAX_CHARACTER_NAME_CHARS = 40;
 
+/** Upper bound on a stored ownership token (client sends an ~24-char nanoid). */
+export const MAX_RESUME_TOKEN_CHARS = 64;
+
+/**
+ * Thrown by {@link SessionManager.join} when a fresh identity tries to take a
+ * character name that is already held by another seat without presenting that
+ * seat's ownership token. The adapter/bot turns this into a friendly refusal
+ * instead of silently migrating the seat (which was a seat-hijack + fog-whisper
+ * interception vector).
+ */
+export class SeatTakenError extends Error {
+  constructor(public readonly characterName: string) {
+    super(`Character "${characterName}" is already claimed by another player.`);
+    this.name = 'SeatTakenError';
+  }
+}
+
 export class SessionManager {
   constructor(
     private store: SessionStorage,
@@ -89,14 +106,40 @@ export class SessionManager {
    * `/dm join <name>` would otherwise leave a ghost entry that deadlocks
    * round-robin and swallows fog whispers): the old entry migrates to the new
    * userId in its original join-order slot, keeping hp/card and the turn
-   * pointer intact. A member already in the party renaming themselves never
-   * takes over someone else's seat.
+   * pointer intact.
+   *
+   * SECURITY: a reclaim is authorized ONLY when the joining client presents the
+   * same `resumeToken` the seat was created with. Without it — a stranger simply
+   * naming someone else's character — the join is refused with {@link
+   * SeatTakenError} rather than migrating the seat, which previously let any
+   * room member seize a character and intercept its private fog whispers. A
+   * member already in the party (matched by userId) updates their own seat and
+   * never consults reclaim-by-name, so renaming never takes another seat.
    */
   async join(session: GameSession, msg: IncomingMessage, characterName?: string): Promise<Player> {
     // Clamp the incoming name before it is stored, matched for a seat re-claim,
     // or echoed anywhere — the client maxlength is not enforceable over a raw socket.
     const name = characterName === undefined ? undefined : characterName.slice(0, MAX_CHARACTER_NAME_CHARS);
-    const prior = session.players[msg.userId] ?? (name ? this.reclaimable(session, name) : undefined);
+    const token = typeof msg.resumeToken === 'string' && msg.resumeToken
+      ? msg.resumeToken.slice(0, MAX_RESUME_TOKEN_CHARS)
+      : undefined;
+
+    // Same identity (stable-id adapter, or a rename on the same connection):
+    // update in place. This branch never reclaims by name.
+    let prior: Player | undefined = session.players[msg.userId];
+    if (!prior && name) {
+      const named = this.reclaimable(session, name);
+      if (named) {
+        // The name is held by another seat. Authorize the takeover only with a
+        // matching, non-empty ownership token; otherwise refuse.
+        if (token && named.resumeToken && token === named.resumeToken) {
+          prior = named;
+        } else {
+          throw new SeatTakenError(named.characterName || named.userName || name);
+        }
+      }
+    }
+
     const player: Player = {
       userId: msg.userId,
       userName: msg.userName,
@@ -113,6 +156,11 @@ export class SessionManager {
       // adapter mints a fresh userId per reconnect. Dropping it here reverts the
       // portrait to the default crest and strands the uploaded bytes.
       portrait: prior?.portrait,
+      // Preserve the seat's ownership secret across a reclaim; establish it from
+      // the joining client's token on a brand-new seat. Stable-id adapters send
+      // no token, so their seats stay non-reclaimable-by-name (undefined token
+      // never satisfies the match above) — correct, they reconnect by userId.
+      resumeToken: prior?.resumeToken ?? token,
     };
     if (prior && prior.userId !== msg.userId) {
       // Re-key the migrated seat in place — join order (and with it the
