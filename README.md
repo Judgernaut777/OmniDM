@@ -220,24 +220,42 @@ Toolchain:
 
 | Target | Requirements |
 |---|---|
-| **Android** | **Android SDK** (`ANDROID_HOME` set: platform-tools, `platforms;android-34`, `build-tools;34.0.0`) + **JDK 21** (Capacitor 8 / AGP 8 compile against Java 21 — JDK 17 fails with `invalid source release: 21`). Gradle wrapper is generated. All of this installs **user-space, no root** (SDK cmdline-tools, a JDK tarball). Emulator (needs `/dev/kvm`) or a USB-debug device. |
+| **Android** | **Android SDK** (`ANDROID_HOME` set: platform-tools, `platforms;android-34`, `build-tools;34.0.0`) + **JDK 21** (Capacitor 8 / AGP 8 require Java 21 — JDK 17 fails with `invalid source release: 21`). Gradle wrapper is generated. All of this installs **user-space, no root** (SDK cmdline-tools, a JDK tarball). Emulator (needs `/dev/kvm`) or a USB-debug device. |
 | **iOS** | **macOS** + **Xcode** + CocoaPods (`sudo gem install cocoapods`), a simulator or a device + an Apple signing profile. **iOS cannot be built off a Mac.** |
-
-> **Building on an ARM64 Linux host** (e.g. this project's box): Google ships the Android **`aapt2`** resource compiler as an **x86-64-only** ELF for Linux — there is no aarch64 build, and the SDK's own `build-tools/*/aapt2` is x86-64 too. A native ARM64 Gradle build gets all the way through dependency resolution and Java compilation, then fails at `AAPT2 … Daemon startup failed`. Fixes: install `qemu-user-static` + binfmt (`sudo apt install qemu-user-static` — one root command, then the x86-64 `aapt2` runs transparently), or use a user-space x86-64 emulator such as **box64** and point Gradle at a wrapper via `android.aapt2FromMavenOverride`. On x86-64 Linux / macOS / Windows this is a non-issue.
 | **Both** | Node ≥ 22 + this repo's `npm install` (provides `@capacitor/cli`). |
+
+#### Reproducible Android build (ARM64 caveat)
+
+> **On ARM64 Linux hosts** (e.g. Debian aarch64): Google ships the Android **`aapt2`** resource compiler as an **x86-64-only** ELF with no aarch64 variant. A native ARM64 Gradle build gets all the way through dependency resolution and Java compilation, then fails at `AAPT2 … Daemon startup failed`. **Two proven fixes:**
+> 
+> 1. **qemu-user-static** (transparent, one-time): `sudo apt install qemu-user-static` to register x86-64 ELF execution via binfmt — then the x86-64 `aapt2` runs transparently. No build config needed.
+> 2. **box64** (user-space emulator): use `android.aapt2FromMavenOverride` in `gradle.properties` to point Gradle at a box64-wrapped aapt2. Already configured in this repo's `android/gradle.properties` if ARM64 detected.
+>
+> On x86-64 Linux / macOS / Windows this caveat does not apply.
+
+**Android build (works with ARM64 prerequisites above):**
 
 ```bash
 npm install            # brings in @capacitor/{core,cli,android,ios}
 npm run build:web      # refresh web/engine.bundle.js if the engine changed
 
-npx cap add android    # one-time: generate android/ (Android SDK; not committed)
-npm run cap:sync       # copy web/ into the native project + update plugins
-npm run cap:android    # build & launch on an emulator/device (cap run android)
+npm run cap:add:android   # one-time: generate android/ from template (not committed)
+npm run cap:sync          # copy web/ into the native project + update plugins
+npm run cap:android       # build & launch on an emulator/device
+#   …or open android/ in Android Studio for a signed APK/AAB build
+npm run cap:add:android && npm run cap:sync && npm run cap:android
+```
 
-# iOS — on a Mac only:
-npx cap add ios        # one-time: generate ios/ (needs macOS)
-npm run cap:sync
-npx cap open ios       # open in Xcode → pick a signing team → Run
+**iOS build (macOS only):**
+
+```bash
+npm install            # brings in @capacitor/{core,cli,android,ios}
+npm run build:web      # refresh web/engine.bundle.js if the engine changed
+
+npm run cap:add:ios    # one-time: generate ios/ (needs macOS)
+npm run cap:sync       # copy web/ into the native project + update plugins
+npm run cap:ios        # build & launch on a simulator/device
+#   …or open ios/ in Xcode to pick a signing team
 ```
 
 **LLM CORS on device.** A mobile WebView is still a browser, so a plain `fetch`

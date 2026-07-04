@@ -22,6 +22,8 @@
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "tauri:icons": "node src-tauri/icons/generate-icons.mjs",
+    "cap:add:android": "cap add android",
+    "cap:add:ios": "cap add ios",
     "cap:sync": "cap sync",
     "cap:android": "cap run android",
     "cap:ios": "cap run ios"
