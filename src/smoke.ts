@@ -2557,6 +2557,93 @@ async function main() {
       Boolean(pkg.scripts?.['tauri:dev']) && Boolean(pkg.scripts?.['tauri:build']) && Boolean(pkg.devDependencies?.['@tauri-apps/cli']));
   }
 
+  // ── Rules engine: engine-owned HP, narration markers, checks (fully isolated) ──
+  // Own provider/bot/storage/channel so these turns never touch the shared
+  // provider.lastPrompt / round-robin timing the scenario tests above depend on.
+  {
+    const mp = new MockProvider();
+    const mBot = new Bot(config, mp, new MemoryStorage());
+    const mOut: OutgoingMessage[] = [];
+    const mSend = async (m: OutgoingMessage) => void mOut.push(m);
+    const mf = (userId: string, userName: string, text: string): IncomingMessage =>
+      ({ platform: 'cli', channelId: 'rules', userId, userName, text });
+    const sessionOf = () => mBot['sessions'].get(mf('u1', 'Alice', ''));
+    await mBot.handle(mf('u1', 'Alice', '/dm new'), mSend);
+    await mBot.handle(mf('u1', 'Alice', '/dm join Thorin'), mSend);
+    await mBot.handle(mf('u2', 'Bob', '/dm join Elaria'), mSend);
+
+    // A damage marker the DM ends its narration with is APPLIED to mechanical hp
+    // and STRIPPED so players never see the marker syntax.
+    mp.narration = "The blade bites deep into Thorin's side!\n<<hp Thorin -7>>";
+    mOut.length = 0;
+    await mBot.handle(mf('u1', 'Alice', 'I stand my ground'), mSend);
+    const hitMsg = mOut.find((m) => m.speaker === 'Dungeon Master');
+    check('rules: a damage marker is stripped from the narration shown to players',
+      Boolean(hitMsg) && !hitMsg!.text.includes('<<') && !hitMsg!.text.includes('hp Thorin'));
+    check("rules: a damage marker reduces the target's mechanical hp",
+      (await sessionOf())?.players.u1?.hp === 3);
+
+    // A marker naming someone who ISN'T a real party member is ignored (no crash,
+    // no state change) but still stripped so a hallucinated tag never leaks.
+    mp.narration = 'Nothing happens to the stranger.\n<<hp NotAPartyMember -99>>';
+    mOut.length = 0;
+    await mBot.handle(mf('u2', 'Bob', 'I watch the shadows'), mSend);
+    const ghostMsg = mOut.find((m) => m.speaker === 'Dungeon Master');
+    const afterGhost = await sessionOf();
+    check('rules: a marker targeting a non-member is stripped but changes no state',
+      Boolean(ghostMsg) && !ghostMsg!.text.includes('<<') && afterGhost?.players.u1?.hp === 3 && afterGhost?.players.u2?.hp === 10);
+
+    // hp reaching 0 sets the unconscious condition.
+    mp.narration = 'The final blow drops Thorin where he stands!\n<<hp Thorin -3>>';
+    mOut.length = 0;
+    await mBot.handle(mf('u1', 'Alice', 'I take the hit'), mSend);
+    const koSaved = await sessionOf();
+    check('rules: hp reaching 0 sets the unconscious condition',
+      koSaved?.players.u1?.hp === 0 && (koSaved?.players.u1?.conditions ?? []).includes('unconscious'));
+    mp.narration = 'The tavern falls silent. (mock)';
+
+    // /dm heal restores hp AND clears unconscious once hp rises above 0.
+    mOut.length = 0;
+    await mBot.handle(mf('u2', 'Bob', '/dm heal Thorin 5'), mSend);
+    const healed = await sessionOf();
+    check('rules: /dm heal restores hp and clears the unconscious condition',
+      mOut.at(-1)!.text.includes('HP 5/10') && healed?.players.u1?.hp === 5 &&
+      !(healed?.players.u1?.conditions ?? []).includes('unconscious'));
+
+    // /dm damage applies mechanical damage directly (no narration turn).
+    mOut.length = 0;
+    await mBot.handle(mf('u2', 'Bob', '/dm damage Elaria 4'), mSend);
+    check('rules: /dm damage applies mechanical damage directly',
+      mOut.at(-1)!.text.includes('HP 6/10') && (await sessionOf())?.players.u2?.hp === 6);
+
+    // Damage clamps at 0, heal clamps at maxHp (no negative/overheal).
+    mOut.length = 0;
+    await mBot.handle(mf('u2', 'Bob', '/dm damage Elaria 999'), mSend);
+    check('rules: damage clamps at 0 hp (never negative)', (await sessionOf())?.players.u2?.hp === 0);
+    await mBot.handle(mf('u2', 'Bob', '/dm heal Elaria 999'), mSend);
+    check('rules: heal clamps at maxHp (no overheal)', (await sessionOf())?.players.u2?.hp === 10);
+
+    // /dm hp surfaces the whole party's mechanical hp on demand.
+    mOut.length = 0;
+    await mBot.handle(mf('u1', 'Alice', '/dm hp'), mSend);
+    check("rules: /dm hp shows every party member's current HP",
+      mOut.at(-1)!.text.includes('Thorin') && mOut.at(-1)!.text.includes('5/10') && mOut.at(-1)!.text.includes('Elaria'));
+
+    // /dm check resolves d20 (+mod) vs a DC ENGINE-SIDE before narration: DC 1
+    // always passes (even a nat 1 totals ≥1), DC 100 always fails — deterministic.
+    mOut.length = 0;
+    await mBot.handle(mf('u1', 'Alice', '/dm check Thorin STR 1'), mSend);
+    check('rules: /dm check feeds a deterministic RESOLVED CHECKS "PASS" fact to the narrator',
+      /RESOLVED CHECKS/.test(mp.lastPrompt) && /STR/.test(mp.lastPrompt) && /PASS/.test(mp.lastPrompt));
+    mOut.length = 0;
+    await mBot.handle(mf('u1', 'Alice', '/dm check Thorin STR 100'), mSend);
+    check('rules: /dm check feeds a deterministic RESOLVED CHECKS "FAIL" fact to the narrator',
+      /RESOLVED CHECKS/.test(mp.lastPrompt) && /FAIL/.test(mp.lastPrompt));
+
+    check('rules: the narrator prompt documents the marker syntax the DM may emit',
+      mp.lastPrompt.includes('<<hp CharacterName') && mp.lastPrompt.includes('<<condition CharacterName'));
+  }
+
   // ── Desktop shell: the Electron target bundles Chromium (builds w/o system webkit) ──
   // The pragmatic desktop path: unlike the Tauri scaffold this ships its own
   // Chromium, so it builds/runs without root or system WebKit. Same hybrid model

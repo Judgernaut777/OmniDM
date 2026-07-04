@@ -30,6 +30,7 @@ const state = {
   userId: null,
   uploadToken: null,   // per-seat secret from welcome — authorizes MY portrait upload only
   roster: [],          // [{ userId, userName }] — sockets in the room
+  prevHp: new Map(),   // userId → last-rendered hp, so a marker/command change can flash hit/heal
   chars: new Map(),    // userName → characterName (parsed from relayed /dm join lines)
   turnName: null,      // round-robin: whose turn, parsed from DM notices
   creatorPrompted: false, // auto-opened the creator once this connection (first-time setup)
@@ -480,6 +481,7 @@ function renderRoster() {
       names.append(c);
     }
     seat.append(frame, names);
+    appendHp(seat, u);
     const turn = state.turnName &&
       [char, u.userName].some((n) => n && n.toLowerCase() === state.turnName.toLowerCase());
     if (turn) {
@@ -505,6 +507,43 @@ function renderRoster() {
 /** A seat's character name: server-enriched roster first, then the relay map. */
 function charName(u) {
   return (typeof u.characterName === 'string' && u.characterName) || state.chars.get(u.userName) || '';
+}
+
+/**
+ * Append an HP readout (bar + "cur/max" text, plus a condition badge) to a
+ * roster seat, ENGINE-mechanical hp only (server-enriched roster field) — no
+ * fallback guess. Flashes red on damage / green on healing versus the last
+ * render, by diffing `state.prevHp` (a damage marker in narration or a
+ * `/dm damage`/`/dm heal` command both land here via the same roster refresh).
+ * All text via textContent; the only styling is class names + inline width %.
+ */
+function appendHp(seat, u) {
+  if (typeof u.hp !== 'number' || typeof u.maxHp !== 'number' || u.maxHp <= 0) return;
+  const prev = state.prevHp.get(u.userId);
+  state.prevHp.set(u.userId, u.hp);
+
+  const wrap = el('div', 'hp');
+  const bar = el('div', 'hp-bar');
+  const fill = el('div', 'hp-fill');
+  const pct = Math.max(0, Math.min(100, (u.hp / u.maxHp) * 100));
+  fill.style.width = `${pct}%`;
+  if (pct <= 25) fill.classList.add('low');
+  bar.append(fill);
+  const label = el('span', 'hp-label');
+  label.textContent = `${u.hp}/${u.maxHp}`;
+  wrap.append(bar, label);
+  if (Array.isArray(u.conditions) && u.conditions.length) {
+    const badge = el('span', 'hp-condition');
+    badge.textContent = u.conditions.join(', ');
+    wrap.append(badge);
+  }
+  seat.append(wrap);
+
+  if (typeof prev === 'number' && prev !== u.hp) {
+    const flashClass = u.hp < prev ? 'flash-hit' : 'flash-heal';
+    seat.classList.add(flashClass);
+    setTimeout(() => seat.classList.remove(flashClass), 900);
+  }
 }
 
 /* A round token for a roster seat / card sheet: an uploaded image (same-origin)
@@ -1236,7 +1275,11 @@ const COMMANDS = [
   { cmd: '/dm new', hint: 'Start a new campaign in this room', send: true },
   { cmd: '/dm join ', arg: '<character name>', hint: 'Join the party (or rename your character)' },
   { cmd: '/dm who', hint: 'Show the party and their HP', send: true },
+  { cmd: '/dm hp', hint: "Show the party's HP and conditions", send: true },
   { cmd: '/dm roll ', arg: '<notation>', hint: 'Roll dice — d20+5, 2d6, d20 adv, 4d6kh3' },
+  { cmd: '/dm check ', arg: '<character> <ABILITY> <DC>', hint: 'Engine-rolled d20 check vs a DC (STR/DEX/CON/INT/WIS/CHA)' },
+  { cmd: '/dm damage ', arg: '<character> <n>', hint: 'Apply mechanical damage to a character' },
+  { cmd: '/dm heal ', arg: '<character> <n>', hint: 'Apply mechanical healing to a character' },
   { cmd: '/dm mode round-robin', hint: 'Take turns in join order', send: true },
   { cmd: '/dm mode immediate', hint: 'Every message is a turn (default)', send: true },
   { cmd: '/dm turn', hint: 'Show whose turn it is (round-robin)', send: true },

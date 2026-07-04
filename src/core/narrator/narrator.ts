@@ -7,7 +7,7 @@
  * the small/free models you'll test with are unreliable at JSON, and the
  * open-tabletop-gm probe notes they drift after a few structured tool calls.
  */
-import type { ChatMessage, GameSession, LLMProvider, Player, RollResult } from '../types.js';
+import type { ChatMessage, CheckResult, GameSession, LLMProvider, Player, RollResult } from '../types.js';
 import { renderCard } from '../cards/card-parse.js';
 import { classPreset, MAX_BIO_CHARS } from '../portraits.js';
 import { buildWorldInfo } from '../lore/lorebook.js';
@@ -16,6 +16,20 @@ import { bundledRulesProvider, type RulesProvider } from '../rules/registry.js';
 import { FOG_PROMPT } from './fog.js';
 
 const BASE_DM_PROMPT = `You are an expert tabletop RPG Dungeon Master running a game for multiple players in a shared chat channel. You are collaborative, vivid, and fair. You keep the spotlight moving between players and never railroad them. Stay in character as the narrator/DM at all times.`;
+
+/**
+ * Engine-owned mechanical state, explained ONCE here (system-neutral) so every
+ * rules module (dnd5e.system.ts etc.) can just remind the model to use it in
+ * its own terms. This is additive and safe to ignore: nothing breaks if the
+ * model never emits a marker — the game just stays pure narration for that
+ * turn, exactly as before this existed.
+ */
+const MECHANICS_PROMPT = `## Mechanical state markers (optional, invisible to players)
+HP and conditions are tracked by the game engine, not by you. When your narration deals damage, heals someone, or imposes a condition (e.g. unconscious, prone, dead) on a REAL party member, end your reply with one machine marker per change, each ALONE on its own line, in exactly this form:
+<<hp CharacterName -7>>            (damage — a negative number)
+<<heal CharacterName 4>>           (healing — a positive number)
+<<condition CharacterName prone>>  (a condition, one lowercase word)
+Use the character's exact name as shown under "The party". The engine reads these markers, applies the mechanical change, and STRIPS them before players see your text — never mention the marker syntax in your prose, never fabricate a marker for someone who isn't a real party member, and never emit one when nothing mechanical happened.`;
 
 /**
  * A one-line character sheet for the prompt: the player's class (with its flavor
@@ -55,6 +69,7 @@ export class Narrator {
     actions: { name: string; text: string }[],
     rolls: RollResult[],
     pastEvents: MemoryRecord[],
+    checks: CheckResult[] = [],
   ): ChatMessage[] {
     const roster = Object.values(session.players)
       .map((p) => `- ${p.characterName || p.userName} (HP ${p.hp}/${p.maxHp})`)
@@ -77,6 +92,7 @@ export class Narrator {
 
     const system = [
       BASE_DM_PROMPT,
+      MECHANICS_PROMPT,
       this.rules.system(session.systemId),
       `## The party\n${roster}`,
       sheets.length ? `## Player characters (play each true to their class and bio)\n${sheets.join('\n')}` : '',
@@ -102,6 +118,15 @@ export class Narrator {
           .join('\n')
       : '(no dice this turn)';
 
+    const checkText = checks.length
+      ? checks
+          .map((c) => {
+            const mod = c.modifier ? (c.modifier > 0 ? `+${c.modifier}` : `${c.modifier}`) : '';
+            return `${c.by} attempted a ${c.ability} check (DC ${c.dc}): rolled ${c.roll}${mod} = ${c.total} → ${c.pass ? 'PASS' : 'FAIL'}${c.note ? ` (${c.note})` : ''}`;
+          })
+          .join('\n')
+      : '';
+
     const actionText = actions.map((a) => `${a.name}: ${a.text}`).join('\n');
 
     // Lorebook: scan this turn's actions plus recent turns (newest first) for
@@ -124,6 +149,7 @@ export class Narrator {
       pastText ? `RELEVANT PAST EVENTS (recalled from earlier in the campaign — stay consistent with them):\n${pastText}` : '',
       historyText ? `RECENT HISTORY:\n${historyText}` : '',
       `RESOLVED ROLLS (narrate these exact outcomes; do not change them):\n${rollText}`,
+      checkText ? `RESOLVED CHECKS (state each result as PASS or FAIL exactly as given; do not change it):\n${checkText}` : '',
       `THE PLAYERS' ACTIONS THIS TURN:\n${actionText}`,
       `As the DM, narrate what happens next.`,
     ]
@@ -141,8 +167,9 @@ export class Narrator {
     actions: { name: string; text: string }[],
     rolls: RollResult[],
     pastEvents: MemoryRecord[] = [],
+    checks: CheckResult[] = [],
   ): Promise<string> {
-    const messages = this.buildMessages(session, actions, rolls, pastEvents);
+    const messages = this.buildMessages(session, actions, rolls, pastEvents, checks);
     return this.provider.complete({ model: session.model, messages });
   }
 }

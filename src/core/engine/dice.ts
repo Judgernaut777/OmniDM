@@ -7,7 +7,7 @@
  *
  * Notation: d20  2d6  d20+5  4d6kh3  4d6kl3  d20 adv  d20+3 dis  2d6+3
  */
-import type { RollResult } from '../types.js';
+import type { CheckResult, RollResult } from '../types.js';
 
 /** Mulberry32 — tiny seedable PRNG. Unseeded falls back to Math.random. */
 function makeRng(seed?: number): () => number {
@@ -102,4 +102,35 @@ export function roll(notation: string, by = 'Someone', seed?: number): RollResul
 export function extractRolls(text: string): string[] {
   const matches = text.match(/\b\d*d\d+(?:(?:kh|kl)\d+)?(?:[+-]\d+)?(?:\s*(?:adv|dis))?/gi);
   return matches ? matches.map((s) => s.trim()) : [];
+}
+
+/** The six 5e ability score abbreviations `/dm check` accepts. */
+export const ABILITIES = ['STR', 'DEX', 'CON', 'INT', 'WIS', 'CHA'] as const;
+
+/** Case-insensitively validate an ability abbreviation, e.g. "str" → "STR". Undefined if not one of the six. */
+export function normalizeAbility(input: string): string | undefined {
+  const up = input.trim().toUpperCase();
+  return (ABILITIES as readonly string[]).includes(up) ? up : undefined;
+}
+
+/**
+ * Resolve an ability check deterministically, engine-side, BEFORE narration:
+ * roll 1d20 (+ an optional flat modifier) and compare to the DC. A natural 20
+ * always passes and a natural 1 always fails, mirroring the crit rules `roll()`
+ * already applies to attack-style d20s.
+ */
+export function rollCheck(ability: string, dc: number, modifier = 0, by = 'Someone', seed?: number): CheckResult {
+  const rng = makeRng(seed);
+  const die = 1 + Math.floor(rng() * 20);
+  const total = die + modifier;
+  let pass = total >= dc;
+  let note: string | undefined;
+  if (die === 20) {
+    note = 'CRITICAL SUCCESS (nat 20)';
+    pass = true;
+  } else if (die === 1) {
+    note = 'CRITICAL FAILURE (nat 1)';
+    pass = false;
+  }
+  return { by, ability, dc, roll: die, modifier, total, pass, note };
 }

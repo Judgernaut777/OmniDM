@@ -14,6 +14,8 @@ import type { CharacterCard } from './cards/card-parse.js';
 import { findEntry, importCardBook, makeEntry } from './lore/lorebook.js';
 import { splitFog } from './narrator/fog.js';
 import { TurnPipeline } from './engine/turn-pipeline.js';
+import { normalizeAbility, rollCheck } from './engine/dice.js';
+import { applyDamage, applyHeal, findPartyMember } from './rules/mechanics.js';
 import { classPreset, MAX_BIO_CHARS, normalizePresetId, PORTRAIT_PRESETS } from './portraits.js';
 
 type Send = (msg: OutgoingMessage) => Promise<void>;
@@ -223,6 +225,45 @@ export class Bot {
         return reply(`**The party:**\n${list || '(empty)'}`);
       }
 
+      case 'hp': {
+        const session = await this.sessions.get(msg);
+        if (!session) return reply('No game here yet.');
+        const list = Object.values(session.players)
+          .map((p) => `• ${name(p)} — HP ${p.hp ?? '?'}/${p.maxHp ?? '?'}${p.conditions?.length ? ` (${p.conditions.join(', ')})` : ''}`)
+          .join('\n');
+        return reply(`**Party HP:**\n${list || '(empty)'}`);
+      }
+
+      case 'damage': {
+        const session = await this.sessions.get(msg);
+        if (!session) return reply('No game here yet — `/dm new` first.');
+        const m = rest.match(/^(.+?)\s+(-?\d+)$/);
+        if (!m) return reply('Usage: `/dm damage <character> <amount>` — e.g. `/dm damage Thorin 5`.');
+        const target = findPartyMember(session, m[1]);
+        if (!target) return reply(`No party member named "${m[1]}" — see \`/dm who\`.`);
+        const amount = parseInt(m[2], 10);
+        if (!Number.isFinite(amount) || amount < 0) return reply('Damage amount must be a non-negative number.');
+        const change = applyDamage(target, amount);
+        await this.sessions.save(session);
+        const status = change.becameUnconscious ? ` — ${name(target)} drops to 0 HP and falls unconscious!` : '';
+        return reply(`💥 ${name(target)} takes ${amount} damage: HP ${change.hp}/${change.maxHp}.${status}`);
+      }
+
+      case 'heal': {
+        const session = await this.sessions.get(msg);
+        if (!session) return reply('No game here yet — `/dm new` first.');
+        const m = rest.match(/^(.+?)\s+(-?\d+)$/);
+        if (!m) return reply('Usage: `/dm heal <character> <amount>` — e.g. `/dm heal Thorin 5`.');
+        const target = findPartyMember(session, m[1]);
+        if (!target) return reply(`No party member named "${m[1]}" — see \`/dm who\`.`);
+        const amount = parseInt(m[2], 10);
+        if (!Number.isFinite(amount) || amount < 0) return reply('Heal amount must be a non-negative number.');
+        const change = applyHeal(target, amount);
+        await this.sessions.save(session);
+        const status = change.recovered ? ` — ${name(target)} regains consciousness!` : '';
+        return reply(`💚 ${name(target)} heals ${amount}: HP ${change.hp}/${change.maxHp}.${status}`);
+      }
+
       case 'import': {
         const session = await this.sessions.get(msg);
         if (!session) return reply('No game here yet — `/dm new` first.');
@@ -310,6 +351,31 @@ export class Bot {
         if (!session || !this.sessions.isPlayer(session, msg.userId))
           return reply('Join a game first with `/dm new` or `/dm join <name>`.');
         return await this.playAction(session, msg, rest || 'd20', send);
+      }
+
+      case 'check': {
+        const session = await this.sessions.get(msg);
+        if (!session || !this.sessions.isPlayer(session, msg.userId))
+          return reply('Join a game first with `/dm new` or `/dm join <name>`.');
+        const m = rest.match(/^(.+?)\s+([A-Za-z]+)\s+(\d+)(?:\s+(-?\d+))?$/);
+        if (!m) return reply('Usage: `/dm check <character> <ABILITY> <DC> [modifier]` — e.g. `/dm check Thorin STR 15`.');
+        const target = findPartyMember(session, m[1]);
+        if (!target) return reply(`No party member named "${m[1]}" — see \`/dm who\`.`);
+        const ability = normalizeAbility(m[2]);
+        if (!ability) return reply('Ability must be one of STR, DEX, CON, INT, WIS, CHA.');
+        const dc = parseInt(m[3], 10);
+        const modifier = m[4] ? parseInt(m[4], 10) : 0;
+        // The engine resolves the check BEFORE narration — same "resolve, then
+        // narrate" pattern as dice — so the model states PASS/FAIL, never decides it.
+        const checkResult = rollCheck(ability, dc, modifier, name(target));
+        const text = `attempts a ${ability} check (DC ${dc})`;
+        const result = await this.pipeline.processTurn(session, { actorName: name(target), text, checks: [checkResult] }, msg.userId);
+        if (result.notYourTurn) {
+          return await send({ channelId: msg.channelId, text: `⏳ It's ${name(result.notYourTurn)}'s turn — yours is coming up.` });
+        }
+        await this.broadcast(session, result.record!.narration, send, result.record!.rolls);
+        if (result.next) await send({ channelId: msg.channelId, text: `➡️ Next up: ${name(result.next)}.` });
+        return;
       }
 
       case 'mode': {
@@ -485,5 +551,8 @@ const HELP = `**OmniDM — commands**
 \`/dm models [filter]\` — list models you can use (🆓 = free)
 \`/dm model <id>\` — pick the model for this game
 \`/dm roll <notation>\` — roll dice (e.g. \`d20+5\`, \`2d6\`, \`d20 adv\`)
+\`/dm hp\` — show the party's HP and conditions
+\`/dm damage <character> <n>\` / \`/dm heal <character> <n>\` — apply mechanical damage/healing
+\`/dm check <character> <ABILITY> <DC> [modifier]\` — engine-rolled d20 check vs a DC (STR/DEX/CON/INT/WIS/CHA)
 \`/dm end\` — end the campaign
 Otherwise, just type what your character does.`;

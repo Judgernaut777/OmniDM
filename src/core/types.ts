@@ -135,6 +135,15 @@ export interface Player {
   hp?: number;
   maxHp?: number;
   /**
+   * Mechanical status effects the ENGINE owns (e.g. `'unconscious'` set at 0 hp,
+   * `'dead'`, or a narration-driven `<<condition ...>>` marker like `'prone'`).
+   * Absent-safe — pre-existing sessions/saves have none. `'unconscious'` is
+   * cleared automatically the moment hp rises back above 0 (see
+   * `rules/mechanics.ts`); other conditions persist until narration or a
+   * command changes them.
+   */
+  conditions?: string[];
+  /**
    * The character's D&D 5e class id (`/dm class <name>`), one of the 12 preset
    * ids. Absent-safe — old sessions have none. May equal the portrait preset id.
    */
@@ -171,12 +180,47 @@ export interface RollResult {
   note?: string;       // "CRITICAL HIT (nat 20)" etc.
 }
 
+/**
+ * A resolved ability check (`/dm check <char> <ABILITY> <DC>`): the engine rolls
+ * d20 (+ an optional flat modifier), compares to the DC, and hands the narrator
+ * a fixed PASS/FAIL fact — same "resolve before narrating" pattern as dice.
+ */
+export interface CheckResult {
+  by: string;          // character or player name
+  ability: string;     // "STR" | "DEX" | "CON" | "INT" | "WIS" | "CHA"
+  dc: number;
+  roll: number;         // the raw d20 face
+  modifier: number;
+  total: number;        // roll + modifier
+  pass: boolean;
+  note?: string;        // "CRITICAL SUCCESS (nat 20)" | "CRITICAL FAILURE (nat 1)"
+}
+
+/**
+ * One mechanical state change the engine applied — either from a narration
+ * marker (`<<hp ...>>` etc.) or an explicit command (`/dm damage`, `/dm heal`).
+ * Surfaced by the turn pipeline so a caller (bot/UI) can react without
+ * re-deriving it from the mutated session.
+ */
+export interface StateChange {
+  characterName: string;
+  kind: 'damage' | 'heal' | 'condition';
+  amount?: number;      // for 'damage' | 'heal': the magnitude applied
+  hp?: number;           // resulting hp, for 'damage' | 'heal'
+  maxHp?: number;
+  condition?: string;    // for 'condition'
+  becameUnconscious?: boolean; // hp crossed down to 0 on this change
+  recovered?: boolean;         // hp rose back above 0, clearing 'unconscious'
+}
+
 export interface TurnRecord {
   /** What the players did this turn. */
   actions: { name: string; text: string }[];
   /** Dice resolved deterministically BEFORE narration. */
   rolls: RollResult[];
-  /** The DM's narration of the resolved outcome. */
+  /** Ability checks (`/dm check`) resolved deterministically BEFORE narration. */
+  checks?: CheckResult[];
+  /** The DM's narration of the resolved outcome (markers already stripped). */
   narration: string;
   ts: number;
 }

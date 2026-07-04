@@ -353,6 +353,11 @@ export class RoomEngine {
       userName: seat.userName,
       characterName: player?.characterName,
       portrait: this.portraitDescriptor(seat.channelId, seat.userId, player),
+      // Mechanical state the ENGINE owns — surfaced so the roster shows a real,
+      // damage/heal-marker-driven number, not just a static character sheet stat.
+      ...(player?.hp !== undefined ? { hp: player.hp } : {}),
+      ...(player?.maxHp !== undefined ? { maxHp: player.maxHp } : {}),
+      ...(player?.conditions?.length ? { conditions: player.conditions } : {}),
       ...(player?.class ? { class: player.class } : {}),
       // Bio rides at FULL stored length (the creator round-trips it); the card
       // DESCRIPTION below stays clamped since it is display-only.

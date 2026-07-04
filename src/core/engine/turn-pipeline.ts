@@ -14,9 +14,10 @@
  * outside the critical section would let a double-send from the current
  * player race the in-flight LLM call and consume other players' turns.
  */
-import type { GameSession, LLMProvider, Player, RollResult, TurnRecord } from '../types.js';
+import type { CheckResult, GameSession, LLMProvider, Player, RollResult, StateChange, TurnRecord } from '../types.js';
 import { MemoryRetriever } from '../memory/retrieval.js';
 import { Narrator } from '../narrator/narrator.js';
+import { applyMarkers } from '../rules/mechanics.js';
 import { SessionManager } from '../session/session-manager.js';
 import { extractRolls, roll } from './dice.js';
 
@@ -37,6 +38,12 @@ class ChannelLock {
 export interface TurnInput {
   actorName: string; // character or display name
   text: string;
+  /**
+   * Pre-resolved ability checks (`/dm check`), fed to the narrator as fixed
+   * PASS/FAIL facts exactly like `rolls` — the model states the outcome, it
+   * never adjudicates it.
+   */
+  checks?: CheckResult[];
 }
 
 export interface TurnResult {
@@ -46,6 +53,12 @@ export interface TurnResult {
   notYourTurn?: Player;
   /** The next player up, after a round-robin advance. */
   next?: Player | null;
+  /**
+   * Mechanical state changes the DM's narration markers applied this turn
+   * (damage/heal/condition), in marker order. Empty when the model emitted
+   * none — narration-driven mechanics are always optional.
+   */
+  changes?: StateChange[];
 }
 
 export class TurnPipeline {
@@ -73,24 +86,30 @@ export class TurnPipeline {
         if (current && current.userId !== actorUserId) return { notYourTurn: current };
       }
 
-      // 1. INTENT + 2. RESOLUTION (pure, deterministic dice)
+      // 1. INTENT + 2. RESOLUTION (pure, deterministic dice + any pre-resolved checks)
       const rolls: RollResult[] = extractRolls(input.text).map((n) => roll(n, input.actorName));
+      const checks = input.checks ?? [];
 
       // 3. NARRATION (LLM narrates the resolved turn, with long-term recall of
       // relevant older turns from outside the prompt's recent-history window)
       const actions = [{ name: input.actorName, text: input.text }];
       const pastEvents = await this.memory.retrieve(session, input.text);
-      const narration = await this.narrator.narrate(session, actions, rolls, pastEvents);
+      const rawNarration = await this.narrator.narrate(session, actions, rolls, pastEvents, checks);
+
+      // 3b. MECHANICS (deterministic): parse+apply any <<hp/heal/condition ...>>
+      // markers the DM ended its narration with, against the real party, and
+      // strip them — players never see the marker syntax, only its effect.
+      const { text: narration, changes } = applyMarkers(session, rawNarration);
 
       // 4. PERSISTENCE (history + a vector-memory record of the resolved turn)
-      const record: TurnRecord = { actions, rolls, narration, ts: Date.now() };
+      const record: TurnRecord = { actions, rolls, ...(checks.length ? { checks } : {}), narration, ts: Date.now() };
       session.history.push(record);
       await this.memory.remember(session, record);
       await this.maybeCompact(session);
       await this.sessions.save(session);
 
       const next = session.turnMode === 'round-robin' ? await this.sessions.advanceTurn(session) : undefined;
-      return { record, next };
+      return { record, next, changes };
     });
   }
 
