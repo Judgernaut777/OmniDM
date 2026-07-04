@@ -42,6 +42,19 @@ export function redactSecrets(text: string): string {
  */
 export type CardImporter = (source: string, baseDir: string) => Promise<CharacterCard>;
 
+/**
+ * The generic, ALLOWLISTED turn-failure notice shown to every seat in a
+ * server-mode game. Server mode fans a single failure out to everyone in the
+ * channel, including seats that are not the operator, so the provider's raw
+ * error body (which can carry a misconfigured gateway's echoed key, an
+ * internal hostname, a stack-shaped blob, etc.) must never reach the wire —
+ * not even redacted-by-blocklist, which is only ever best-effort against
+ * shapes it doesn't yet know. Exported so the web client can recognize this
+ * exact notice and render it as a flagged line without needing to parse it.
+ */
+export const SERVER_TURN_FAILURE_TEXT =
+  '⚠️ The DM couldn’t reach the model — the server operator should check the model/key/endpoint.';
+
 export class Bot {
   private sessions: SessionManager;
   private pipeline: TurnPipeline;
@@ -52,6 +65,17 @@ export class Bot {
     storage: SessionStorage, // injected at the composition root so the core stays Node-free
     /** Card loader for `/dm import`; defaults to the Node loader (lazy-imported). */
     private cardImporter?: CardImporter,
+    /**
+     * 'server' (default): every Node-hosted adapter (CLI/Discord/Slack/Matrix/
+     * Mattermost/web-server), where a turn failure is broadcast to every seat
+     * in the channel — so only the generic {@link SERVER_TURN_FAILURE_TEXT} is
+     * ever sent, never the provider's own error text.
+     * 'local': the in-app browser engine ("Play on this device"), where the
+     * failure notice never leaves the player's own device — so it stays the
+     * detailed-but-scrubbed message, actionable for a solo player debugging
+     * their own key/model/endpoint.
+     */
+    private mode: 'server' | 'local' = 'server',
   ) {
     this.sessions = new SessionManager(storage, config.llm.model, provider);
     const narrator = new Narrator(provider);
@@ -85,16 +109,21 @@ export class Bot {
 
       await this.playAction(session, msg, text, send);
     } catch (err) {
-      // Never let a provider/SDK error body carry a secret into the room: some
-      // OpenAI-compatible gateways echo the submitted key back in their 401
-      // bodies, and this notice is broadcast to every seat in the channel in
-      // server mode. Scrub key-shaped values before logging OR sending it.
+      // Never let a provider/SDK error body carry a secret (or anything else)
+      // into the room: some OpenAI-compatible gateways echo the submitted key
+      // back in their 401 bodies. Always scrub before logging server-side.
       const detail = redactSecrets((err as Error)?.message || String(err));
       console.error('[bot] handle failed:', detail);
-      await send({
-        channelId: msg.channelId,
-        text: `⚠️ The DM stumbled (model/call error): ${detail}\nCheck your LLM_API_KEY / model id, or try \`/dm models\`.`,
-      });
+      // Server mode broadcasts this notice to every seat in the channel, most
+      // of whom are not the operator — an allowlisted generic message, never
+      // the provider body (redaction above is a blocklist and only a
+      // best-effort backstop for the server-side log, not a gate on what's
+      // sent). Local mode never leaves the player's own device, so the
+      // scrubbed detail stays actionable there.
+      const text = this.mode === 'local'
+        ? `⚠️ The DM stumbled (model/call error): ${detail}\nCheck your LLM_API_KEY / model id, or try \`/dm models\`.`
+        : SERVER_TURN_FAILURE_TEXT;
+      await send({ channelId: msg.channelId, text });
     }
   }
 

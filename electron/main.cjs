@@ -20,7 +20,9 @@
 //   - only a local file is ever loaded — no remote URL is ever passed to loadURL/loadFile.
 //   - window.open / will-navigate are intercepted — any external link (the
 //     user's LLM host, a help/README link, etc.) opens in the OS browser via
-//     shell.openExternal, never inside this app's Chromium.
+//     shell.openExternal, never inside this app's Chromium, and only for an
+//     http(s)/mailto URL — a file:/smb:/custom-protocol target (which could
+//     launch a local app or reach a network share) is refused outright.
 'use strict';
 
 const path = require('node:path');
@@ -46,28 +48,129 @@ app.setName(APP_NAME);
 const INDEX_FILE = path.join(__dirname, '..', 'web', 'index.html');
 const INDEX_URL = `file://${INDEX_FILE.replace(/\\/g, '/')}`;
 
-// Mirrors the <meta http-equiv="Content-Security-Policy"> in web/index.html.
-// The page's own meta CSP is normally what Chromium enforces for a file://
-// document, but we also set the header via webRequest as defense-in-depth
-// (and so the policy holds even if the page were ever served without the
-// meta tag). Keep this string in sync with web/index.html's CSP.
-const CSP =
-  "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
-  "img-src 'self' data: https:; connect-src 'self' ws: wss: https: " +
-  'http://localhost:* http://127.0.0.1:*; object-src \'none\'; base-uri \'none\'; form-action \'none\'';
+// Mirrors the STATIC parts of the <meta http-equiv="Content-Security-Policy">
+// in web/index.html. The page's own meta CSP is normally what Chromium
+// enforces for a file:// document, but we also set the header via webRequest
+// as defense-in-depth (and so the policy holds even if the page were ever
+// served without the meta tag).
+//
+// connect-src narrowing: same problem and same fix as web/index.html documents
+// for the plain browser case (see that file) — a blanket `https:` is needed so
+// ANY user-chosen provider endpoint keeps working, but it also means an XSS
+// bug could exfiltrate the key to any https host. Electron has ONE extra tool
+// the plain page doesn't: main can read the renderer's OWN persisted settings
+// with `webContents.executeJavaScript` (a normal Electron API the main process
+// already has power to use — not a bridge, and nothing is added to window.*
+// for the page to call into, unlike the preload this app deliberately has
+// none of) and use that to learn the actual configured provider origin. It
+// can't do this BEFORE the very first navigation (nothing has been saved
+// yet), so: the first launch — or any launch before the player has saved
+// settings — still gets the safe, broad `https:` fallback below. Once the
+// window has loaded, main reads localStorage once, and if a real (non-
+// loopback) provider origin is found, reloads the window ONE time so the
+// header on that fresh navigation is narrowed to same-origin + loopback +
+// that exact origin only. (A CSP header, like a <meta> one, only ever gets
+// STRICTER for the life of a document — hence the reload, a fresh navigation,
+// rather than trying to mutate an already-delivered policy in place.)
+let learnedProviderOrigin = null;
+let cspNarrowAttempted = false; // at most one learn from storage / narrowing reload per launch
+
+/** Same-shape origin resolution as web/app.js's computeProviderOrigin, so
+ * main and the renderer agree on what "the configured provider" means. */
+function computeProviderOrigin(llm) {
+  if (!llm || typeof llm !== 'object') return null;
+  const baseUrl = typeof llm.baseUrl === 'string' ? llm.baseUrl : '';
+  const isAnthropic = llm.provider === 'anthropic' || /anthropic\.com/i.test(baseUrl);
+  const raw = isAnthropic
+    ? (/anthropic\.com/i.test(baseUrl) ? baseUrl : 'https://api.anthropic.com')
+    : (baseUrl || 'https://openrouter.ai/api/v1');
+  let u;
+  try {
+    u = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
+  // Loopback endpoints (Ollama, LM Studio) are already covered by the
+  // unconditional http://localhost:* / http://127.0.0.1:* allowance below.
+  if (/^(localhost|127(?:\.\d{1,3}){3}|\[?::1\]?|0\.0\.0\.0)$/i.test(u.hostname)) return null;
+  return `${u.protocol}//${u.hostname}${u.port ? `:${u.port}` : ''}`;
+}
+
+function buildCsp() {
+  const connectExtra = learnedProviderOrigin || 'https:';
+  return (
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+    `img-src 'self' data: https:; connect-src 'self' ws: wss: ${connectExtra} ` +
+    "http://localhost:* http://127.0.0.1:*; object-src 'none'; base-uri 'none'; form-action 'none'"
+  );
+}
 
 /** Is this a URL we already trust and load ourselves (the local app shell)? */
 function isAppUrl(url) {
   return url === INDEX_URL || url.startsWith(`${INDEX_URL}#`) || url.startsWith(`${INDEX_URL}?`);
 }
 
+// Every "external" URL (a clicked link, window.open target, etc. — always
+// untrusted: rendered LLM output or a hostile character card can contain one)
+// is handed to the OS via shell.openExternal, which on some platforms will
+// happily hand a file:/smb:/custom-protocol URL to a registered handler —
+// launching a local application or reaching a network share instead of just
+// opening a browser tab. Restrict to the schemes an "open this link" affordance
+// is actually meant for.
+const SAFE_EXTERNAL_SCHEMES = new Set(['http:', 'https:', 'mailto:']);
+
+/** Only http(s)/mailto ever reach shell.openExternal — file:/smb:/custom
+ * schemes (or anything unparseable) are silently refused. */
+function openExternalIfSafe(url) {
+  let scheme;
+  try {
+    scheme = new URL(url).protocol;
+  } catch {
+    return;
+  }
+  if (!SAFE_EXTERNAL_SCHEMES.has(scheme)) {
+    console.warn(`OmniDM: refused to open external URL with disallowed scheme: ${scheme}`);
+    return;
+  }
+  void shell.openExternal(url);
+}
+
+/** Learn the configured provider origin (once) and reload so the CSP header
+ * narrows to it. Best-effort in every direction: any failure just leaves the
+ * safe broad-`https:` default in place — never breaks the real LLM call. */
+function tryNarrowConnectSrc(win) {
+  if (cspNarrowAttempted) return;
+  cspNarrowAttempted = true;
+  win.webContents
+    .executeJavaScript(
+      "(function () { try { return localStorage.getItem('omnidm-settings'); } catch (e) { return null; } })()",
+      true,
+    )
+    .then((raw) => {
+      if (!raw) return;
+      let settings;
+      try {
+        settings = JSON.parse(raw);
+      } catch {
+        return;
+      }
+      const origin = computeProviderOrigin(settings && settings.llm);
+      if (!origin || win.isDestroyed()) return;
+      learnedProviderOrigin = origin;
+      win.webContents.reload();
+    })
+    .catch(() => { /* best effort — keep the safe broad default */ });
+}
+
 function hardenSession(ses) {
-  // Defense-in-depth CSP header, alongside the page's own meta CSP.
+  // Defense-in-depth CSP header, alongside the page's own meta CSP. Computed
+  // fresh each time so a narrowing reload (see tryNarrowConnectSrc) takes effect.
   ses.webRequest.onHeadersReceived((details, callback) => {
     callback({
       responseHeaders: {
         ...details.responseHeaders,
-        'Content-Security-Policy': [CSP],
+        'Content-Security-Policy': [buildCsp()],
       },
     });
   });
@@ -106,6 +209,7 @@ function createWindow() {
   // for this window's webContents too, so registering them here as well would
   // double every handler (two shell.openExternal calls per external link) and
   // leak a new app-level listener on each window (re)creation.
+  win.webContents.once('did-finish-load', () => tryNarrowConnectSrc(win));
   void win.loadFile(INDEX_FILE);
   return win;
 }
@@ -166,10 +270,10 @@ app.on('web-contents-created', (_event, contents) => {
   contents.on('will-navigate', (event, url) => {
     if (isAppUrl(url)) return;
     event.preventDefault();
-    void shell.openExternal(url);
+    openExternalIfSafe(url);
   });
   contents.setWindowOpenHandler(({ url }) => {
-    if (!isAppUrl(url)) void shell.openExternal(url);
+    if (!isAppUrl(url)) openExternalIfSafe(url);
     return { action: 'deny' };
   });
   contents.on('will-attach-webview', (event) => event.preventDefault());

@@ -56,6 +56,14 @@ function connect() {
   const cb = { onFrame, onOpen: onTransportOpen, onClose };
   if (!T) return showJoin('Client transport failed to load (web/transport.js).');
   if (state.mode === 'local') {
+    // Narrow this tab's network reach to the actual configured provider before
+    // the engine ever calls it (see applyProviderCsp). A genuine mid-session
+    // provider-origin change needs a fresh navigation to re-lock cleanly —
+    // settings are already persisted above, so the reload picks them right up.
+    if (applyProviderCsp((state.settings && state.settings.llm) || {}) === 'reload-required') {
+      location.reload();
+      return;
+    }
     // Test seams: the offline smoke injects a mock provider + storage so a full
     // turn runs with no network. In production both are undefined and the engine
     // builds a real provider from the user's settings + durable browser storage.
@@ -208,6 +216,71 @@ function isLocalEndpoint(url) {
   }
 }
 
+/**
+ * The origin (`https://host[:port]`) the in-app engine will actually send the
+ * user's key/prompts to, mirroring src/providers/factory.ts's routing (native
+ * Anthropic vs. OpenAI-compatible) — or null for a loopback endpoint (already
+ * covered by the CSP's unconditional http://localhost:* / 127.0.0.1:* allowance)
+ * or anything unparseable. Used only to NARROW connect-src (see applyProviderCsp);
+ * never to decide whether a call is made.
+ */
+function computeProviderOrigin(llm) {
+  const baseUrl = (llm && llm.baseUrl) || '';
+  const isAnthropic = (llm && llm.provider) === 'anthropic' || /anthropic\.com/i.test(baseUrl);
+  const raw = isAnthropic
+    ? (/anthropic\.com/i.test(baseUrl) ? baseUrl : 'https://api.anthropic.com')
+    : (baseUrl || DEFAULT_LLM.baseUrl);
+  let u;
+  try {
+    u = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
+  if (isLocalEndpoint(raw)) return null;
+  return `${u.protocol}//${u.hostname}${u.port ? `:${u.port}` : ''}`;
+}
+
+// The https(s) origin this tab's CSP is currently narrowed to (via a second,
+// stricter <meta> — see applyProviderCsp), or null if not narrowed yet.
+let cspLockedOrigin = null;
+
+/**
+ * Defense-in-depth: narrow connect-src, in THIS tab, from the page's static
+ * blanket `https:` allowance down to same-origin + loopback + the ONE https
+ * origin the player actually configured — so an XSS bug (a prompt-injected
+ * script, a hostile character card that somehow got past textContent-only
+ * rendering, …) can't fetch() the API key out to an arbitrary host.
+ *
+ * Why this can only run at connect-time, not be baked into web/index.html:
+ * the file is static (no server, no per-session templating) and the provider
+ * endpoint is whatever the player just typed. Why it can only ever narrow
+ * ONCE per real origin per page load: a CSP delivered via <meta> can only get
+ * STRICTER for the life of the document — every policy ever inserted stays
+ * active, and a request must satisfy all of them — so a second, different
+ * origin can never be added on top of an already-locked one; the old lock
+ * would just as silently block the new provider's calls forever. Returns
+ * 'ok' (locked, or already locked to this exact origin — safe to proceed),
+ * 'skipped' (loopback/unparseable — the static baseline already covers it),
+ * or 'reload-required' (a genuinely different https origin than the one
+ * already locked this tab — the only correct fix is a fresh navigation, which
+ * starts a clean CSP list).
+ */
+function applyProviderCsp(llm) {
+  const origin = computeProviderOrigin(llm);
+  if (!origin) return 'skipped';
+  if (cspLockedOrigin === origin) return 'ok';
+  if (cspLockedOrigin) return 'reload-required';
+  try {
+    const meta = document.createElement('meta');
+    meta.setAttribute('http-equiv', 'Content-Security-Policy');
+    meta.setAttribute('content', `connect-src 'self' ws: wss: http://localhost:* http://127.0.0.1:* ${origin}`);
+    document.head.appendChild(meta);
+    cspLockedOrigin = origin;
+  } catch { /* best effort — never let this block the real call */ }
+  return 'ok';
+}
+
 /** Proactively flag the single most common dead end: the default/typed
  * endpoint is a real (non-local) host, but no API key was entered. Shown once,
  * right after the first welcome — before the player's first action can fail. */
@@ -218,6 +291,11 @@ function warnIfNoKeyForRemoteEndpoint() {
 }
 
 const STUMBLE_RE = /^⚠️ The DM stumbled \(model\/call error\): ([\s\S]*)/;
+// The server's allowlisted generic turn-failure notice (src/core/bot.ts
+// SERVER_TURN_FAILURE_TEXT) — already final, scrubbed-by-construction text
+// (never the provider body), so it just needs flagging as a warning line,
+// not a rewrite.
+const SERVER_FAILURE_RE = /^⚠️ The DM couldn.t reach the model —/;
 
 /** Strip API-key-shaped substrings out of text before it's rendered into the
  * visible log. The server already scrubs (src/core/bot.ts redactSecrets), but
@@ -234,15 +312,14 @@ function redactSecrets(s) {
  * message for the browser client — never the raw provider/SDK text verbatim,
  * and never a stack trace. Returns null when `text` isn't that notice. */
 function friendlyEngineError(text) {
+  if (SERVER_FAILURE_RE.test(String(text))) return String(text); // already final/generic — just flag it
   const m = STUMBLE_RE.exec(String(text));
   if (!m) return null;
   // Defensive: keep only the first line and cap its length, so even an
   // unusually verbose provider error can't dump a stack-shaped blob into the log.
   let detail = redactSecrets(m[1].split(/\r?\n/)[0].replace(/\s+at\s+\S+.*$/, '').trim());
   if (detail.length > 220) detail = `${detail.slice(0, 220)}…`;
-  const fix = state.mode === 'local'
-    ? 'Open ⚙ Settings and check your API key, Base URL and Model — or leave the key blank and point Base URL at a local model (e.g. http://localhost:11434/v1 for Ollama).'
-    : 'Ask whoever runs this table to check the model/API key configured on the server.';
+  const fix = 'Open ⚙ Settings and check your API key, Base URL and Model — or leave the key blank and point Base URL at a local model (e.g. http://localhost:11434/v1 for Ollama).';
   return `The DM couldn’t reach the model: ${detail}\n${fix}`;
 }
 
@@ -997,12 +1074,16 @@ function showJoin(error) {
 /* ── Launch / settings ────────────────────────────────────────────────────────
  * The launch screen picks the transport: "Play on this device" (LocalTransport,
  * the in-app engine — bring your own model) vs "Connect to a server"
- * (RemoteTransport, WebSocket → multiplayer). The choice + fields are persisted
- * in localStorage under 'omnidm-settings'. The LLM API key lives ONLY there
- * (this device) and is passed ONLY to the engine → provider; it is never logged,
- * rendered, or written into a session. */
+ * (RemoteTransport, WebSocket → multiplayer). The non-secret choice + fields
+ * are persisted in localStorage under 'omnidm-settings'. The LLM API key is
+ * passed ONLY to the engine → provider (never logged, rendered as text, or
+ * written into a session) and, BY DEFAULT, is kept out of that durable record
+ * entirely: it lives in sessionStorage (this tab's session only — gone on
+ * browser/tab close) unless the player explicitly ticks "Remember this key on
+ * this device", which is the only path that writes the raw key to disk. */
 
 const SETTINGS_KEY = 'omnidm-settings';
+const SESSION_KEY_STORAGE = 'omnidm-session-key'; // sessionStorage only — the default, non-persistent home for the key
 const DEFAULT_LLM = { provider: '', baseUrl: 'https://openrouter.ai/api/v1', apiKey: '', model: 'meta-llama/llama-3.3-70b-instruct:free' };
 
 /** Reflect the chosen mode in the launch UI (which fieldset shows, radios). */
@@ -1035,9 +1116,19 @@ function readSettings() {
   };
 }
 
-/** Persist settings (incl. the key) to this device only. Never logged. */
+/** Persist settings to this device. The API key is EXCLUDED from the durable
+ * localStorage record unless "Remember this key" is ticked — by default it
+ * goes to sessionStorage instead (cleared when the tab/browser session ends).
+ * Never logged either way. */
 function persistSettings(s) {
-  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(s)); } catch { /* private mode — settings just won't persist */ }
+  const remember = !!$('llm-remember-key')?.checked;
+  const apiKey = (s.llm && s.llm.apiKey) || '';
+  try {
+    if (remember || !apiKey) sessionStorage.removeItem(SESSION_KEY_STORAGE);
+    else sessionStorage.setItem(SESSION_KEY_STORAGE, apiKey);
+  } catch { /* private mode — the key just won't survive a reload */ }
+  const forDisk = { ...s, llm: { ...s.llm, apiKey: remember ? apiKey : '' }, rememberKey: remember };
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(forDisk)); } catch { /* private mode — settings just won't persist */ }
 }
 
 /** Prefill the launch form from persisted settings (or sensible defaults). */
@@ -1050,12 +1141,19 @@ function prefillSettings() {
   }
   s = s || {};
   const llm = Object.assign({}, DEFAULT_LLM, s.llm || {});
+  // The key at rest: localStorage only ever holds it when "remember" was
+  // ticked last time; otherwise recover it from sessionStorage (this tab's
+  // session only), so reloading mid-session doesn't force retyping it.
+  if (!s.rememberKey) {
+    try { llm.apiKey = sessionStorage.getItem(SESSION_KEY_STORAGE) || ''; } catch { llm.apiKey = ''; }
+  }
   if (s.userName) $('j-name').value = s.userName;
   if (s.channelId) $('j-room').value = s.channelId;
   $('llm-provider').value = llm.provider || '';
   $('llm-baseurl').value = llm.baseUrl || '';
   $('llm-apikey').value = llm.apiKey || '';
   $('llm-model').value = llm.model || '';
+  if ($('llm-remember-key')) $('llm-remember-key').checked = !!s.rememberKey;
   if (s.server && s.server.url) $('j-server').value = s.server.url;
   applyLaunchMode(s.mode || 'local');
 }

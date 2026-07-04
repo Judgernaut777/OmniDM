@@ -190,6 +190,14 @@ select:focus { outline: none; border-color: var(--gold-deep); box-shadow: inset 
 }
 .mode-fields legend small { text-transform: none; letter-spacing: .02em; color: var(--dim); font-weight: 400; }
 .mode-fields label { color: var(--gold-deep); }
+/* The "remember this key" opt-in: a normal-weight horizontal checkbox row,
+   not the uppercase small-caps field-label style used above it. */
+.mode-fields label.checkbox-row {
+  flex-direction: row; align-items: center; gap: .55rem;
+  text-transform: none; letter-spacing: .02em; font: 400 .82rem/1.35 var(--ui); color: var(--ink);
+}
+.checkbox-row input[type="checkbox"] { width: 1.05rem; height: 1.05rem; accent-color: var(--gold); flex: none; }
+.checkbox-row small { display: block; color: var(--dim); }
 /* "Free options" guidance inside the model fieldset — plain text, no links. */
 .model-hint {
   margin: 0; padding: .55rem .7rem; font: .78rem/1.5 var(--ui); color: var(--dim);

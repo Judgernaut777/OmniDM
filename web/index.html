@@ -17,7 +17,23 @@
      same-origin or data: images (uploaded in-app portraits resolve to a data: URL);
      `img-src https:` additionally lets a CROSS-ORIGIN game server's /portrait/… image
      load when the client is hosted apart from the server (the same scheme allowance
-     connect-src grants — no baked origin, and an <img> can't execute script). -->
+     connect-src grants — no baked origin, and an <img> can't execute script).
+
+     Why connect-src's `https:` is a SCHEME allowance rather than the ONE actual
+     provider origin, statically: this is a plain file with no server and no
+     build-time templating, so nothing here can bake in "the" endpoint — it's
+     whatever the player types into Settings. app.js narrows it at runtime
+     instead (see applyProviderCsp/computeProviderOrigin there): the moment a
+     local game is about to connect, it inserts a SECOND, stricter <meta> CSP
+     restricting connect-src to same-origin + loopback + that one https origin.
+     That can only be done ONCE per real origin per page load — a CSP delivered
+     via <meta> can only get stricter for the life of a document, never loosen,
+     so a genuine mid-session switch to a different provider origin forces a
+     fresh page load (a clean CSP list) rather than silently breaking the new
+     provider by trying to add an incompatible second lock. Electron's main
+     process additionally narrows the HEADER copy of this same policy once it
+     can learn the configured origin (see electron/main.cjs) — the same
+     "can't know it before the first navigation" limitation applies there too. -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self' ws: wss: https: http://localhost:* http://127.0.0.1:*; object-src 'none'; base-uri 'none'; form-action 'none'">
 <title>OmniDM — the table awaits</title>
 <link rel="icon" href="data:image/png;base64,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">
@@ -71,8 +87,12 @@
       <label>Base URL
         <input id="llm-baseurl" maxlength="200" placeholder="https://openrouter.ai/api/v1" autocomplete="off">
       </label>
-      <label>API key <small>stored on this device only, sent only to the endpoint above — leave blank for a local model (Ollama, LM Studio)</small>
+      <label>API key <small>sent only to the endpoint above; by default kept only for this browser tab's session, never written to disk — leave blank for a local model (Ollama, LM Studio)</small>
         <input id="llm-apikey" type="password" maxlength="400" placeholder="sk-…  (leave blank for local models)" autocomplete="off">
+      </label>
+      <label class="checkbox-row">
+        <input id="llm-remember-key" type="checkbox">
+        <span>Remember this key on this device <small>(persists across browser restarts — only tick this on a computer you trust)</small></span>
       </label>
       <label>Model
         <input id="llm-model" maxlength="120" placeholder="meta-llama/llama-3.3-70b-instruct:free" autocomplete="off">
@@ -250,10 +270,13 @@
       <h3>Where your data lives</h3>
       <p><strong>Playing on this device:</strong> your campaign (party, log,
       characters) is stored only in this browser, never on a server. Your
-      model API key is stored only on this device, sent only to the LLM
-      endpoint you configured, and is never saved into a game or displayed
-      back to you — even a provider's own error text is scrubbed of
-      key-shaped values before it's shown.</p>
+      model API key is sent only to the LLM endpoint you configured and is
+      never saved into a game or displayed back to you. By default the key
+      is kept only for this browser tab's session (gone once you close the
+      tab/browser) — tick "Remember this key on this device" on the launch
+      screen to keep it across restarts, only on a computer you trust. Even
+      a provider's own error text is scrubbed of key-shaped values before
+      it's shown to you.</p>
       <p><strong>Connected to a server:</strong> the campaign lives on that
       server for everyone in the room — the model is whatever the person
       running the server configured, not a key you enter here.</p>

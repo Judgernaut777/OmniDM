@@ -24,7 +24,7 @@ import path from 'node:path';
 import { deflateSync } from 'node:zlib';
 import type { Config } from './config.js';
 import type { CompletionRequest, GameSession, IncomingMessage, LLMProvider, ModelInfo, OutgoingMessage, TurnRecord } from './core/types.js';
-import { Bot, redactSecrets } from './core/bot.js';
+import { Bot, redactSecrets, SERVER_TURN_FAILURE_TEXT } from './core/bot.js';
 import { roll, extractRolls } from './core/engine/dice.js';
 import { MAX_CHARACTER_NAME_CHARS, SeatTakenError, SessionManager } from './core/session/session-manager.js';
 import { NodeFileStorage } from './core/session/store.js';
@@ -630,6 +630,72 @@ async function headlessLocalErrorAndHelpCheck(
   check(
     'web-ui: headless "Play on this device" shows a friendly, actionable error (not a raw stack/hang) on a model failure, and Help/About opens with device/key info + the real command menu',
     dom.includes('ERRHELP_OK=true'),
+  );
+}
+
+/**
+ * Best-effort offline proof of the API-key-at-rest hardening: by default (the
+ * "Remember this key" checkbox left unticked) the raw key is kept OUT of the
+ * durable localStorage settings record — it lives in sessionStorage instead —
+ * and only lands on disk once the player explicitly opts in. Skipped (never
+ * failed) when chromium is unavailable.
+ */
+async function headlessKeyStorageCheck(
+  html: string,
+  srcs: { engine: string; transport: string; portraits: string; app: string },
+): Promise<void> {
+  const probe = `
+    (async () => {
+      var out = document.getElementById('probe-out');
+      var waitFor = function (fn, ms) { return new Promise(function (res) {
+        var t0 = Date.now(); var iv = setInterval(function () { var ok = false; try { ok = fn(); } catch (e) {}
+          if (ok || Date.now() - t0 > ms) { clearInterval(iv); res(ok); } }, 15); }); };
+      try {
+        window.__omnidmTestProvider = { id: 'mock',
+          listModels: function () { return Promise.resolve([]); },
+          complete: function () { return Promise.resolve('ok'); } };
+        window.__omnidmTestStorage = (function () { var m = new Map(); return {
+          load: function (k) { return Promise.resolve(m.has(k) ? m.get(k) : null); },
+          save: function (k, s) { m.set(k, s); return Promise.resolve(); },
+          delete: function (k) { m.delete(k); return Promise.resolve(); } }; })();
+        var SECRET = 'sk-testsecretvalue0123456789ABCDEF';
+        document.getElementById('mode-local').click();
+        document.getElementById('j-name').value = 'Solo';
+        document.getElementById('j-room').value = 'roomKey';
+        document.getElementById('llm-baseurl').value = 'https://example.test/v1';
+        document.getElementById('llm-apikey').value = SECRET;
+        document.getElementById('llm-remember-key').checked = false;
+        var keyIsPassword = document.getElementById('llm-apikey').type === 'password';
+        document.getElementById('join-form').dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
+        await waitFor(function () { return document.getElementById('table').hidden === false; }, 3000);
+
+        var disk1 = JSON.parse(localStorage.getItem('omnidm-settings') || 'null');
+        var noKeyOnDiskByDefault = !disk1 || !disk1.llm || !disk1.llm.apiKey;
+        var sessionHasKeyByDefault = sessionStorage.getItem('omnidm-session-key') === SECRET;
+
+        // Opt in: reopen Settings, tick "Remember this key", resubmit (same
+        // provider origin as before, so no CSP-narrowing reload is triggered).
+        document.getElementById('settings-btn').click();
+        document.getElementById('llm-remember-key').checked = true;
+        document.getElementById('join-form').dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
+        await waitFor(function () { return document.getElementById('table').hidden === false; }, 3000);
+        var disk2 = JSON.parse(localStorage.getItem('omnidm-settings') || 'null');
+        var keyOnDiskWhenRemembered = !!(disk2 && disk2.llm && disk2.llm.apiKey === SECRET && disk2.rememberKey === true);
+
+        out.textContent = 'KEYSTORE_OK=' + (keyIsPassword && noKeyOnDiskByDefault && sessionHasKeyByDefault && keyOnDiskWhenRemembered) +
+          ' keyIsPassword=' + keyIsPassword + ' noKeyOnDiskByDefault=' + noKeyOnDiskByDefault +
+          ' sessionHasKeyByDefault=' + sessionHasKeyByDefault + ' keyOnDiskWhenRemembered=' + keyOnDiskWhenRemembered;
+      } catch (e) { out.textContent = 'KEYSTORE_OK=false:' + e; }
+    })();
+  `;
+  const dom = await runHeadlessClient('key-storage', html, srcs, probe);
+  if (dom === null || !dom.includes('KEYSTORE_OK=')) {
+    console.log('⏭  web-ui: headless key-storage check skipped (chromium produced no output)');
+    return;
+  }
+  check(
+    'web-ui: the LLM API key is NOT written to localStorage by default (sessionStorage instead) and only persists to disk once "Remember this key on this device" is ticked',
+    dom.includes('KEYSTORE_OK=true'),
   );
 }
 
@@ -1601,11 +1667,26 @@ async function main() {
     check('web-ui: app.js turns a failed turn into a friendly, Settings-pointing message — never the raw text verbatim',
       appSrc.includes('function friendlyEngineError(') && appSrc.includes('⚙ Settings') &&
       appSrc.includes("addLine('warn', '', friendly)"));
+    // API key at rest: sessionStorage by default, localStorage only opt-in.
+    check('web-ui: app.js keeps the API key OUT of the durable localStorage record unless "remember" is ticked (sessionStorage by default)',
+      appSrc.includes("sessionStorage.setItem(SESSION_KEY_STORAGE") &&
+      /apiKey:\s*remember\s*\?\s*apiKey\s*:\s*''/.test(appSrc) &&
+      appSrc.includes("localStorage.setItem(SETTINGS_KEY"));
+    check('web-ui: the launch form has an unticked-by-default "remember this key" opt-in',
+      html.includes('id="llm-remember-key"') && !html.includes('id="llm-remember-key" checked'));
+    // connect-src narrowing: app.js locks this tab's CSP to the actual configured
+    // provider origin at connect-time (see web/index.html's CSP comment for why
+    // this can't be baked in statically), never widening a lock it already set.
+    check('web-ui: app.js narrows connect-src to the configured provider origin via a second, stricter <meta> CSP at connect-time',
+      appSrc.includes('function computeProviderOrigin(') && appSrc.includes('function applyProviderCsp(') &&
+      appSrc.includes("meta.setAttribute('http-equiv', 'Content-Security-Policy')") &&
+      appSrc.includes("=== 'reload-required'"));
 
     const clientSrcs = { engine: engineSrc, transport: transportSrc, portraits: portraitSrc, app: appSrc };
     await headlessLocalTurnCheck(html, clientSrcs);
     await headlessServerTurnCheck(html, clientSrcs, url, 'hunter2');
     await headlessLocalErrorAndHelpCheck(html, clientSrcs);
+    await headlessKeyStorageCheck(html, clientSrcs);
 
     const bad = new WsClient(url);
     await bad.open();
@@ -2502,6 +2583,17 @@ async function main() {
       /action:\s*'deny'/.test(mainRaw));
     check('electron: untrusted content cannot be granted device permissions',
       /setPermissionRequestHandler/.test(mainRaw) && /callback\(false\)/.test(mainRaw));
+    // shell.openExternal is only ever reached through a scheme allowlist — a
+    // file:/smb:/custom-protocol external "link" (rendered LLM output, a
+    // hostile character card) must never launch a local app or reach a share.
+    check('electron: shell.openExternal is gated by an http(s)/mailto scheme allowlist (file:/smb:/custom schemes refused)',
+      /SAFE_EXTERNAL_SCHEMES\s*=\s*new Set\(\[[^\]]*'http:'[^\]]*'https:'[^\]]*'mailto:'[^\]]*\]\)/.test(mainRaw) &&
+      /function openExternalIfSafe/.test(mainRaw) &&
+      /if\s*\(!SAFE_EXTERNAL_SCHEMES\.has\(scheme\)\)/.test(mainRaw) &&
+      // Every call site routes through the allowlisted wrapper, not a bare shell.openExternal.
+      (mainRaw.match(/void shell\.openExternal\(url\)/g) || []).length === 1 &&
+      /will-navigate'[\s\S]{0,200}openExternalIfSafe\(url\)/.test(mainRaw) &&
+      /setWindowOpenHandler[\s\S]{0,200}openExternalIfSafe\(url\)/.test(mainRaw));
 
     // The packaging config a real `npm run electron:build` consumes is coherent.
     const ePkg = JSON.parse(await fs.readFile('package.json', 'utf8')) as {
@@ -2570,6 +2662,46 @@ async function main() {
       redactSecrets('The model endpoint is unreachable (connection refused).') === 'The model endpoint is unreachable (connection refused).');
     check('redact: a slash/colon model id is not mangled',
       redactSecrets('Unknown model: meta-llama/llama-3.3-70b-instruct:free').includes('meta-llama/llama-3.3-70b-instruct:free'));
+  }
+
+  // ── Server vs local turn-failure notices: allowlist, not a blocklist ───────
+  // Server mode fans a failure out to EVERY seat, most of whom aren't the
+  // operator — it must get the generic, allowlisted notice, never the
+  // provider's own error text (redaction is only a backstop for the server
+  // log, not a gate on what's broadcast). Local mode's failure never leaves
+  // the player's own device, so it keeps the detailed-but-scrubbed message.
+  {
+    class RejectingProvider implements LLMProvider {
+      readonly id = 'reject';
+      async listModels(): Promise<ModelInfo[]> { return []; }
+      async complete(): Promise<string> {
+        throw new Error('Incorrect API key provided: sk-proj-LEAKEDKEYVALUE0123456789ABCDEF. Contact support.');
+      }
+    }
+    const rejProvider = new RejectingProvider();
+
+    const srvBot = new Bot(config, rejProvider, new MemoryStorage()); // 'server' is the default
+    const srvOut: OutgoingMessage[] = [];
+    const srvMsg = (t: string): IncomingMessage => ({ platform: 'cli', channelId: 'failsrv', userId: 'u1', userName: 'Alice', text: t });
+    await srvBot.handle(srvMsg('/dm new'), async (m) => void srvOut.push(m));
+    await srvBot.handle(srvMsg('/dm join Thorin'), async (m) => void srvOut.push(m));
+    srvOut.length = 0;
+    await srvBot.handle(srvMsg('I search the room'), async (m) => void srvOut.push(m));
+    check('bot: server-mode (default) turn failure broadcasts the exact generic allowlisted notice, never the provider body',
+      srvOut.some((m) => m.text === SERVER_TURN_FAILURE_TEXT) &&
+      !srvOut.some((m) => m.text.includes('LEAKEDKEYVALUE') || m.text.includes('Contact support')));
+
+    const localBot = new Bot(config, rejProvider, new MemoryStorage(), undefined, 'local');
+    const localOut: OutgoingMessage[] = [];
+    const localMsg = (t: string): IncomingMessage => ({ platform: 'cli', channelId: 'faillocal', userId: 'u1', userName: 'Alice', text: t });
+    await localBot.handle(localMsg('/dm new'), async (m) => void localOut.push(m));
+    await localBot.handle(localMsg('/dm join Thorin'), async (m) => void localOut.push(m));
+    localOut.length = 0;
+    await localBot.handle(localMsg('I search the room'), async (m) => void localOut.push(m));
+    const localNotice = localOut.find((m) => m.text.startsWith('⚠️ The DM stumbled'));
+    check('bot: local-mode turn failure keeps a detailed, actionable, SCRUBBED message that never leaves the device (not the generic server notice)',
+      Boolean(localNotice) && !localNotice!.text.includes('LEAKEDKEYVALUE') && /…redacted/.test(localNotice!.text) &&
+      !localOut.some((m) => m.text === SERVER_TURN_FAILURE_TEXT));
   }
 
   // ── Mobile shell: the Capacitor (iOS + Android) scaffold wraps web/ ─────────

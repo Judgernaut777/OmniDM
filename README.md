@@ -111,12 +111,15 @@ the launch screen, and the choice + settings are remembered.
 - **Play on this device** (self-contained, no server): the AI DM engine runs
   inside the app. Enter your model settings — provider (OpenAI-compatible or
   native Anthropic), base URL, model, and your own **API key** — and play solo or
-  hotseat on one device. **Your key is stored only on this device** (localStorage)
-  and is sent only to the LLM endpoint you configured; it is never logged, never
-  written into a saved game, and never sent anywhere else. Games persist in the
-  browser (IndexedDB / localStorage). Open `web/index.html` however you serve
-  static files — e.g. `npm run web` and choose "Play on this device" — and no
-  tokens or server round-trip are needed (the only network call is to your model).
+  hotseat on one device. **Your key never leaves this device** and is sent only
+  to the LLM endpoint you configured; it is never logged, never written into a
+  saved game, and never sent anywhere else. By default the key itself is kept in
+  `sessionStorage` (gone once you close the tab/browser) — tick **"Remember this
+  key on this device"** on the launch screen to persist it to `localStorage`
+  across restarts instead. Games (party, log, characters — never the key) persist
+  in the browser (IndexedDB / localStorage). Open `web/index.html` however you
+  serve static files — e.g. `npm run web` and choose "Play on this device" — and
+  no tokens or server round-trip are needed (the only network call is to your model).
 
 - **Connect to a server** (multiplayer across devices):
   1. `npm run web`, then open <http://127.0.0.1:8787>. No tokens needed.
@@ -186,8 +189,10 @@ committed client and runs the whole AI-DM engine (`web/engine.bundle.js`)
 
 **Both play modes work on all platforms:**
 - **Play on this device** — the engine runs in-app with *your* provider, base URL,
-  model and **API key**, stored only on that device (WebView localStorage) and sent
-  only to the LLM endpoint you configured. Solo / hotseat, no server needed.
+  model and **API key**, which never leaves that device and is sent only to the
+  LLM endpoint you configured (sessionStorage by default; opt into WebView
+  localStorage via "Remember this key" to persist it across restarts). Solo /
+  hotseat, no server needed.
 - **Connect to a server** — point the app at an OmniDM server (`npm run web`
   running elsewhere) for multiplayer over the unchanged WebSocket protocol.
 
@@ -229,11 +234,14 @@ npm run electron:build      # package a distributable for THIS OS (into release/
 ```
 
 **Details:** The Electron shell is a thin `electron/main.cjs` that loads
-`web/index.html` and applies strict CSP (`script-src 'self'`). The user's LLM
-API key lives in WebView localStorage, is sent only to the configured endpoint,
-and never reaches the Node process. See [electron/main.cjs](electron/main.cjs)
-for the security model (context isolation, no preload, no nodeIntegration,
-sandboxing enabled).
+`web/index.html` and applies strict CSP (`script-src 'self'`; `connect-src` is
+narrowed at runtime to the configured provider origin once main can learn it —
+see the comments in that file). The user's LLM API key is sent only to the
+configured endpoint and never reaches the Node process; by default it lives in
+WebView sessionStorage (opt into localStorage via "Remember this key"). See
+[electron/main.cjs](electron/main.cjs) for the security model (context
+isolation, no preload, no nodeIntegration, sandboxing enabled, an http(s)/mailto
+scheme allowlist on every external-link open).
 
 **To bundle for distribution:** `electron-builder` is already configured (see the
 `build` block in `package.json`: appId `com.omnidm.app`, targets **AppImage**
@@ -323,8 +331,9 @@ returns a `CapacitorHttp`-backed fetch only when `window.Capacitor.isNativePlatf
 is true and the plugin is registered, otherwise `undefined` so a plain browser and
 the Node server keep the default fetch. That fetch is threaded into both providers
 via `buildProvider({ …, fetchImpl })`. Your API key stays on the device (WebView
-localStorage in v1) and is sent only to the endpoint you configured. Full steps +
-the offline WebView check are in [`capacitor/README.md`](capacitor/README.md).
+sessionStorage by default, opt into localStorage via "Remember this key") and is
+sent only to the endpoint you configured. Full steps + the offline WebView check
+are in [`capacitor/README.md`](capacitor/README.md).
 
 ## Using whatever model you want
 
@@ -580,9 +589,10 @@ Shipped since the initial scaffold (newest first):
   the platform builds have not been run here: generate and commit (or CI-build)
   the Capacitor `android/` / `ios/` projects, produce signed Tauri bundles per OS,
   and set up code signing / notarization. (iOS requires a Mac + Xcode.)
-- Harden on-device key storage — move the in-app API key out of WebView
-  localStorage into the platform secure store (iOS Keychain / Android Keystore,
-  OS keychain on desktop)
+- Harden on-device key storage further — the key now defaults to sessionStorage
+  (localStorage only if the player opts into "Remember this key"); move it into
+  the platform secure store (iOS Keychain / Android Keystore, OS keychain on
+  desktop) instead of WebView storage entirely
 
 ## Prior art studied
 

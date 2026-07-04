@@ -804,11 +804,13 @@ Return the updated summary.`
   function redactSecrets(text) {
     return String(text).replace(/\b(sk|pk|rk)-[A-Za-z0-9_-]{6,}/gi, "$1-\u2026redacted").replace(/\bBearer\s+[A-Za-z0-9._-]{6,}/gi, "Bearer \u2026redacted").replace(/\b(api[-_]?key|authorization|x-api-key)(["']?\s*[:=]\s*["']?)[A-Za-z0-9._-]{6,}/gi, "$1$2\u2026redacted").replace(/\b[A-Za-z0-9_-]{28,}\b/g, "\u2026redacted");
   }
+  var SERVER_TURN_FAILURE_TEXT = "\u26A0\uFE0F The DM couldn\u2019t reach the model \u2014 the server operator should check the model/key/endpoint.";
   var Bot = class {
-    constructor(config, provider, storage, cardImporter) {
+    constructor(config, provider, storage, cardImporter, mode = "server") {
       __publicField(this, "config", config);
       __publicField(this, "provider", provider);
       __publicField(this, "cardImporter", cardImporter);
+      __publicField(this, "mode", mode);
       __publicField(this, "sessions");
       __publicField(this, "pipeline");
       this.sessions = new SessionManager(storage, config.llm.model, provider);
@@ -839,11 +841,9 @@ Return the updated summary.`
       } catch (err) {
         const detail = redactSecrets(err?.message || String(err));
         console.error("[bot] handle failed:", detail);
-        await send({
-          channelId: msg.channelId,
-          text: `\u26A0\uFE0F The DM stumbled (model/call error): ${detail}
-Check your LLM_API_KEY / model id, or try \`/dm models\`.`
-        });
+        const text2 = this.mode === "local" ? `\u26A0\uFE0F The DM stumbled (model/call error): ${detail}
+Check your LLM_API_KEY / model id, or try \`/dm models\`.` : SERVER_TURN_FAILURE_TEXT;
+        await send({ channelId: msg.channelId, text: text2 });
       }
     }
     /**
@@ -8080,7 +8080,7 @@ ${str2(snapshot)}`);
       web: { host: "", port: 0, password: "" },
       dataDir: ""
     };
-    const bot = new Bot(config, provider, storage, rejectUrlImport);
+    const bot = new Bot(config, provider, storage, rejectUrlImport, "local");
     const imageCache = /* @__PURE__ */ new Map();
     const room = new RoomEngine({
       storage,
