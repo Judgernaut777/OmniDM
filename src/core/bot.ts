@@ -19,6 +19,21 @@ import { classPreset, MAX_BIO_CHARS, normalizePresetId, PORTRAIT_PRESETS } from 
 type Send = (msg: OutgoingMessage) => Promise<void>;
 
 /**
+ * Strip API-key-shaped substrings out of arbitrary text before it is logged or
+ * sent to players. Provider error bodies are attacker/misconfiguration-controlled
+ * (a self-hosted OpenAI-compatible gateway can echo the submitted key in a 401
+ * body; OpenAI's own "Incorrect API key provided: sk-…" does the same), and the
+ * turn-failure notice built below is broadcast to every seat in server mode.
+ */
+export function redactSecrets(text: string): string {
+  return String(text)
+    .replace(/\b(sk|pk|rk)-[A-Za-z0-9_-]{6,}/gi, '$1-…redacted')
+    .replace(/\bBearer\s+[A-Za-z0-9._-]{6,}/gi, 'Bearer …redacted')
+    .replace(/\b(api[-_]?key|authorization|x-api-key)(["']?\s*[:=]\s*["']?)[A-Za-z0-9._-]{6,}/gi, '$1$2…redacted')
+    .replace(/\b[A-Za-z0-9_-]{28,}\b/g, '…redacted');
+}
+
+/**
  * How `/dm import <src>` turns a source into a card. Injected so the core stays
  * Node-free: the Node host uses the default (a lazy import of ./cards/card.js,
  * with its URL/file/zlib machinery), while an in-app build passes a browser
@@ -70,7 +85,11 @@ export class Bot {
 
       await this.playAction(session, msg, text, send);
     } catch (err) {
-      const detail = (err as Error)?.message || String(err);
+      // Never let a provider/SDK error body carry a secret into the room: some
+      // OpenAI-compatible gateways echo the submitted key back in their 401
+      // bodies, and this notice is broadcast to every seat in the channel in
+      // server mode. Scrub key-shaped values before logging OR sending it.
+      const detail = redactSecrets((err as Error)?.message || String(err));
       console.error('[bot] handle failed:', detail);
       await send({
         channelId: msg.channelId,

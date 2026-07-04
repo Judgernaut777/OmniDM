@@ -193,6 +193,17 @@ function warnIfNoKeyForRemoteEndpoint() {
 
 const STUMBLE_RE = /^⚠️ The DM stumbled \(model\/call error\): ([\s\S]*)/;
 
+/** Strip API-key-shaped substrings out of text before it's rendered into the
+ * visible log. The server already scrubs (src/core/bot.ts redactSecrets), but
+ * the in-app engine builds this notice locally too, so redact here as well. */
+function redactSecrets(s) {
+  return String(s)
+    .replace(/\b(sk|pk|rk)-[A-Za-z0-9_-]{6,}/gi, '$1-…redacted')
+    .replace(/\bBearer\s+[A-Za-z0-9._-]{6,}/gi, 'Bearer …redacted')
+    .replace(/\b(api[-_]?key|authorization|x-api-key)(["']?\s*[:=]\s*["']?)[A-Za-z0-9._-]{6,}/gi, '$1$2…redacted')
+    .replace(/\b[A-Za-z0-9_-]{28,}\b/g, '…redacted');
+}
+
 /** Rewrite the engine's generic turn-failure notice into a short, actionable
  * message for the browser client — never the raw provider/SDK text verbatim,
  * and never a stack trace. Returns null when `text` isn't that notice. */
@@ -201,7 +212,7 @@ function friendlyEngineError(text) {
   if (!m) return null;
   // Defensive: keep only the first line and cap its length, so even an
   // unusually verbose provider error can't dump a stack-shaped blob into the log.
-  let detail = m[1].split(/\r?\n/)[0].replace(/\s+at\s+\S+.*$/, '').trim();
+  let detail = redactSecrets(m[1].split(/\r?\n/)[0].replace(/\s+at\s+\S+.*$/, '').trim());
   if (detail.length > 220) detail = `${detail.slice(0, 220)}…`;
   const fix = state.mode === 'local'
     ? 'Open ⚙ Settings and check your API key, Base URL and Model — or leave the key blank and point Base URL at a local model (e.g. http://localhost:11434/v1 for Ollama).'

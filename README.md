@@ -221,10 +221,11 @@ dependencies. Start with this if you're new to native desktop apps.
 **Build & run:**
 
 ```bash
-npm install                 # installs electron
+npm install                 # installs electron + electron-builder
 npm run build:web           # refresh web/engine.bundle.js if the engine changed
 npm run electron            # launch for development (live window)
 npm run electron -- <args>  # pass Electron flags if needed (e.g., --help)
+npm run electron:build      # package a distributable for THIS OS (into release/)
 ```
 
 **Details:** The Electron shell is a thin `electron/main.cjs` that loads
@@ -234,11 +235,21 @@ and never reaches the Node process. See [electron/main.cjs](electron/main.cjs)
 for the security model (context isolation, no preload, no nodeIntegration,
 sandboxing enabled).
 
-**To bundle for distribution:** the current setup supports development launches
-via `npm run electron`. For signed distribution bundles (`.exe` / `.msi` on
-Windows, `.dmg` / `.app` on macOS, `.AppImage` / `.deb` on Linux), you'd add
-`electron-builder` and configure code signing per platform — this is out of
-scope for v1 but the scaffold is ready.
+**To bundle for distribution:** `electron-builder` is already configured (see the
+`build` block in `package.json`: appId `com.omnidm.app`, targets **AppImage**
+(Linux), **nsis** `.exe` (Windows), and **dmg** (macOS)). Run:
+
+```bash
+npm run electron:build      # → release/  (unpacked app + installer for this OS)
+```
+
+Important: electron-builder produces a bundle for the **host OS only** — it does
+not cross-compile. Build the Windows target on Windows, the macOS `.dmg` on macOS
+(it shells out to macOS-only tools like `hdiutil`, so `--mac` from Linux fails),
+and the Linux `.AppImage` on Linux. The `release/` output directory is
+git-ignored. Code signing/notarization (needed for a smooth install on macOS and
+to avoid SmartScreen on Windows) requires your own certificates and is left to
+whoever cuts the release.
 
 ### Desktop — Tauri v2 (lightweight alternative, `src-tauri/`)
 

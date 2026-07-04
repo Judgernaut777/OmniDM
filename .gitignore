@@ -17,3 +17,11 @@ ios/
 # Gradle and native build caches
 .gradle/
 build/
+
+# Desktop (electron-builder) output — build.directories.output in package.json
+release/
+*.AppImage
+*.dmg
+*.exe
+*.msi
+*.deb

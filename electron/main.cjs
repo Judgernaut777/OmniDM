@@ -26,6 +26,18 @@
 const path = require('node:path');
 const { app, BrowserWindow, Menu, session, shell } = require('electron');
 
+// This file is package.json "main" (so electron-builder knows the entry point),
+// which also makes it the target of `node .`. Under plain Node, require('electron')
+// resolves to a path string, not the API — fail with a clear message instead of a
+// confusing `Cannot read properties of undefined` deep in app.setName().
+if (!app || typeof app.setName !== 'function') {
+  console.error(
+    'OmniDM: electron/main.cjs is the Electron entry point — run it with Electron, not plain Node.\n' +
+    'Use `npm run electron` (dev window) or `npm run electron:build` (package for distribution).',
+  );
+  process.exit(1);
+}
+
 const APP_NAME = 'OmniDM';
 app.setName(APP_NAME);
 
@@ -89,29 +101,11 @@ function createWindow() {
 
   win.removeMenu();
 
-  // window.open(...) from the page (e.g. a help link, or the user's LLM
-  // provider's site) — never open a second in-app Chromium window; hand it
-  // to the OS browser instead, and never grant a new BrowserWindow.
-  win.webContents.setWindowOpenHandler(({ url }) => {
-    if (!isAppUrl(url)) void shell.openExternal(url);
-    return { action: 'deny' };
-  });
-
-  // Any top-level navigation away from the local app shell — a clicked
-  // link, a redirect, a compromised-content attempt — is stopped in-app and
-  // redirected to the OS browser instead of letting this window navigate.
-  win.webContents.on('will-navigate', (event, url) => {
-    if (isAppUrl(url)) return;
-    event.preventDefault();
-    void shell.openExternal(url);
-  });
-
-  // Belt-and-suspenders: refuse to ever attach a new webContents/window that
-  // isn't this app's own renderer (covers <webview>, devtools popouts, etc.).
-  app.on('web-contents-created', (_event, contents) => {
-    contents.on('will-attach-webview', (event) => event.preventDefault());
-  });
-
+  // Navigation / window-open / webview guards are installed ONCE, at module
+  // scope, via the single `app.on('web-contents-created', …)` below — it fires
+  // for this window's webContents too, so registering them here as well would
+  // double every handler (two shell.openExternal calls per external link) and
+  // leak a new app-level listener on each window (re)creation.
   void win.loadFile(INDEX_FILE);
   return win;
 }
@@ -159,10 +153,15 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
-// Extra guardrail beyond webPreferences: reject any attempt, from any
-// webContents this app ever creates, to enable Node integration or disable
-// the sandbox/context isolation, and refuse any non-file navigation target
-// that isn't the app shell itself.
+// The single place navigation/window/webview are policed, for EVERY webContents
+// this app ever creates (registered once, at module scope — not per window):
+//   - will-navigate: any top-level navigation away from the local app shell
+//     (a clicked link, a redirect, untrusted content doing location.href=…) is
+//     stopped in-app and handed to the OS browser instead.
+//   - setWindowOpenHandler: window.open(…) never spawns a second in-app
+//     Chromium window; external URLs go to the OS browser, everything is denied.
+//   - will-attach-webview: refuse to ever attach a <webview> (defense in depth
+//     alongside webviewTag:false).
 app.on('web-contents-created', (_event, contents) => {
   contents.on('will-navigate', (event, url) => {
     if (isAppUrl(url)) return;
@@ -173,4 +172,5 @@ app.on('web-contents-created', (_event, contents) => {
     if (!isAppUrl(url)) void shell.openExternal(url);
     return { action: 'deny' };
   });
+  contents.on('will-attach-webview', (event) => event.preventDefault());
 });

@@ -24,7 +24,7 @@ import path from 'node:path';
 import { deflateSync } from 'node:zlib';
 import type { Config } from './config.js';
 import type { CompletionRequest, GameSession, IncomingMessage, LLMProvider, ModelInfo, OutgoingMessage, TurnRecord } from './core/types.js';
-import { Bot } from './core/bot.js';
+import { Bot, redactSecrets } from './core/bot.js';
 import { roll, extractRolls } from './core/engine/dice.js';
 import { MAX_CHARACTER_NAME_CHARS, SessionManager } from './core/session/session-manager.js';
 import { NodeFileStorage } from './core/session/store.js';
@@ -1539,7 +1539,7 @@ async function main() {
       html.includes('id="help-btn-join"') && html.includes('id="help-btn"') &&
       html.includes('id="help-sheet"') && html.includes('id="help-open-palette"'));
     check('web-ui: the Help modal explains device-only storage and key secrecy, textContent-safe (static HTML, no innerHTML)',
-      /stored only in this browser/i.test(html) && /never.*logged/i.test(html) && !/innerHTML/.test(appSrc.match(/openHelp[\s\S]{0,300}/)?.[0] ?? ''));
+      /stored only in this browser/i.test(html) && /scrubbed of\s+key-shaped/i.test(html) && !/innerHTML/.test(appSrc.match(/openHelp[\s\S]{0,300}/)?.[0] ?? ''));
     check('web-ui: app.js wires the Help modal open/close (join screen, topbar, Escape, backdrop click) and hands off to the palette',
       appSrc.includes('function openHelp()') && appSrc.includes('function closeHelp()') &&
       appSrc.includes("'help-btn-join'") && appSrc.includes("'help-btn'") &&
@@ -2488,6 +2488,40 @@ async function main() {
     check('electron: main.cjs targets web/index.html and it exists on disk',
       /web['"`],\s*['"`]index\.html/.test(mainRaw) &&
       await fs.access(path.join('web', 'index.html')).then(() => true, () => false));
+    // will-navigate is registered exactly once (a per-window + a module-level
+    // handler would double every external-link openExternal call).
+    check('electron: the will-navigate guard is registered exactly once (no doubled openExternal)',
+      (mainRaw.match(/\.on\('will-navigate'/g) || []).length === 1 &&
+      !/win\.webContents\.on\('will-navigate'/.test(mainRaw));
+    // Running the Electron entry under plain Node fails with a clear message.
+    check('electron: main.cjs guards against `node .` (clear message, not a cryptic TypeError)',
+      /typeof app\.setName !== 'function'/.test(mainRaw) && /process\.exit\(1\)/.test(mainRaw));
+    // The offline renderer check the README points at actually exists.
+    check('electron: the documented offline renderer check (electron/webview-check.mjs) exists',
+      await fs.access(path.join('electron', 'webview-check.mjs')).then(() => true, () => false));
+    // README documents the packaging command that now exists (no stale "out of scope" claim).
+    const readme = await fs.readFile('README.md', 'utf8');
+    check('electron: README documents `npm run electron:build` and no longer claims packaging is unconfigured',
+      /npm run electron:build/.test(readme) && !/add\s+`electron-builder`\s+and configure/.test(readme));
+  }
+
+  // ── Secret redaction: provider error bodies must never carry a key to players ──
+  // A misconfigured OpenAI-compatible gateway can echo the submitted key in its
+  // 401 body, and the turn-failure notice is broadcast to every seat in server
+  // mode — so bot.ts scrubs key-shaped values before logging OR sending.
+  {
+    const leaky = 'Incorrect API key provided: sk-proj-ABCDEF0123456789abcdef0123456789XYZ. You can find your key at platform.example.com.';
+    const scrubbed = redactSecrets(leaky);
+    check('redact: an OpenAI-style "Incorrect API key: sk-…" body is scrubbed of the key',
+      !scrubbed.includes('sk-proj-ABCDEF0123456789abcdef0123456789XYZ') && /…redacted/.test(scrubbed));
+    check('redact: a Bearer token is scrubbed', !redactSecrets('Authorization: Bearer abcdef0123456789ABCDEF').includes('abcdef0123456789ABCDEF'));
+    check('redact: an x-api-key header value is scrubbed', !redactSecrets('x-api-key: sk-verysecretvalue123456').includes('verysecretvalue'));
+    check('redact: a long opaque token is scrubbed', !redactSecrets('token=0123456789abcdef0123456789abcdef0123').includes('0123456789abcdef0123456789abcdef0123'));
+    // Ordinary human-readable error text (and model ids) survive unredacted.
+    check('redact: a plain human error message is left intact',
+      redactSecrets('The model endpoint is unreachable (connection refused).') === 'The model endpoint is unreachable (connection refused).');
+    check('redact: a slash/colon model id is not mangled',
+      redactSecrets('Unknown model: meta-llama/llama-3.3-70b-instruct:free').includes('meta-llama/llama-3.3-70b-instruct:free'));
   }
 
   // ── Mobile shell: the Capacitor (iOS + Android) scaffold wraps web/ ─────────
