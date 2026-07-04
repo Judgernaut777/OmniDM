@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="utf-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <defs>
+    <style>
+      @font-face {
+        font-family: serif;
+        src: local('Georgia'), local('Garamond'), local('serif');
+      }
+    </style>
+    <linearGradient id="bgGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f0b08;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#0b0806;stop-opacity:1" />
+    </linearGradient>
+    <radialGradient id="glowGradient" cx="50%" cy="50%" r="70%">
+      <stop offset="0%" style="stop-color:#e3ba6630;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#e3ba6600;stop-opacity:0" />
+    </radialGradient>
+    <linearGradient id="dieGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#f7e1a4;stop-opacity:1" />
+      <stop offset="45%" style="stop-color:#e3ba66;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#b3852f;stop-opacity:1" />
+    </linearGradient>
+    <filter id="shadow">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="3"/>
+      <feOffset dx="0" dy="4" result="offsetblur"/>
+      <feComponentTransfer>
+        <feFuncA type="linear" slope="0.3"/>
+      </feComponentTransfer>
+      <feMerge>
+        <feMergeNode/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Dark fantasy background -->
+  <rect width="200" height="200" fill="url(#bgGradient)"/>
+
+  <!-- Candlelight glow backdrop -->
+  <circle cx="100" cy="100" r="95" fill="url(#glowGradient)" opacity="0.8"/>
+
+  <!-- Subtle vignette -->
+  <rect width="200" height="200" fill="radial-gradient(circle, transparent 30%, rgba(0,0,0,0.4) 100%)" />
+
+  <!-- Stylized d20 die (icosahedron-inspired diamond with facets) -->
+  <g filter="url(#shadow)">
+    <!-- Main diamond body of the d20 -->
+    <g transform="translate(100, 100)">
+      <!-- Top facet (top-left pyramid face) -->
+      <polygon points="0,-55 -40,-15 0,-25" fill="#f7e1a4" stroke="#b3852f" stroke-width="0.5"/>
+
+      <!-- Top facet (top-right pyramid face) -->
+      <polygon points="0,-55 40,-15 0,-25" fill="#f7e1a4" stroke="#b3852f" stroke-width="0.5"/>
+
+      <!-- Upper-left side facet -->
+      <polygon points="-40,-15 -60,20 -20,15" fill="#e3ba66" stroke="#8a6d2f" stroke-width="0.5"/>
+
+      <!-- Upper-right side facet -->
+      <polygon points="40,-15 60,20 20,15" fill="#e3ba66" stroke="#8a6d2f" stroke-width="0.5"/>
+
+      <!-- Left vertical facet -->
+      <polygon points="-60,20 -50,50 -20,15" fill="#e3ba66" stroke="#8a6d2f" stroke-width="0.5"/>
+
+      <!-- Right vertical facet -->
+      <polygon points="60,20 50,50 20,15" fill="#e3ba66" stroke="#8a6d2f" stroke-width="0.5"/>
+
+      <!-- Lower-left side facet -->
+      <polygon points="-50,50 -30,65 0,45" fill="#d4a860" stroke="#8a6d2f" stroke-width="0.5"/>
+
+      <!-- Lower-right side facet -->
+      <polygon points="50,50 30,65 0,45" fill="#d4a860" stroke="#8a6d2f" stroke-width="0.5"/>
+
+      <!-- Bottom facet (shadowed) -->
+      <polygon points="0,45 -30,65 30,65" fill="#b3852f" stroke="#6d4e1f" stroke-width="0.5"/>
+
+      <!-- Center highlight facet (d20 orientation marker) -->
+      <polygon points="0,-25 -20,15 0,5 20,15" fill="#f7e1a4" opacity="0.9" stroke="#d4a860" stroke-width="0.5"/>
+
+      <!-- Gold rim/inner frame for crisp definition at small sizes -->
+      <circle cx="0" cy="0" r="58" fill="none" stroke="#b3852f" stroke-width="1.5" opacity="0.6"/>
+    </g>
+  </g>
+
+  <!-- Optional: subtle "20" numeral in serif font (faint, for larger sizes) -->
+  <text x="100" y="115" font-family="Georgia, serif" font-size="32" font-weight="700" text-anchor="middle" fill="#8a6d2f" opacity="0.15">20</text>
+</svg>
