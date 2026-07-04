@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "description": "A multi-platform, multi-player, model-agnostic AI Dungeon Master.",
   "type": "module",
+  "main": "electron/main.cjs",
   "engines": {
     "node": ">=22"
   },
@@ -19,6 +20,7 @@
     "smoke": "tsx src/smoke.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "electron": "electron electron/main.cjs",
+    "electron:build": "electron-builder",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
@@ -38,6 +40,39 @@
     "openai": "^4.67.3",
     "ws": "^8.21.0"
   },
+  "build": {
+    "appId": "com.omnidm.app",
+    "productName": "OmniDM",
+    "copyright": "OmniDM",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**/*",
+      "web/**/*",
+      "package.json"
+    ],
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Game",
+      "icon": "electron/icon-512.png"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "electron/icon-512.png"
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.role-playing-games",
+      "icon": "electron/icon-512.png"
+    }
+  },
   "devDependencies": {
     "@capacitor/android": "^8.4.1",
     "@capacitor/cli": "^8.4.1",
@@ -47,6 +82,7 @@
     "@types/node": "^22.7.4",
     "@types/ws": "^8.18.1",
     "electron": "^33.0.0",
+    "electron-builder": "^25.1.8",
     "esbuild": "^0.28.1",
     "tsx": "^4.19.1",
     "typescript": "^5.6.2"

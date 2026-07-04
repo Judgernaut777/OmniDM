@@ -2428,6 +2428,68 @@ async function main() {
       Boolean(pkg.scripts?.['tauri:dev']) && Boolean(pkg.scripts?.['tauri:build']) && Boolean(pkg.devDependencies?.['@tauri-apps/cli']));
   }
 
+  // ── Desktop shell: the Electron target bundles Chromium (builds w/o system webkit) ──
+  // The pragmatic desktop path: unlike the Tauri scaffold this ships its own
+  // Chromium, so it builds/runs without root or system WebKit. Same hybrid model
+  // (no Node sidecar, no preload bridge — the engine runs in the renderer exactly
+  // as in a browser tab). These are static assertions over the committed main
+  // process + packaging config; Electron itself is never launched here.
+  {
+    const mainRaw = await fs.readFile('electron/main.cjs', 'utf8');
+    // Every window is hardened per the Electron security checklist.
+    check('electron: renderer runs with contextIsolation:true (page JS isolated from Electron internals)',
+      /contextIsolation:\s*true/.test(mainRaw) && !/contextIsolation:\s*false/.test(mainRaw));
+    check('electron: nodeIntegration:false (no require/Node globals reachable from the untrusted page)',
+      /nodeIntegration:\s*false/.test(mainRaw) && !/nodeIntegration:\s*true/.test(mainRaw));
+    check('electron: sandbox:true (renderer runs in Chromium\'s OS sandbox like a real tab)',
+      /sandbox:\s*true/.test(mainRaw) && !/sandbox:\s*false/.test(mainRaw));
+    check('electron: no preload bridge is exposed to the page (nothing on window.* to call into)',
+      !/preload:\s*(['"`]|path\.)/.test(mainRaw));
+    check('electron: webSecurity is never disabled + insecure content is refused',
+      !/webSecurity:\s*false/.test(mainRaw) && !/allowRunningInsecureContent:\s*true/.test(mainRaw));
+    check('electron: only a local file is loaded — no remote URL ever reaches loadURL/loadFile',
+      /loadFile\(/.test(mainRaw) && !/loadURL\(\s*['"`]https?:/.test(mainRaw));
+    check('electron: external links/navigations are handed to shell.openExternal, not loaded in-app',
+      /setWindowOpenHandler/.test(mainRaw) && /will-navigate/.test(mainRaw) && /shell\.openExternal/.test(mainRaw) &&
+      /action:\s*'deny'/.test(mainRaw));
+    check('electron: untrusted content cannot be granted device permissions',
+      /setPermissionRequestHandler/.test(mainRaw) && /callback\(false\)/.test(mainRaw));
+
+    // The packaging config a real `npm run electron:build` consumes is coherent.
+    const ePkg = JSON.parse(await fs.readFile('package.json', 'utf8')) as {
+      main?: string;
+      scripts?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+      build?: {
+        appId?: string; productName?: string; files?: string[];
+        linux?: { target?: string[]; icon?: string };
+        win?: { target?: string[]; icon?: string };
+        mac?: { target?: string[]; icon?: string };
+      };
+    };
+    check('electron: package.json main + electron/electron:build scripts + the electron/electron-builder devDeps',
+      ePkg.main === 'electron/main.cjs' &&
+      Boolean(ePkg.scripts?.['electron']) && Boolean(ePkg.scripts?.['electron:build']) &&
+      Boolean(ePkg.devDependencies?.['electron']) && Boolean(ePkg.devDependencies?.['electron-builder']));
+    check('electron: builder appId is com.omnidm.app and productName is OmniDM',
+      ePkg.build?.appId === 'com.omnidm.app' && ePkg.build?.productName === 'OmniDM');
+    check('electron: builder bundles the web client + engine bundle (files globs cover electron/ + web/)',
+      Array.isArray(ePkg.build?.files) &&
+      ePkg.build!.files!.some((g) => /^web\//.test(g)) && ePkg.build!.files!.some((g) => /^electron\//.test(g)));
+    check('electron: Linux AppImage + Windows nsis + macOS dmg targets are all configured',
+      (ePkg.build?.linux?.target ?? []).includes('AppImage') &&
+      (ePkg.build?.win?.target ?? []).includes('nsis') &&
+      (ePkg.build?.mac?.target ?? []).includes('dmg'));
+    // Every icon the builder references exists on disk (a real build fails otherwise).
+    const eIcons = [ePkg.build?.linux?.icon, ePkg.build?.win?.icon, ePkg.build?.mac?.icon].filter(Boolean) as string[];
+    const eIconsPresent = await Promise.all(eIcons.map((f) => fs.access(f).then(() => true, () => false)));
+    check('electron: every builder-referenced icon exists on disk', eIcons.length > 0 && eIconsPresent.every(Boolean));
+    // The window actually loads the committed web client on disk.
+    check('electron: main.cjs targets web/index.html and it exists on disk',
+      /web['"`],\s*['"`]index\.html/.test(mainRaw) &&
+      await fs.access(path.join('web', 'index.html')).then(() => true, () => false));
+  }
+
   // ── Mobile shell: the Capacitor (iOS + Android) scaffold wraps web/ ─────────
   // Same hybrid model as Tauri: a native WebView loads the committed web client
   // and runs the engine in-WebView. Two things are asserted here: (1) the
