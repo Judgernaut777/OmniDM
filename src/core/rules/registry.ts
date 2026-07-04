@@ -23,15 +23,28 @@ export const BUNDLED_RULES: Record<string, string> = {
 };
 
 /**
- * Rules modules registered AT RUNTIME by content packs (see
- * `content-packs/loader.ts`). Kept separate from {@link BUNDLED_RULES} (the
- * compiled-in set) so a pack can add a homebrew system without touching that
- * static catalog. Checked first, so a pack could also intentionally override
- * a bundled system id.
+ * Rules modules registered explicitly, process-wide, by the HOST (not by
+ * content packs — `content-packs/loader.ts` attaches a pack's rules module to
+ * the importing `GameSession` itself, via `session.customRules`, precisely so
+ * that loading a pack in one session never leaks into or collides with any
+ * other session in the same process). This registry remains as a deliberate,
+ * opt-in seam for an operator who wants to add a homebrew system for the
+ * WHOLE deployment (e.g. at boot, before any session exists) without
+ * touching the compiled-in {@link BUNDLED_RULES} catalog. Checked first, so
+ * it can also intentionally override a bundled system id — that's on the
+ * operator calling it, not on any one session's content.
  */
 const runtimeRules: Record<string, string> = {};
 
-/** Register (or replace) a rules module's markdown under `systemId` — what content packs call to add their own system. */
+/**
+ * Register (or replace) a rules module's markdown under `systemId`,
+ * PROCESS-WIDE, for every session the host ever serves. This is a low-level,
+ * intentionally global operation for a host/operator's own boot-time setup —
+ * it is NOT what importing a per-session content pack uses (see
+ * `content-packs/loader.ts` / `GameSession.customRules` for that isolated
+ * path). Calling this with an id that collides with another registration (or
+ * a bundled system id) silently overwrites it for the whole process.
+ */
 export function registerRulesModule(systemId: string, markdown: string): void {
   runtimeRules[systemId] = markdown;
 }

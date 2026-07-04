@@ -43,8 +43,19 @@ export interface Config {
      * `core/entitlements/entitlements.ts`.
      */
     hosted: boolean;
-    /** Pack/feature ids explicitly unlocked when `hosted` is true; `'*'` unlocks everything. */
+    /** Pack/feature ids explicitly unlocked for EVERY tenant when `hosted` is true; `'*'` unlocks everything. */
     unlockedPackIds: string[];
+    /**
+     * Per-tenant unlocks for a hosted deployment serving multiple
+     * guilds/rooms from one process — keyed by `"<platform>:<channelId>"`
+     * (see `entitlements.ts`'s `tenantKey`), e.g.
+     * `{"discord:123456789012345678": ["frontier-outpost"]}`. This is what
+     * lets an operator unlock a premium pack for the ONE guild/room that
+     * paid without unlocking it for every other tenant the same process
+     * serves — `unlockedPackIds` above is a process-wide fallback, this map
+     * only adds unlocks for specific tenants. See `core/entitlements/entitlements.ts`.
+     */
+    tenantUnlockedPackIds: Record<string, string[]>;
   };
 }
 
@@ -85,6 +96,31 @@ export function loadConfig(): Config {
         .split(',')
         .map((s) => s.trim())
         .filter(Boolean),
+      tenantUnlockedPackIds: parseTenantUnlockedPacks(process.env.OMNIDM_TENANT_UNLOCKED_PACKS),
     },
   };
+}
+
+/**
+ * Parses `OMNIDM_TENANT_UNLOCKED_PACKS` — a JSON object mapping
+ * `"<platform>:<channelId>"` to an array of unlocked pack/feature ids, e.g.
+ * `{"discord:123456789012345678":["frontier-outpost"]}`. Malformed or absent
+ * input is treated as "no per-tenant unlocks" rather than crashing boot —
+ * this is operator-supplied config, not untrusted player input, but a typo
+ * shouldn't take the whole process down.
+ */
+function parseTenantUnlockedPacks(raw: string | undefined): Record<string, string[]> {
+  if (!raw) return {};
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {};
+    const out: Record<string, string[]> = {};
+    for (const [tenant, ids] of Object.entries(parsed as Record<string, unknown>)) {
+      if (Array.isArray(ids) && ids.every((id) => typeof id === 'string')) out[tenant] = ids as string[];
+    }
+    return out;
+  } catch {
+    console.warn('[config] OMNIDM_TENANT_UNLOCKED_PACKS is not valid JSON — ignoring (no per-tenant unlocks applied)');
+    return {};
+  }
 }

@@ -9,8 +9,7 @@
 import type { CharacterCard } from '../cards/card-parse.js';
 import type { GameSession, TurnRecord } from '../types.js';
 import { makeEntry } from '../lore/lorebook.js';
-import { registerRulesModule } from '../rules/registry.js';
-import { selfHostEntitlements, type Entitlements } from '../entitlements/entitlements.js';
+import { selfHostEntitlements, type Entitlements, type EntitlementScope } from '../entitlements/entitlements.js';
 import type { ContentPack } from './types.js';
 
 /** Thrown by {@link loadContentPack} when a premium pack isn't unlocked for the current entitlements. */
@@ -30,6 +29,23 @@ export interface ContentPackLoadResult {
   starterApplied: boolean;
 }
 
+/**
+ * Whether `pack` should be displayed as locked ("(locked)" in `/dm pack
+ * list`) for `entitlements`/`scope` — the SAME condition
+ * {@link loadContentPack} actually enforces (`pack.premium &&
+ * !entitlements.isUnlocked(...)`), factored out so a display surface can't
+ * silently drift from the real gate. A free pack (`premium` falsy) is never
+ * locked, regardless of what `isUnlocked` says for its id — loading a free
+ * pack always succeeds, so showing "(locked)" next to one would be a lie.
+ */
+export function isPackLockedForDisplay(
+  pack: { id: string; premium?: boolean },
+  entitlements: Entitlements,
+  scope?: EntitlementScope,
+): boolean {
+  return Boolean(pack.premium) && !entitlements.isUnlocked(pack.id, scope);
+}
+
 function npcToCard(npc: ContentPack['npcs'][number]): CharacterCard {
   return {
     specVersion: '2.0',
@@ -44,10 +60,13 @@ function npcToCard(npc: ContentPack['npcs'][number]): CharacterCard {
 }
 
 /**
- * Import `pack` into `session`: registers its rules module (if any), adds its
- * lorebook entries and NPCs (deduplicated by content/name — loading the same
- * pack twice is a no-op the second time), and — only for a session with no
- * history yet — applies its campaign starter.
+ * Import `pack` into `session`: attaches its rules module (if any) to THIS
+ * session only (`session.customRules` — never a process-wide registry, so
+ * one session's pack can't leak into or clobber another session's rules; see
+ * `GameSession.customRules`), adds its lorebook entries and NPCs
+ * (deduplicated by content/name — loading the same pack twice is a no-op the
+ * second time), and — only for a session with no history yet — applies its
+ * campaign starter.
  *
  * Throws {@link PackLockedError} if `pack.premium` and `entitlements` doesn't
  * unlock `pack.id`. Defaults to {@link selfHostEntitlements} (everything
@@ -58,7 +77,8 @@ export function loadContentPack(
   session: GameSession,
   entitlements: Entitlements = selfHostEntitlements,
 ): ContentPackLoadResult {
-  if (pack.premium && !entitlements.isUnlocked(pack.id)) throw new PackLockedError(pack.id);
+  if (pack.premium && !entitlements.isUnlocked(pack.id, { platform: session.platform, channelId: session.channelId }))
+    throw new PackLockedError(pack.id);
 
   let lorebookAdded = 0;
   for (const e of pack.lorebook) {
@@ -78,7 +98,7 @@ export function loadContentPack(
 
   let rulesRegistered = false;
   if (pack.rulesModule) {
-    registerRulesModule(pack.rulesModule.id, pack.rulesModule.markdown);
+    session.customRules = { id: pack.rulesModule.id, markdown: pack.rulesModule.markdown };
     rulesRegistered = true;
   }
 

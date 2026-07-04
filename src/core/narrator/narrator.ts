@@ -90,10 +90,19 @@ export class Narrator {
       ...(session.npcs ?? []).map((c) => renderCard(c, 'NPC (portrayed by you, the DM)')),
     ];
 
+    // A content pack's homebrew rules module is scoped to THIS session (see
+    // `GameSession.customRules`) and takes priority over the shared registry
+    // when it matches the session's current system — never a process-wide
+    // lookup, so a pack loaded in one session can't leak into or collide with
+    // another session's rules.
+    const rulesText = session.customRules?.id === session.systemId
+      ? session.customRules.markdown
+      : this.rules.system(session.systemId);
+
     const system = [
       BASE_DM_PROMPT,
       MECHANICS_PROMPT,
-      this.rules.system(session.systemId),
+      rulesText,
       `## The party\n${roster}`,
       sheets.length ? `## Player characters (play each true to their class and bio)\n${sheets.join('\n')}` : '',
       cards.length ? `## Imported characters (portray each consistently with their card)\n${cards.join('\n\n')}` : '',

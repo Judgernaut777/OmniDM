@@ -47,13 +47,13 @@ import { PassThrough } from 'node:stream';
 import { pickAdapter, parseAdapterArg } from './index.js';
 import { MAX_CARD_SUMMARY_CHARS, MAX_FRAME_BYTES, MAX_NAME_CHARS, MAX_PORTRAIT_BYTES, MAX_TEXT_CHARS, RATE_LIMIT_PER_SEC, UNJOINED_FRAMES_PER_SEC, WebAdapter } from './adapters/web.js';
 import { MAX_BIO_CHARS, PORTRAIT_PRESETS, resolvePresetId } from './core/portraits.js';
-import { BUNDLED_RULES, bundledRulesProvider } from './core/rules/registry.js';
+import { BUNDLED_RULES, bundledRulesProvider, clearRuntimeRules, registerRulesModule } from './core/rules/registry.js';
 import { validateContentPack, parseContentPackJson, ContentPackError } from './core/content-packs/validate.js';
-import { loadContentPack, PackLockedError } from './core/content-packs/loader.js';
+import { isPackLockedForDisplay, loadContentPack, PackLockedError } from './core/content-packs/loader.js';
 import { BUNDLED_CONTENT_PACKS, getBundledContentPack, listBundledContentPacks } from './core/content-packs/registry.js';
 import { FRONTIER_OUTPOST_PACK_JSON } from './core/content-packs/bundled-sources.js';
 import { loadContentPackFile } from './core/content-packs/node.js';
-import { createHostedEntitlements, selectEntitlements, selfHostEntitlements } from './core/entitlements/entitlements.js';
+import { createHostedEntitlements, selectEntitlements, selfHostEntitlements, tenantKey } from './core/entitlements/entitlements.js';
 import { base64ToBytes, bytesToBase64 } from './core/cards/card-parse.js';
 import { loadCardFromBytes } from './core/cards/card-browser.js';
 import { BrowserSessionStorage, webStorageKeyValue, type AsyncKeyValue, type WebStorageLike } from './core/session/browser-storage.js';
@@ -749,6 +749,134 @@ async function headlessKeyStorageCheck(
   );
 }
 
+/**
+ * Exercises the REAL `setStatus()` global from app.js against the actual
+ * status pill markup, proving the connection-state → `data-state` mapping
+ * matches the documented intent (amber-pulsing "pending" while
+ * connecting/joining/reconnecting, steady green "ok" once connected) —
+ * specifically that a "reconnecting…" phrase (the exact string onClose()
+ * sends) does NOT fall into the steady-red "down" bucket ahead of the
+ * connecting/joining/reconnecting check. Skipped (never failed) when
+ * chromium is unavailable.
+ */
+async function headlessStatusStateCheck(
+  html: string,
+  srcs: { engine: string; transport: string; portraits: string; app: string },
+): Promise<void> {
+  const probe = `
+    (function () {
+      var out = document.getElementById('probe-out');
+      try {
+        setStatus('joining…');
+        var sJoining = document.getElementById('status').getAttribute('data-state');
+        setStatus('connecting…');
+        var sConnecting = document.getElementById('status').getAttribute('data-state');
+        setStatus('reconnecting in 4s…');
+        var sReconnecting = document.getElementById('status').getAttribute('data-state');
+        setStatus('connected');
+        var sConnected = document.getElementById('status').getAttribute('data-state');
+        var ok = sJoining === 'pending' && sConnecting === 'pending' && sReconnecting === 'pending' && sConnected === 'ok';
+        out.textContent = 'STATUSSTATE_OK=' + ok +
+          ' joining=' + sJoining + ' connecting=' + sConnecting + ' reconnecting=' + sReconnecting + ' connected=' + sConnected;
+      } catch (e) { out.textContent = 'STATUSSTATE_OK=false:' + e; }
+    })();
+  `;
+  const dom = await runHeadlessClient('status-state', html, srcs, probe);
+  if (dom === null || !dom.includes('STATUSSTATE_OK=')) {
+    skip('web-ui: headless status-state check skipped (chromium produced no output)');
+    return;
+  }
+  check(
+    'web-ui: setStatus("reconnecting in …s…") maps to the amber-pulsing "pending" state, not the steady-red "down" state',
+    dom.includes('STATUSSTATE_OK=true'),
+  );
+}
+
+/**
+ * Boot the REAL client + REAL style.css (unlike {@link runHeadlessClient},
+ * which never links a stylesheet) at a genuinely narrow phone viewport, drive
+ * the REAL `renderRoster()`/`appendHp()` with a seat carrying multiple
+ * conditions AND a seat with a long name, and measure actual layout: no seat
+ * card (or its hp/condition row) may render past `#roster-list`'s right edge.
+ * This is a live, geometry-based regression test for the roster overflow bug
+ * (a multi-condition or long-named seat breaking out of its card at ordinary
+ * phone widths) — skipped (never failed) when chromium is unavailable.
+ */
+async function headlessRosterOverflowCheck(
+  html: string,
+  styleSrc: string,
+  srcs: { engine: string; transport: string; portraits: string; app: string },
+): Promise<void> {
+  const chromium = '/usr/bin/chromium';
+  try {
+    await fs.access(chromium);
+  } catch {
+    skip('web-ui: headless roster-overflow check skipped (no chromium)');
+    return;
+  }
+  const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+  if (!bodyMatch) {
+    skip('web-ui: headless roster-overflow check skipped (no <body> in served HTML)');
+    return;
+  }
+  const body = bodyMatch[1].replace(/<script\b[^>]*><\/script>/gi, '');
+  const probe = `
+    (function () {
+      var out = document.getElementById('probe-out');
+      try {
+        // The roster only has layout once the table view is showing (it starts
+        // \`hidden\` behind the join screen) — this probe never runs a real
+        // join, so reveal it directly.
+        document.getElementById('join-screen').hidden = true;
+        document.getElementById('table').hidden = false;
+        state.roster = [
+          { userId: 'u1', userName: 'Kai', characterName: 'Kai', hp: 8, maxHp: 20, conditions: ['poisoned', 'prone', 'frightened', 'stunned'] },
+          { userId: 'u2', userName: 'Sir Reginald Bartholomew the Third', characterName: 'Sir Reginald Bartholomew the Third', hp: 16, maxHp: 20, conditions: ['poisoned', 'prone', 'frightened', 'stunned'] },
+        ];
+        renderRoster();
+        var rosterRight = document.getElementById('roster-list').getBoundingClientRect().right;
+        var seats = document.querySelectorAll('#roster-list .seat, #roster-list .hp-condition');
+        var maxRight = 0;
+        for (var i = 0; i < seats.length; i++) {
+          var r = seats[i].getBoundingClientRect().right;
+          if (r > maxRight) maxRight = r;
+        }
+        var viewportWidth = document.documentElement.clientWidth;
+        var noOverflow = maxRight <= viewportWidth + 1; // +1px rounding slack
+        out.textContent = 'ROSTEROVERFLOW_OK=' + noOverflow +
+          ' maxRight=' + maxRight + ' viewportWidth=' + viewportWidth + ' rosterRight=' + rosterRight;
+      } catch (e) { out.textContent = 'ROSTEROVERFLOW_OK=false:' + e; }
+    })();
+  `;
+  const page = `<!doctype html><html><head><meta charset="utf-8"><style>${styleSrc}</style></head><body>${body}
+<pre id="probe-out"></pre>
+<script>${inlineSafe(srcs.engine)}</script>
+<script>${inlineSafe(srcs.transport)}</script>
+<script>${inlineSafe(srcs.portraits)}</script>
+<script>${inlineSafe(srcs.app)}</script>
+<script>${probe}</script>
+</body></html>`;
+  const tmpDir = path.join('data', 'smoke');
+  await fs.mkdir(tmpDir, { recursive: true });
+  const htmlPath = path.join(tmpDir, 'roster-overflow-probe.html');
+  await fs.writeFile(htmlPath, page, 'utf8');
+  const { spawnSync } = await import('node:child_process');
+  const res = spawnSync(
+    chromium,
+    ['--headless', '--no-sandbox', '--disable-gpu', '--window-size=390,900', '--virtual-time-budget=5000', '--dump-dom', `file://${path.resolve(htmlPath)}`],
+    { encoding: 'utf8', timeout: 35000 },
+  );
+  const dom = res.error ? null : String(res.stdout ?? '');
+  if (dom === null || !dom.includes('ROSTEROVERFLOW_OK=')) {
+    skip('web-ui: headless roster-overflow check skipped (chromium produced no output)');
+    return;
+  }
+  check(
+    'web-ui: at a 390px phone viewport, a roster seat with multiple conditions (or a long name) stays within its card/#roster-list — no clipped/overflowing hp-condition pill',
+    dom.includes('ROSTEROVERFLOW_OK=true'),
+  );
+}
+
 async function main() {
   const dataDir = path.join('data', 'smoke');
   await fs.rm(dataDir, { recursive: true, force: true });
@@ -761,7 +889,7 @@ async function main() {
     mattermost: { url: '', token: '' },
     web: { host: '127.0.0.1', port: 0, password: '' },
     dataDir,
-    monetization: { hosted: false, unlockedPackIds: [] },
+    monetization: { hosted: false, unlockedPackIds: [], tenantUnlockedPackIds: {} },
   };
   const provider = new MockProvider();
   const bot = new Bot(config, provider, new NodeFileStorage(dataDir));
@@ -1991,6 +2119,8 @@ async function main() {
     await headlessServerTurnCheck(html, clientSrcs, url, 'hunter2');
     await headlessLocalErrorAndHelpCheck(html, clientSrcs);
     await headlessKeyStorageCheck(html, clientSrcs);
+    await headlessStatusStateCheck(html, clientSrcs);
+    await headlessRosterOverflowCheck(html, styleSrc, clientSrcs);
 
     const bad = new WsClient(url);
     await bad.open();
@@ -2589,6 +2719,45 @@ async function main() {
     check('entitlements: selectEntitlements({hosted:true}) gates with no unlocked ids',
       selectEntitlements({ hosted: true }).isUnlocked('frontier-outpost') === false);
 
+    // Per-tenant entitlements: a hosted process serving MULTIPLE
+    // guilds/rooms must be able to unlock a premium pack for the one tenant
+    // that paid WITHOUT unlocking it for every other tenant in the same
+    // process — the whole point of "sell a premium content pack" as a
+    // business model for a realistic (single-process, multi-guild) hosted
+    // deployment.
+    const tenantA = { platform: 'discord', channelId: 'guild-A' };
+    const tenantB = { platform: 'discord', channelId: 'guild-B' };
+    check('entitlements: tenantKey derives a stable "platform:channelId" string',
+      tenantKey(tenantA) === 'discord:guild-A');
+    const perTenantGated = createHostedEntitlements({
+      enforcePremium: true,
+      perTenantUnlockedKeys: { [tenantKey(tenantA)]: ['frontier-outpost'] },
+    });
+    check('entitlements: a pack unlocked for ONE tenant is unlocked when checked with that tenant\'s scope',
+      perTenantGated.isUnlocked('frontier-outpost', tenantA) === true);
+    check('entitlements: the SAME pack stays locked for a DIFFERENT tenant in the same Entitlements instance',
+      perTenantGated.isUnlocked('frontier-outpost', tenantB) === false);
+    check('entitlements: a per-tenant-gated pack is still locked with no scope at all',
+      perTenantGated.isUnlocked('frontier-outpost') === false);
+    check('entitlements: selectEntitlements threads tenantUnlockedPackIds through to per-tenant scoping',
+      selectEntitlements({ hosted: true, tenantUnlockedPackIds: { [tenantKey(tenantA)]: ['frontier-outpost'] } })
+        .isUnlocked('frontier-outpost', tenantA) === true &&
+      selectEntitlements({ hosted: true, tenantUnlockedPackIds: { [tenantKey(tenantA)]: ['frontier-outpost'] } })
+        .isUnlocked('frontier-outpost', tenantB) === false);
+
+    // Display never lies about a free pack: isPackLockedForDisplay (what
+    // `/dm pack list` uses) must match loadContentPack's ACTUAL gate exactly
+    // — a free pack is never "(locked)" even when isUnlocked(id) is false,
+    // because loadContentPack only ever gates a premium pack.
+    const freePackForDisplay = validateContentPack({ formatVersion: 1, id: 'free-thing', name: 'Free Thing', version: '1.0.0' });
+    const alwaysDeniedEntitlements = createHostedEntitlements({ enforcePremium: true }); // locks everything not on an empty allowlist
+    check('content-packs: a FREE pack is never shown "(locked)", even under entitlements that deny its id outright',
+      alwaysDeniedEntitlements.isUnlocked('free-thing') === false &&
+      isPackLockedForDisplay(freePackForDisplay, alwaysDeniedEntitlements) === false);
+    check('content-packs: a PREMIUM pack IS shown "(locked)" when entitlements deny it, and not when they allow it',
+      isPackLockedForDisplay(bundled, alwaysDeniedEntitlements) === true &&
+      isPackLockedForDisplay(bundled, selfHostEntitlements) === false);
+
     // The loader: importing the pack into a session, reusing lorebook/card/rules types.
     const freshSession: GameSession = {
       id: 'pk1', platform: 'cli', channelId: 'pack-test', systemId: 'dnd5e', model: 'mock/free-model',
@@ -2600,8 +2769,10 @@ async function main() {
       result.lorebookAdded === 5 && freshSession.lorebook.some((e) => e.name === "Kestrel's Reach"));
     check('content-packs: loadContentPack imports the pack\'s NPCs as CharacterCards',
       result.npcsAdded === 2 && freshSession.npcs.some((n) => n.name === 'Mirelle Ashgrove' && n.specVersion === '2.0'));
-    check('content-packs: loadContentPack registers the pack\'s rules module into the shared rules registry',
-      result.rulesRegistered === true && bundledRulesProvider.system('frontier-lite').includes('Frontier Lite'));
+    check('content-packs: loadContentPack attaches the pack\'s rules module to THIS session only (session.customRules), not the shared registry',
+      result.rulesRegistered === true &&
+      freshSession.customRules?.id === 'frontier-lite' && freshSession.customRules.markdown.includes('Frontier Lite') &&
+      bundledRulesProvider.system('frontier-lite') === '');
     check('content-packs: loadContentPack applies the campaign starter on a fresh (history-less) session',
       result.starterApplied === true &&
       freshSession.systemId === 'frontier-lite' &&
@@ -2615,6 +2786,77 @@ async function main() {
     check('content-packs: reloading the same pack is a no-op (dedup by content/name, starter already applied)',
       again.lorebookAdded === 0 && again.npcsAdded === 0 && again.starterApplied === false &&
       freshSession.lorebook.length === 5 && freshSession.npcs.length === 2);
+
+    // SECURITY: a pack's rules module must be scoped to the session that
+    // loaded it — never a shared, process-wide registry — even when its
+    // `rulesModule.id` collides with a BUNDLED system id like "dnd5e". Build
+    // a hostile pack that claims to be "dnd5e" and prove (a) the session that
+    // loaded it sees its own hijacked text, (b) a totally separate session in
+    // the SAME bot/process on "dnd5e" is untouched, and (c) the shared
+    // `bundledRulesProvider` itself was never mutated.
+    const hijackPack = validateContentPack({
+      formatVersion: 1, id: 'evil-pack', name: 'Evil Pack', version: '1.0.0',
+      rulesModule: { id: 'dnd5e', name: 'Evil D&D', markdown: 'HIJACKED RULES — must never leak to another session.' },
+    });
+    const hijackStore = new MemoryStorage();
+    const hijackBot = new Bot(config, provider, hijackStore);
+    const hijackOut: OutgoingMessage[] = [];
+    const hijackSend = async (m: OutgoingMessage) => void hijackOut.push(m);
+    const hijackMsg = (t: string, ch: string): IncomingMessage => ({ platform: 'cli', channelId: ch, userId: 'u1', userName: 'Alice', text: t });
+    await hijackBot.handle(hijackMsg('/dm new', 'hijack-a'), hijackSend);
+    await hijackBot.handle(hijackMsg('/dm join Thorin', 'hijack-a'), hijackSend);
+    const hijackedSession = await hijackStore.load('cli:hijack-a');
+    loadContentPack(hijackPack, hijackedSession!, selfHostEntitlements);
+    await hijackBot.handle(hijackMsg('I ready my blade', 'hijack-a'), hijackSend);
+    check('content-packs: a session that loads a pack colliding with a bundled system id ("dnd5e") sees ITS OWN hijacked rules in its own prompt',
+      provider.lastPrompt.includes('HIJACKED RULES'));
+
+    await hijackBot.handle(hijackMsg('/dm new', 'hijack-b'), hijackSend);
+    await hijackBot.handle(hijackMsg('/dm join Elaria', 'hijack-b'), hijackSend);
+    await hijackBot.handle(hijackMsg('I look around', 'hijack-b'), hijackSend);
+    check('content-packs: a SEPARATE session in the same process/bot is unaffected by another session\'s colliding rules module (no cross-session leakage)',
+      provider.lastPrompt.includes('System Module — D&D 5e') && !provider.lastPrompt.includes('HIJACKED RULES'));
+    check('content-packs: the shared bundledRulesProvider is never mutated by loadContentPack, even under an id collision',
+      bundledRulesProvider.system('dnd5e').includes('System Module — D&D 5e') && !bundledRulesProvider.system('dnd5e').includes('HIJACKED'));
+
+    // Two DIFFERENT packs that happen to reuse the same (non-bundled) custom
+    // rulesModule.id must not clobber each other across sessions either.
+    const packA = validateContentPack({
+      formatVersion: 1, id: 'homebrew-a', name: 'Homebrew A', version: '1.0.0',
+      rulesModule: { id: 'homebrew-shared', name: 'Homebrew Shared', markdown: 'MARKDOWN_FROM_PACK_A' },
+    });
+    const packB = validateContentPack({
+      formatVersion: 1, id: 'homebrew-b', name: 'Homebrew B', version: '1.0.0',
+      rulesModule: { id: 'homebrew-shared', name: 'Homebrew Shared', markdown: 'MARKDOWN_FROM_PACK_B' },
+    });
+    const sessA: GameSession = {
+      id: 'ca', platform: 'cli', channelId: 'collide-a', systemId: 'homebrew-shared', model: 'mock/free-model',
+      players: {}, npcs: [], lorebook: [], history: [], summary: '', memories: [],
+      turnMode: 'immediate', turnIndex: 0, fogOfWar: false, createdAt: Date.now(),
+    };
+    const sessB: GameSession = {
+      id: 'cb', platform: 'cli', channelId: 'collide-b', systemId: 'homebrew-shared', model: 'mock/free-model',
+      players: {}, npcs: [], lorebook: [], history: [], summary: '', memories: [],
+      turnMode: 'immediate', turnIndex: 0, fogOfWar: false, createdAt: Date.now(),
+    };
+    loadContentPack(packA, sessA, selfHostEntitlements);
+    loadContentPack(packB, sessB, selfHostEntitlements);
+    check('content-packs: two sessions loading DIFFERENT packs that reuse the same custom rulesModule.id keep independent markdown (no clobber)',
+      sessA.customRules?.markdown === 'MARKDOWN_FROM_PACK_A' && sessB.customRules?.markdown === 'MARKDOWN_FROM_PACK_B');
+
+    // The low-level, explicit, PROCESS-WIDE registry (registerRulesModule /
+    // clearRuntimeRules) is a deliberate host-boot-time seam, distinct from the
+    // session-scoped path above — prove it still works, and that its own
+    // documented reset hook (previously dead code — never called anywhere,
+    // including here) actually resets it.
+    check('rules-registry: bundledRulesProvider has no runtime override for an unregistered id',
+      bundledRulesProvider.system('homebrew-global-test') === '');
+    registerRulesModule('homebrew-global-test', 'GLOBAL_MARKDOWN');
+    check('rules-registry: registerRulesModule installs an explicit, process-wide override (host opt-in, not pack loading)',
+      bundledRulesProvider.system('homebrew-global-test') === 'GLOBAL_MARKDOWN');
+    clearRuntimeRules();
+    check('rules-registry: clearRuntimeRules() drops all runtime-registered modules (the reset hook, now actually exercised)',
+      bundledRulesProvider.system('homebrew-global-test') === '');
 
     // A premium pack is refused outright when entitlements don't unlock it — the
     // session must be left untouched (no partial import on a locked pack).
@@ -2649,7 +2891,7 @@ async function main() {
     check('content-packs: `/dm pack load` on an unknown id replies without throwing',
       /No bundled content pack/.test(pkOut.at(-1)?.text ?? ''));
 
-    const hostedConfig: Config = { ...config, monetization: { hosted: true, unlockedPackIds: [] } };
+    const hostedConfig: Config = { ...config, monetization: { hosted: true, unlockedPackIds: [], tenantUnlockedPackIds: {} } };
     const hostedOut: OutgoingMessage[] = [];
     const hostedSend = async (m: OutgoingMessage) => void hostedOut.push(m);
     const hostedBot = new Bot(hostedConfig, provider, new MemoryStorage());
@@ -2661,6 +2903,36 @@ async function main() {
     await hostedBot.handle(hostedMsg('/dm pack load frontier-outpost'), hostedSend);
     check('content-packs: `/dm pack load` refuses a premium pack under hosted entitlements without unlock',
       /premium content pack and isn't unlocked/.test(hostedOut.at(-1)?.text ?? ''));
+
+    // CRITICAL business-model repro: ONE hosted process serving MULTIPLE
+    // tenants (guilds/rooms) must be able to unlock a premium pack for the
+    // one that paid while it STAYS locked for another tenant in the exact
+    // same process — this is the actual shape of a real hosted deployment
+    // (one adapter connection serving many guilds), and is what makes
+    // "sell a premium content pack" a coherent business model at all.
+    const multiTenantConfig: Config = {
+      ...config,
+      monetization: { hosted: true, unlockedPackIds: [], tenantUnlockedPackIds: { 'cli:paid-guild': ['frontier-outpost'] } },
+    };
+    const mtOut: OutgoingMessage[] = [];
+    const mtSend = async (m: OutgoingMessage) => void mtOut.push(m);
+    const mtBot = new Bot(multiTenantConfig, provider, new MemoryStorage());
+    const mtMsg = (t: string, ch: string): IncomingMessage => ({ platform: 'cli', channelId: ch, userId: 'u1', userName: 'Alice', text: t });
+    await mtBot.handle(mtMsg('/dm new', 'paid-guild'), mtSend);
+    await mtBot.handle(mtMsg('/dm pack list', 'paid-guild'), mtSend);
+    check('content-packs: `/dm pack list` shows the pack unlocked for the ONE tenant it was unlocked for',
+      !/\(locked\)/.test(mtOut.at(-1)?.text ?? ''));
+    await mtBot.handle(mtMsg('/dm pack load frontier-outpost', 'paid-guild'), mtSend);
+    check('content-packs: `/dm pack load` succeeds for the paying tenant, in a process that ALSO serves other (unpaid) tenants',
+      /Loaded \*\*Frontier Outpost\*\*/.test(mtOut.at(-1)?.text ?? ''));
+
+    await mtBot.handle(mtMsg('/dm new', 'unpaid-guild'), mtSend);
+    await mtBot.handle(mtMsg('/dm pack list', 'unpaid-guild'), mtSend);
+    check('content-packs: `/dm pack list` still flags the SAME pack "(locked)" for a DIFFERENT, unpaid tenant in the SAME process',
+      /\(locked\)/.test(mtOut.at(-1)?.text ?? ''));
+    await mtBot.handle(mtMsg('/dm pack load frontier-outpost', 'unpaid-guild'), mtSend);
+    check('content-packs: `/dm pack load` still refuses the SAME premium pack for the unpaid tenant — one guild\'s purchase never unlocks it process-wide',
+      /premium content pack and isn't unlocked/.test(mtOut.at(-1)?.text ?? ''));
   }
 
   });

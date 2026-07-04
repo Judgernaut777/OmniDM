@@ -484,9 +484,6 @@
     dnd5e: DND5E_SYSTEM
   };
   var runtimeRules = {};
-  function registerRulesModule(systemId, markdown) {
-    runtimeRules[systemId] = markdown;
-  }
   var bundledRulesProvider = {
     system(systemId) {
       return runtimeRules[systemId] ?? BUNDLED_RULES[systemId] ?? "";
@@ -562,10 +559,11 @@ Use the character's exact name as shown under "The party". The engine reads thes
         ...Object.values(session.players).filter((p) => p.card).map((p) => renderCard(p.card, `player character (played by ${p.userName})`)),
         ...(session.npcs ?? []).map((c) => renderCard(c, "NPC (portrayed by you, the DM)"))
       ];
+      const rulesText = session.customRules?.id === session.systemId ? session.customRules.markdown : this.rules.system(session.systemId);
       const system = [
         BASE_DM_PROMPT,
         MECHANICS_PROMPT,
-        this.rules.system(session.systemId),
+        rulesText,
         `## The party
 ${roster}`,
         sheets.length ? `## Player characters (play each true to their class and bio)
@@ -1112,6 +1110,9 @@ Return the updated summary.`
   }
 
   // src/core/entitlements/entitlements.ts
+  function tenantKey(scope) {
+    return `${scope.platform}:${scope.channelId}`;
+  }
   var selfHostEntitlements = {
     id: "self-host",
     isUnlocked() {
@@ -1120,18 +1121,26 @@ Return the updated summary.`
   };
   function createHostedEntitlements(cfg = {}) {
     const unlocked = new Set(cfg.unlockedKeys ?? []);
+    const perTenant = cfg.perTenantUnlockedKeys ?? {};
     const enforce = cfg.enforcePremium ?? false;
     return {
       id: "hosted",
-      isUnlocked(key) {
+      isUnlocked(key, scope) {
         if (!enforce) return true;
-        return unlocked.has("*") || unlocked.has(key);
+        if (unlocked.has("*") || unlocked.has(key)) return true;
+        if (!scope) return false;
+        const tenantUnlocked = perTenant[tenantKey(scope)];
+        return Boolean(tenantUnlocked && (tenantUnlocked.includes("*") || tenantUnlocked.includes(key)));
       }
     };
   }
   function selectEntitlements(sel = {}) {
     if (!sel.hosted) return selfHostEntitlements;
-    return createHostedEntitlements({ unlockedKeys: sel.unlockedPackIds, enforcePremium: true });
+    return createHostedEntitlements({
+      unlockedKeys: sel.unlockedPackIds,
+      perTenantUnlockedKeys: sel.tenantUnlockedPackIds,
+      enforcePremium: true
+    });
   }
 
   // src/core/content-packs/loader.ts
@@ -1142,6 +1151,9 @@ Return the updated summary.`
       this.name = "PackLockedError";
     }
   };
+  function isPackLockedForDisplay(pack, entitlements, scope) {
+    return Boolean(pack.premium) && !entitlements.isUnlocked(pack.id, scope);
+  }
   function npcToCard(npc) {
     return {
       specVersion: "2.0",
@@ -1155,7 +1167,8 @@ Return the updated summary.`
     };
   }
   function loadContentPack(pack, session, entitlements = selfHostEntitlements) {
-    if (pack.premium && !entitlements.isUnlocked(pack.id)) throw new PackLockedError(pack.id);
+    if (pack.premium && !entitlements.isUnlocked(pack.id, { platform: session.platform, channelId: session.channelId }))
+      throw new PackLockedError(pack.id);
     let lorebookAdded = 0;
     for (const e of pack.lorebook) {
       if (session.lorebook.some((existing) => existing.content === e.content)) continue;
@@ -1172,7 +1185,7 @@ Return the updated summary.`
     }
     let rulesRegistered = false;
     if (pack.rulesModule) {
-      registerRulesModule(pack.rulesModule.id, pack.rulesModule.markdown);
+      session.customRules = { id: pack.rulesModule.id, markdown: pack.rulesModule.markdown };
       rulesRegistered = true;
     }
     let starterApplied = false;
@@ -1414,9 +1427,10 @@ ${list || "(empty \u2014 add with `/dm lore add <name> | <keywords> | <content>`
           if (!session) return reply("No game here yet \u2014 `/dm new` first.");
           const sub = (parts.shift() || "list").toLowerCase();
           const arg = parts.join(" ").trim();
+          const scope = { platform: session.platform, channelId: session.channelId };
           if (sub === "list") {
             const packs = listBundledContentPacks();
-            const list = packs.map((p) => `\u2022 \`${p.id}\` **${p.name}** v${p.version}${p.premium ? " \u{1F512} premium" : ""}${this.entitlements.isUnlocked(p.id) ? "" : " (locked)"} \u2014 ${p.description || ""}`).join("\n");
+            const list = packs.map((p) => `\u2022 \`${p.id}\` **${p.name}** v${p.version}${p.premium ? " \u{1F512} premium" : ""}${isPackLockedForDisplay(p, this.entitlements, scope) ? " (locked)" : ""} \u2014 ${p.description || ""}`).join("\n");
             return reply(`**Content packs:**
 ${list || "(none bundled)"}
 Load one with \`/dm pack load <id>\`.`);
@@ -8572,7 +8586,7 @@ ${str3(snapshot)}`);
       dataDir: "",
       // Self-host default: everything unlocked. In-app play has no billing
       // surface, so premium packs load like any other pack.
-      monetization: { hosted: false, unlockedPackIds: [] }
+      monetization: { hosted: false, unlockedPackIds: [], tenantUnlockedPackIds: {} }
     };
     const bot = new Bot(config, provider, storage, rejectUrlImport, "local");
     const imageCache = /* @__PURE__ */ new Map();

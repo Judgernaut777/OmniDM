@@ -18,7 +18,7 @@ import { normalizeAbility, rollCheck } from './engine/dice.js';
 import { applyDamage, applyHeal, findPartyMember } from './rules/mechanics.js';
 import { classPreset, MAX_BIO_CHARS, normalizePresetId, PORTRAIT_PRESETS } from './portraits.js';
 import { getBundledContentPack, listBundledContentPacks } from './content-packs/registry.js';
-import { loadContentPack, PackLockedError } from './content-packs/loader.js';
+import { isPackLockedForDisplay, loadContentPack, PackLockedError } from './content-packs/loader.js';
 import { selectEntitlements, type Entitlements } from './entitlements/entitlements.js';
 
 type Send = (msg: OutgoingMessage) => Promise<void>;
@@ -334,10 +334,11 @@ export class Bot {
         if (!session) return reply('No game here yet — `/dm new` first.');
         const sub = (parts.shift() || 'list').toLowerCase();
         const arg = parts.join(' ').trim();
+        const scope = { platform: session.platform, channelId: session.channelId };
         if (sub === 'list') {
           const packs = listBundledContentPacks();
           const list = packs
-            .map((p) => `• \`${p.id}\` **${p.name}** v${p.version}${p.premium ? ' 🔒 premium' : ''}${this.entitlements.isUnlocked(p.id) ? '' : ' (locked)'} — ${p.description || ''}`)
+            .map((p) => `• \`${p.id}\` **${p.name}** v${p.version}${p.premium ? ' 🔒 premium' : ''}${isPackLockedForDisplay(p, this.entitlements, scope) ? ' (locked)' : ''} — ${p.description || ''}`)
             .join('\n');
           return reply(`**Content packs:**\n${list || '(none bundled)'}\nLoad one with \`/dm pack load <id>\`.`);
         }

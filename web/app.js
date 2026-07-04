@@ -1098,8 +1098,8 @@ function setStatus(text) {
   $('status').textContent = text;
   const s = String(text);
   const state = s === 'connected' ? 'ok'
-    : /reconnecting|lost/i.test(s) ? 'down'
-    : /connecting|joining/i.test(s) ? 'pending'
+    : /connecting|joining|reconnecting/i.test(s) ? 'pending'
+    : /lost/i.test(s) ? 'down'
     : '';
   if (state) $('status').setAttribute('data-state', state);
   else $('status').removeAttribute('data-state');

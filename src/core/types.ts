@@ -247,4 +247,15 @@ export interface GameSession {
   turnIndex: number;                 // round-robin pointer into join order
   fogOfWar: boolean;                 // per-player private narration (`/dm fog on|off`)
   createdAt: number;
+  /**
+   * A content pack's homebrew rules module, scoped to THIS session only (see
+   * `content-packs/loader.ts`). Kept on the session itself — never in a
+   * process-wide registry — so two sessions in the same process can each load
+   * a pack whose `rulesModule.id` happens to collide (with each other, or
+   * with a bundled system id like "dnd5e") without one clobbering the
+   * other's rules text. Only consulted when `id` matches this session's
+   * `systemId`; otherwise the narrator falls back to the shared bundled
+   * rules registry.
+   */
+  customRules?: { id: string; markdown: string };
 }

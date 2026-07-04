@@ -22,11 +22,39 @@
 /** A stable id for a gated thing: a content pack's `id`, or a feature flag key. */
 export type EntitlementKey = string;
 
+/**
+ * Identifies WHO an entitlement check is for, in a process that may serve
+ * many tenants at once — a hosted OmniDM is typically one adapter connection
+ * (one Discord bot token, one Slack app, ...) fanning out to many
+ * guilds/rooms, each potentially a different paying customer. `channelId` is
+ * the natural unit here because content packs (this seam's only real gated
+ * thing today) are loaded into a per-channel `GameSession`, not per
+ * individual player — "unlocked for this campaign/room" is the granularity
+ * that actually matches what gets gated. Per-individual-player entitlements
+ * within a shared room would need a different design; this scope doesn't
+ * claim to solve that.
+ */
+export interface EntitlementScope {
+  platform: string;
+  channelId: string;
+}
+
+/** The stable key a tenant's per-scope unlocks are stored/looked-up under (`"<platform>:<channelId>"`). */
+export function tenantKey(scope: EntitlementScope): string {
+  return `${scope.platform}:${scope.channelId}`;
+}
+
 export interface Entitlements {
   /** Which implementation this is ('self-host' | 'hosted' | ...) — surfaced for logging/UI, not for branching. */
   readonly id: string;
-  /** True if the current operator/user may use `key` (a content pack id or feature key). */
-  isUnlocked(key: EntitlementKey): boolean;
+  /**
+   * True if `key` (a content pack id or feature key) is usable. `scope`
+   * identifies the calling tenant (platform + channel/guild/room) so a
+   * hosted, multi-tenant process can gate per-tenant instead of identically
+   * for every caller; omit it only for a genuinely single-tenant/self-host
+   * check where there's nobody else in the process to distinguish from.
+   */
+  isUnlocked(key: EntitlementKey, scope?: EntitlementScope): boolean;
 }
 
 /** Self-host default: nothing is gated. This is the ONLY mode OmniDM ships fully wired today. */
@@ -38,27 +66,42 @@ export const selfHostEntitlements: Entitlements = {
 };
 
 export interface HostedEntitlementsConfig {
-  /** Explicitly unlocked keys (e.g. packs a purchase/subscription unlocked later). `'*'` unlocks everything. */
+  /** Explicitly unlocked keys for EVERY tenant (e.g. a pack included with every plan). `'*'` unlocks everything. */
   unlockedKeys?: EntitlementKey[];
+  /**
+   * Per-tenant unlocks, keyed by {@link tenantKey} (`"<platform>:<channelId>"`)
+   * — what lets a hosted deployment serving many guilds/rooms from ONE
+   * process unlock a premium pack for the ONE tenant that paid without
+   * unlocking it for every other tenant the same process serves. Checked
+   * only when a `scope` is passed to `isUnlocked`; `unlockedKeys` above still
+   * applies process-wide regardless of scope. A real billing integration
+   * replaces this static map with a purchase-store query keyed by the same
+   * tenant id (see `tenantKey`) — or wraps `isUnlocked` entirely.
+   */
+  perTenantUnlockedKeys?: Record<string, EntitlementKey[]>;
   /**
    * When false (default), this stub behaves exactly like self-host — a hosted
    * tier flag with no billing wired up must never lock anyone out by accident.
    * A real hosted deployment sets this true once it has an actual
    * entitlement source (a purchases DB, a subscription check, ...) behind
-   * `unlockedKeys`.
+   * `unlockedKeys` / `perTenantUnlockedKeys`.
    */
   enforcePremium?: boolean;
 }
 
-/** A stub "hosted" implementation: gates on a static allowlist once `enforcePremium` is turned on. */
+/** A stub "hosted" implementation: gates on a static (process-wide + per-tenant) allowlist once `enforcePremium` is turned on. */
 export function createHostedEntitlements(cfg: HostedEntitlementsConfig = {}): Entitlements {
   const unlocked = new Set(cfg.unlockedKeys ?? []);
+  const perTenant = cfg.perTenantUnlockedKeys ?? {};
   const enforce = cfg.enforcePremium ?? false;
   return {
     id: 'hosted',
-    isUnlocked(key: EntitlementKey): boolean {
+    isUnlocked(key: EntitlementKey, scope?: EntitlementScope): boolean {
       if (!enforce) return true;
-      return unlocked.has('*') || unlocked.has(key);
+      if (unlocked.has('*') || unlocked.has(key)) return true;
+      if (!scope) return false;
+      const tenantUnlocked = perTenant[tenantKey(scope)];
+      return Boolean(tenantUnlocked && (tenantUnlocked.includes('*') || tenantUnlocked.includes(key)));
     },
   };
 }
@@ -67,15 +110,23 @@ export function createHostedEntitlements(cfg: HostedEntitlementsConfig = {}): En
 export interface EntitlementsSelector {
   hosted?: boolean;
   unlockedPackIds?: string[];
+  /** Per-tenant unlocks — see {@link HostedEntitlementsConfig.perTenantUnlockedKeys}. */
+  tenantUnlockedPackIds?: Record<string, string[]>;
 }
 
 /**
  * Build the active {@link Entitlements} from config. Self-host (the default,
  * `hosted: false`) always unlocks everything; a hosted deployment opts in by
  * setting `hosted: true` (`OMNIDM_HOSTED_TIER=1`), at which point premium
- * packs/features gate on `unlockedPackIds` (`OMNIDM_UNLOCKED_PACKS`, or `*`).
+ * packs/features gate on `unlockedPackIds` (`OMNIDM_UNLOCKED_PACKS`, or `*`)
+ * process-wide, plus `tenantUnlockedPackIds` (`OMNIDM_TENANT_UNLOCKED_PACKS`)
+ * for per-guild/per-room unlocks.
  */
 export function selectEntitlements(sel: EntitlementsSelector = {}): Entitlements {
   if (!sel.hosted) return selfHostEntitlements;
-  return createHostedEntitlements({ unlockedKeys: sel.unlockedPackIds, enforcePremium: true });
+  return createHostedEntitlements({
+    unlockedKeys: sel.unlockedPackIds,
+    perTenantUnlockedKeys: sel.tenantUnlockedPackIds,
+    enforcePremium: true,
+  });
 }
