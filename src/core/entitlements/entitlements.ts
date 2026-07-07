@@ -80,6 +80,15 @@ export interface HostedEntitlementsConfig {
    */
   perTenantUnlockedKeys?: Record<string, EntitlementKey[]>;
   /**
+   * A LIVE unlock source, checked per-tenant after the static maps above — this
+   * is the seam a real billing backend plugs into. A {@link
+   * ../billing/purchase-store.js PurchaseStore} satisfies it directly
+   * (`store.isUnlocked`), so a Stripe webhook grant is honored by the gate the
+   * instant it lands, with no redeploy. Kept structural (a callback, not a
+   * store import) so this module has no dependency on the billing layer.
+   */
+  isPurchased?: (tenantKey: string, key: EntitlementKey) => boolean;
+  /**
    * When false (default), this stub behaves exactly like self-host — a hosted
    * tier flag with no billing wired up must never lock anyone out by accident.
    * A real hosted deployment sets this true once it has an actual
@@ -100,8 +109,11 @@ export function createHostedEntitlements(cfg: HostedEntitlementsConfig = {}): En
       if (!enforce) return true;
       if (unlocked.has('*') || unlocked.has(key)) return true;
       if (!scope) return false;
-      const tenantUnlocked = perTenant[tenantKey(scope)];
-      return Boolean(tenantUnlocked && (tenantUnlocked.includes('*') || tenantUnlocked.includes(key)));
+      const tk = tenantKey(scope);
+      const tenantUnlocked = perTenant[tk];
+      if (tenantUnlocked && (tenantUnlocked.includes('*') || tenantUnlocked.includes(key))) return true;
+      // Live source last (a paid unlock recorded by webhook fulfillment).
+      return Boolean(cfg.isPurchased?.(tk, key));
     },
   };
 }
@@ -114,6 +126,11 @@ export interface EntitlementsSelector {
   tenantUnlockedPackIds?: Record<string, string[]>;
 }
 
+/** The minimal live-unlock source `selectEntitlements` will consult (a PurchaseStore satisfies it). */
+export interface UnlockSource {
+  isUnlocked(tenantKey: string, key: string): boolean;
+}
+
 /**
  * Build the active {@link Entitlements} from config. Self-host (the default,
  * `hosted: false`) always unlocks everything; a hosted deployment opts in by
@@ -122,11 +139,14 @@ export interface EntitlementsSelector {
  * process-wide, plus `tenantUnlockedPackIds` (`OMNIDM_TENANT_UNLOCKED_PACKS`)
  * for per-guild/per-room unlocks.
  */
-export function selectEntitlements(sel: EntitlementsSelector = {}): Entitlements {
+export function selectEntitlements(sel: EntitlementsSelector = {}, purchases?: UnlockSource): Entitlements {
   if (!sel.hosted) return selfHostEntitlements;
   return createHostedEntitlements({
     unlockedKeys: sel.unlockedPackIds,
     perTenantUnlockedKeys: sel.tenantUnlockedPackIds,
+    // A live billing source (a PurchaseStore) unlocks a pack the moment a
+    // tenant's Stripe checkout completes — no static-map edit, no redeploy.
+    ...(purchases ? { isPurchased: (tk: string, key: string): boolean => purchases.isUnlocked(tk, key) } : {}),
     enforcePremium: true,
   });
 }

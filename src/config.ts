@@ -57,6 +57,29 @@ export interface Config {
      */
     tenantUnlockedPackIds: Record<string, string[]>;
   };
+  /**
+   * Stripe hosted-billing config. Off unless `enabled` (and a secret key) is
+   * set — self-host never needs it. When on, the web adapter mounts the billing
+   * endpoints (`/billing/checkout`, `/billing/webhook`, `/billing/status`) and
+   * a paid checkout unlocks a premium pack for the buying tenant via the
+   * persistent purchase store. See `core/billing/`.
+   */
+  billing: {
+    enabled: boolean;
+    /** Stripe secret key (`sk_...`). */
+    secretKey: string;
+    /** Stripe webhook signing secret (`whsec_...`) — verifies the fulfillment callback. */
+    webhookSecret: string;
+    /** Map of premium pack id → Stripe Price id (`{"frontier-outpost":"price_123"}`). */
+    prices: Record<string, string>;
+    /** Where Stripe redirects after a successful / cancelled checkout. */
+    successUrl: string;
+    cancelUrl: string;
+    /** 'payment' (one-time unlock, default) or 'subscription'. */
+    mode: 'payment' | 'subscription';
+    /** File the purchase store persists unlocks to (under the data dir by default). */
+    storeFile: string;
+  };
 }
 
 export function loadConfig(): Config {
@@ -98,7 +121,34 @@ export function loadConfig(): Config {
         .filter(Boolean),
       tenantUnlockedPackIds: parseTenantUnlockedPacks(process.env.OMNIDM_TENANT_UNLOCKED_PACKS),
     },
+    billing: {
+      enabled: /^(1|true)$/i.test(process.env.STRIPE_BILLING_ENABLED || '') && Boolean(process.env.STRIPE_SECRET_KEY),
+      secretKey: process.env.STRIPE_SECRET_KEY || '',
+      webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || '',
+      prices: parseStripePrices(process.env.STRIPE_PRICES),
+      successUrl: process.env.STRIPE_SUCCESS_URL || 'http://localhost:8787/?checkout=success',
+      cancelUrl: process.env.STRIPE_CANCEL_URL || 'http://localhost:8787/?checkout=cancel',
+      mode: process.env.STRIPE_MODE === 'subscription' ? 'subscription' : 'payment',
+      storeFile: process.env.STRIPE_STORE_FILE || `${process.env.DATA_DIR || './data'}/purchases.json`,
+    },
   };
+}
+
+/** Parse `STRIPE_PRICES` — a JSON object mapping pack id → Stripe Price id. Malformed = no prices. */
+function parseStripePrices(raw: string | undefined): Record<string, string> {
+  if (!raw) return {};
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return {};
+    const out: Record<string, string> = {};
+    for (const [packId, priceId] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof priceId === 'string' && priceId) out[packId] = priceId;
+    }
+    return out;
+  } catch {
+    console.warn('[config] STRIPE_PRICES is not valid JSON — ignoring (no packs purchasable)');
+    return {};
+  }
 }
 
 /**

@@ -1344,16 +1344,21 @@ Return the updated summary.`
         if (!enforce) return true;
         if (unlocked.has("*") || unlocked.has(key)) return true;
         if (!scope) return false;
-        const tenantUnlocked = perTenant[tenantKey(scope)];
-        return Boolean(tenantUnlocked && (tenantUnlocked.includes("*") || tenantUnlocked.includes(key)));
+        const tk = tenantKey(scope);
+        const tenantUnlocked = perTenant[tk];
+        if (tenantUnlocked && (tenantUnlocked.includes("*") || tenantUnlocked.includes(key))) return true;
+        return Boolean(cfg.isPurchased?.(tk, key));
       }
     };
   }
-  function selectEntitlements(sel = {}) {
+  function selectEntitlements(sel = {}, purchases) {
     if (!sel.hosted) return selfHostEntitlements;
     return createHostedEntitlements({
       unlockedKeys: sel.unlockedPackIds,
       perTenantUnlockedKeys: sel.tenantUnlockedPackIds,
+      // A live billing source (a PurchaseStore) unlocks a pack the moment a
+      // tenant's Stripe checkout completes — no static-map edit, no redeploy.
+      ...purchases ? { isPurchased: (tk, key) => purchases.isUnlocked(tk, key) } : {},
       enforcePremium: true
     });
   }
@@ -1425,7 +1430,7 @@ ${starter.summary}` : starter.summary;
   }
   var SERVER_TURN_FAILURE_TEXT = "\u26A0\uFE0F The DM couldn\u2019t reach the model \u2014 the server operator should check the model/key/endpoint.";
   var Bot = class {
-    constructor(config, provider, storage, cardImporter, mode = "server") {
+    constructor(config, provider, storage, cardImporter, mode = "server", purchases) {
       __publicField(this, "config", config);
       __publicField(this, "provider", provider);
       __publicField(this, "cardImporter", cardImporter);
@@ -1436,7 +1441,7 @@ ${starter.summary}` : starter.summary;
       this.sessions = new SessionManager(storage, config.llm.model, provider);
       const narrator = new Narrator(provider);
       this.pipeline = new TurnPipeline(this.sessions, narrator, provider);
-      this.entitlements = selectEntitlements(config.monetization);
+      this.entitlements = selectEntitlements(config.monetization, purchases);
     }
     /** Resolve a card source. Uses the injected importer, else lazy-loads the Node one. */
     async importCard(source, baseDir) {
@@ -8922,7 +8927,9 @@ ${str3(snapshot)}`);
       dataDir: "",
       // Self-host default: everything unlocked. In-app play has no billing
       // surface, so premium packs load like any other pack.
-      monetization: { hosted: false, unlockedPackIds: [], tenantUnlockedPackIds: {} }
+      monetization: { hosted: false, unlockedPackIds: [], tenantUnlockedPackIds: {} },
+      // Billing is a hosted/server concern; the in-app engine never mounts it.
+      billing: { enabled: false, secretKey: "", webhookSecret: "", prices: {}, successUrl: "", cancelUrl: "", mode: "payment", storeFile: "" }
     };
     const bot = new Bot(config, provider, storage, rejectUrlImport, "local");
     const imageCache = /* @__PURE__ */ new Map();

@@ -28,6 +28,7 @@ import type { WebSocket } from 'ws';
 import { WebSocketServer } from 'ws';
 import type { IncomingMessage, OutgoingMessage, PlatformAdapter } from '../core/types.js';
 import type { SessionStorage } from '../core/session/storage.js';
+import { isBillingPath, type BillingHttpRequest, type BillingHttpResponse } from '../core/billing/handler.js';
 import {
   MAX_ROOM_CHARS,
   MAX_USER_CHARS,
@@ -46,6 +47,8 @@ export const UNJOINED_FRAMES_PER_SEC = 10;
 export const MAX_FRAME_BYTES = 32 * 1024;
 /** Upload cap for POST /portrait — portraits are small; bytes go over HTTP, never a WS frame. */
 export const MAX_PORTRAIT_BYTES = 256 * 1024;
+/** Cap on a billing request body (webhook events + tiny checkout JSON are well under this). */
+export const MAX_BILLING_BODY_BYTES = 512 * 1024;
 /**
  * Raster image types a portrait upload may carry AND that may be served back
  * inline. `image/svg+xml` is deliberately EXCLUDED: an SVG is an active document
@@ -84,6 +87,14 @@ export class WebAdapter implements PlatformAdapter {
      * session state. Omitted in bot-less tests; roster then carries names only.
      */
     storage?: SessionStorage,
+    /**
+     * Optional billing HTTP handler (Stripe checkout/webhook/status). Injected
+     * by the composition root only when hosted billing is configured; when
+     * absent, `/billing/*` paths 404 like any other unknown route. The handler
+     * is transport-agnostic (see `core/billing/handler.ts`) — this adapter only
+     * reads the raw body and forwards it.
+     */
+    private readonly billing?: (req: BillingHttpRequest) => Promise<BillingHttpResponse>,
   ) {
     this.room = new RoomEngine({ storage, password, platform: 'web' });
   }
@@ -177,8 +188,59 @@ export class WebAdapter implements PlatformAdapter {
     } catch {
       return void res.writeHead(400).end(); // Node accepts request-targets WHATWG URL rejects (e.g. "//[")
     }
+    if (isBillingPath(pathname)) return this.handleBilling(req, res, pathname);
     if (pathname === '/portrait' || pathname.startsWith('/portrait/')) return this.handlePortrait(req, res, pathname);
     return this.serveStatic(req, res, pathname);
+  }
+
+  /**
+   * Billing endpoints (`/billing/checkout|webhook|status`). Reads the raw body
+   * (webhook signature verification needs the EXACT bytes Stripe signed — never
+   * re-serialize), lowercases headers, and forwards to the injected handler.
+   * 404s when billing isn't configured.
+   */
+  private async handleBilling(req: HttpRequest, res: ServerResponse, pathname: string): Promise<void> {
+    if (!this.billing) return void res.writeHead(404, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: 'billing not enabled' }));
+    const method = req.method ?? 'GET';
+    let query: Record<string, string | undefined> = {};
+    try {
+      query = Object.fromEntries(new URL(req.url ?? '/', 'http://x').searchParams.entries());
+    } catch {
+      /* leave query empty */
+    }
+
+    let rawBody = '';
+    if (method === 'POST' || method === 'PUT') {
+      const declared = Number(req.headers['content-length']);
+      if (Number.isFinite(declared) && declared > MAX_BILLING_BODY_BYTES) {
+        res.writeHead(413, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: 'body too large' }));
+        return void req.resume();
+      }
+      const chunks: Buffer[] = [];
+      let total = 0;
+      let over = false;
+      for await (const chunk of req) {
+        const b = chunk as Buffer;
+        total += b.length;
+        if (over) continue;
+        if (total > MAX_BILLING_BODY_BYTES) {
+          over = true;
+          chunks.length = 0;
+          continue;
+        }
+        chunks.push(b);
+      }
+      if (over) return void res.writeHead(413, { 'Content-Type': 'application/json' }).end(JSON.stringify({ error: 'body too large' }));
+      rawBody = Buffer.concat(chunks).toString('utf8');
+    } else {
+      req.resume();
+    }
+
+    const headers: Record<string, string | undefined> = {};
+    for (const [k, v] of Object.entries(req.headers)) headers[k.toLowerCase()] = Array.isArray(v) ? v.join(',') : v;
+
+    const result = await this.billing({ method, pathname, headers, rawBody, query });
+    res.writeHead(result.status, result.headers ?? { 'Content-Type': 'application/json' }).end(result.body);
   }
 
   /**

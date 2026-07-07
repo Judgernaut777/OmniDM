@@ -15,6 +15,8 @@ import { loadConfig } from './config.js';
 import { createProvider } from './providers/index.js';
 import { Bot } from './core/bot.js';
 import { NodeFileStorage } from './core/session/store.js';
+import { FilePurchaseStore } from './core/billing/store-node.js';
+import { createBillingHandler, type BillingHttpRequest, type BillingHttpResponse } from './core/billing/handler.js';
 import { CliAdapter } from './adapters/cli.js';
 import { DiscordAdapter } from './adapters/discord.js';
 import { SlackAdapter } from './adapters/slack.js';
@@ -28,6 +30,7 @@ export function pickAdapter(
   name: string,
   config: ReturnType<typeof loadConfig>,
   storage: NodeFileStorage,
+  billingHandler?: (req: BillingHttpRequest) => Promise<BillingHttpResponse>,
 ): PlatformAdapter {
   switch (name) {
     case 'discord':
@@ -41,7 +44,7 @@ export function pickAdapter(
     case 'web':
       // Share the Bot's storage so the adapter can enrich the roster and serve
       // card portraits from the same live session state.
-      return new WebAdapter(config.web.host, config.web.port, config.web.password, undefined, undefined, storage);
+      return new WebAdapter(config.web.host, config.web.port, config.web.password, undefined, undefined, storage, billingHandler);
     case 'cli':
     default:
       return new CliAdapter();
@@ -67,8 +70,28 @@ async function main() {
 
   const provider = createProvider(config);
   const storage = new NodeFileStorage(config.dataDir);
-  const bot = new Bot(config, provider, storage);
-  const adapter = pickAdapter(adapterArg, config, storage);
+
+  // Hosted billing (opt-in): a persistent purchase store feeds the entitlements
+  // gate live, and a billing HTTP handler (Stripe checkout/webhook) is mounted
+  // on the web adapter. Off entirely for self-host — nothing is gated there.
+  let purchases: FilePurchaseStore | undefined;
+  let billingHandler: ((req: BillingHttpRequest) => Promise<BillingHttpResponse>) | undefined;
+  if (config.billing.enabled) {
+    purchases = await new FilePurchaseStore(config.billing.storeFile).load();
+    billingHandler = createBillingHandler({
+      store: purchases,
+      prices: config.billing.prices,
+      apiKey: config.billing.secretKey,
+      webhookSecret: config.billing.webhookSecret,
+      successUrl: config.billing.successUrl,
+      cancelUrl: config.billing.cancelUrl,
+      mode: config.billing.mode,
+    });
+    console.log(`💳 Hosted billing enabled — ${Object.keys(config.billing.prices).length} purchasable pack(s), unlocks persisted to ${config.billing.storeFile}.`);
+  }
+
+  const bot = new Bot(config, provider, storage, undefined, 'server', purchases);
+  const adapter = pickAdapter(adapterArg, config, storage, billingHandler);
 
   adapter.onMessage((msg) => bot.handle(msg, (out) => adapter.send(out)));
 

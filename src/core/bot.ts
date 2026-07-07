@@ -22,7 +22,7 @@ import { CONDITIONS, normalizeCondition } from './rules/conditions.js';
 import { classPreset, MAX_BIO_CHARS, normalizePresetId, PORTRAIT_PRESETS } from './portraits.js';
 import { getBundledContentPack, listBundledContentPacks } from './content-packs/registry.js';
 import { isPackLockedForDisplay, loadContentPack, PackLockedError } from './content-packs/loader.js';
-import { selectEntitlements, type Entitlements } from './entitlements/entitlements.js';
+import { selectEntitlements, type Entitlements, type UnlockSource } from './entitlements/entitlements.js';
 
 type Send = (msg: OutgoingMessage) => Promise<void>;
 
@@ -85,11 +85,19 @@ export class Bot {
      * their own key/model/endpoint.
      */
     private mode: 'server' | 'local' = 'server',
+    /**
+     * Optional LIVE unlock source (a billing PurchaseStore). When hosted-tier
+     * enforcement is on, a premium pack unlocks for a tenant the moment their
+     * Stripe checkout is fulfilled into this store — no static-config edit. Omit
+     * for self-host (nothing is gated) or a hosted deployment using only the
+     * static allowlists in `config.monetization`.
+     */
+    purchases?: UnlockSource,
   ) {
     this.sessions = new SessionManager(storage, config.llm.model, provider);
     const narrator = new Narrator(provider);
     this.pipeline = new TurnPipeline(this.sessions, narrator, provider);
-    this.entitlements = selectEntitlements(config.monetization);
+    this.entitlements = selectEntitlements(config.monetization, purchases);
   }
 
   /** Resolve a card source. Uses the injected importer, else lazy-loads the Node one. */
