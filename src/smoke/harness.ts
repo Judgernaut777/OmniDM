@@ -63,16 +63,29 @@ import { isCapacitorNative, getCapacitorHttp, makeNativeFetch, selectFetch, type
 // ── Reporter seam ──────────────────────────────────────────────────────────
 export interface Reporter {
   check(label: string, cond: boolean): void;
+  staticCheck(label: string, cond: boolean): void;
   skip(label: string): void;
 }
-let active: Reporter = { check() {}, skip() {} };
+let active: Reporter = { check() {}, staticCheck() {}, skip() {} };
 /** Point `check`/`skip` at the runner's reporter (legacy counter, or per-test collector). */
 export function setReporter(r: Reporter): void {
   active = r;
 }
-/** Assert `cond`, labelled — delegates to the active reporter. */
+/** Assert `cond` by exercising RUNTIME BEHAVIOR (the engine/adapter ran and this checks its output). */
 export function check(label: string, cond: boolean): void {
   active.check(label, cond);
+}
+/**
+ * Assert `cond` over COMMITTED SOURCE / CONFIG / DOCS — a grep-over-source or
+ * file-drift/existence check that does NOT exercise runtime behavior (e.g. the
+ * native-shell scaffolds we can't launch on this box, byte-identical bundling,
+ * a README/CI assertion). Tallied and reported SEPARATELY from behavioral checks
+ * so the headline count is honest about how much is behavioral vs static — the
+ * "~22% grep-over-source" the project's own critique flagged is now measurable,
+ * not hidden inside one number.
+ */
+export function staticCheck(label: string, cond: boolean): void {
+  active.staticCheck(label, cond);
 }
 /** An explicitly COUNTED skip (never a silent no-op) — delegates to the active reporter. */
 export function skip(label: string): void {
@@ -84,9 +97,17 @@ export class LegacyReporter implements Reporter {
   total = 0;
   failures = 0;
   skipped = 0;
+  /** Subset of `total` that are static source/config/doc assertions (not behavioral). */
+  staticTotal = 0;
   check(label: string, cond: boolean): void {
     this.total++;
     console.log(`${cond ? '✅' : '❌'} ${label}`);
+    if (!cond) this.failures++;
+  }
+  staticCheck(label: string, cond: boolean): void {
+    this.total++;
+    this.staticTotal++;
+    console.log(`${cond ? '✅' : '❌'} [static] ${label}`);
     if (!cond) this.failures++;
   }
   skip(label: string): void {
@@ -113,6 +134,11 @@ export class CollectingReporter implements Reporter {
       this.failures++;
       this.failedLabels.push(label);
     }
+  }
+  // A static assertion still fails its node:test test if false — the split only
+  // matters for the counted runner's headline; here every check is authoritative.
+  staticCheck(label: string, cond: boolean): void {
+    this.check(label, cond);
   }
   skip(): void {
     this.skipped++;

@@ -60,6 +60,7 @@ import { createLocalEngine } from '../browser/local-engine.js';
 import { isCapacitorNative, getCapacitorHttp, makeNativeFetch, selectFetch, type CapacitorHttpLike } from '../browser/native-http.js';
 import {
   check,
+  staticCheck,
   skip,
   Suite,
   MockProvider,
@@ -1114,10 +1115,10 @@ export function registerAll(suite: Suite): void {
     check('web-ui: style.css served as text/css', cssRes.ok && Boolean(cssRes.headers.get('content-type')?.startsWith('text/css')));
     check('web-ui: portraits.js served as text/javascript', portraitJsRes.ok && Boolean(portraitJsRes.headers.get('content-type')?.startsWith('text/javascript')));
     const html = await htmlRes.text();
-    check('web-ui: HTML wires up app.js, portraits.js and style.css',
+    staticCheck('web-ui: HTML wires up app.js, portraits.js and style.css',
       html.includes('src="app.js"') && html.includes('src="portraits.js"') && html.includes('href="style.css"'));
     const srcHrefs = [...html.matchAll(/(?:src|href)\s*=\s*"([^"]*)"/gi)].map((m) => m[1]);
-    check('web-ui: every asset reference is same-origin (relative), never an external origin',
+    staticCheck('web-ui: every asset reference is same-origin (relative), never an external origin',
       srcHrefs.length >= 4 && srcHrefs.every((v) => !/^(?:https?:)?\/\//i.test(v)));
 
     // ── Marketing landing page (web/landing.html) ──
@@ -1130,60 +1131,60 @@ export function registerAll(suite: Suite): void {
     // on its own; CSP's script/style/img/connect-src stay locked to
     // self/data: with no https: scheme allowance at all (unlike index.html,
     // this page never needs to reach a user-configured LLM endpoint).
-    check('web-ui: web/landing.html exists on disk', await fs.access(path.join(WEB_ROOT, 'landing.html')).then(() => true, () => false));
+    staticCheck('web-ui: web/landing.html exists on disk', await fs.access(path.join(WEB_ROOT, 'landing.html')).then(() => true, () => false));
     const landingRes = await fetch(`http://127.0.0.1:${port}/landing.html`);
     check('web-ui: landing.html served as text/html', landingRes.ok && Boolean(landingRes.headers.get('content-type')?.startsWith('text/html')));
     const landingHtml = await landingRes.text();
     const landingResourceSrcs = [...landingHtml.matchAll(/<(?:script|img|link|iframe|source|embed|object)\b[^>]*\s(?:src|href)\s*=\s*"([^"]*)"/gi)].map((m) => m[1]);
-    check('web-ui: landing.html loads no external resource (script/style/image/frame) — same-origin or data: only',
+    staticCheck('web-ui: landing.html loads no external resource (script/style/image/frame) — same-origin or data: only',
       landingResourceSrcs.every((v) => v.startsWith('data:') || v.startsWith('#') || !/^[a-z][a-z0-9+.-]*:\/\//i.test(v)));
-    check('web-ui: landing.html sets a strict CSP with no external origin in script/style/img/connect-src',
+    staticCheck('web-ui: landing.html sets a strict CSP with no external origin in script/style/img/connect-src',
       /Content-Security-Policy/.test(landingHtml) && !/(script-src|style-src|img-src|connect-src)[^;"]*https?:\/\//i.test(landingHtml));
-    check('web-ui: landing.html links to the real app, the desktop app, and GitHub (no fabricated metrics/testimonials)',
+    staticCheck('web-ui: landing.html links to the real app, the desktop app, and GitHub (no fabricated metrics/testimonials)',
       /href="index\.html"/.test(landingHtml) && /github\.com\/Judgernaut777\/OmniDM/.test(landingHtml) &&
       !/testimonial|★★★★★|\d[,.]?\d*\s*(?:stars|users|downloads|players)\b/i.test(landingHtml));
     // The client is DOM code smoke can't execute, so pin its two reconnect-UX
     // fixes statically: Leave must not depend on a close event (a CLOSED socket
     // fires none), and a trailing close must not wipe a shown join error.
     const appSrc = await jsRes.text();
-    check('web-ui: Leave cancels the retry timer and shows the join screen directly',
+    staticCheck('web-ui: Leave cancels the retry timer and shows the join screen directly',
       /'leave-btn'\)[^]*?clearTimeout\(state\.retryTimer\)[^]*?showJoin\(''\)/.test(appSrc));
-    check('web-ui: a close event after a refused hello cannot wipe the join-screen error',
+    staticCheck('web-ui: a close event after a refused hello cannot wipe the join-screen error',
       /if \(\$\('join-screen'\)\.hidden\) showJoin\(''\)/.test(appSrc));
     // The portrait helper must be procedural + XSS-safe: crests are built with
     // createElementNS (never innerHTML) and cover all eight preset archetypes.
     const portraitSrc = await portraitJsRes.text();
-    check('web-ui: portraits.js exposes portraitSVG and the full preset catalog',
+    staticCheck('web-ui: portraits.js exposes portraitSVG and the full preset catalog',
       /function portraitSVG\(/.test(portraitSrc) &&
       PORTRAIT_PRESETS.every((id) => portraitSrc.includes(`${id}:`)));
-    check('web-ui: crests are built with createElementNS, with no innerHTML assignment',
+    staticCheck('web-ui: crests are built with createElementNS, with no innerHTML assignment',
       portraitSrc.includes('createElementNS') && !/\.innerHTML\s*=/.test(portraitSrc));
-    check('web-ui: the roster token and card sheet render portraits, not a bare hue dot',
+    staticCheck('web-ui: the roster token and card sheet render portraits, not a bare hue dot',
       appSrc.includes('makePortrait') && appSrc.includes("el('span', 'seat-portrait')") &&
       /function openCard\(/.test(appSrc) && appSrc.includes('/portrait/'));
     // Cross-origin portrait parity: roster/board descriptors carry a server-RELATIVE
     // /portrait/… path, so BOTH the roster <img> and the board <image> must resolve it
     // through the transport's httpBase() — else, when the client is hosted apart from
     // the server, every portrait 404s against the page origin and falls back to a crest.
-    check('web-ui: portraits resolve their URL through the transport httpBase (cross-origin display parity)',
+    staticCheck('web-ui: portraits resolve their URL through the transport httpBase (cross-origin display parity)',
       /function portraitUrl\(/.test(appSrc) && /httpBase\(\)/.test(appSrc) &&
       /img\.src = portraitUrl\(/.test(appSrc) &&
       /setAttribute\('href', portraitUrl\(/.test(appSrc));
-    check('web-ui: index.html includes the character-card sheet with a crest gallery + upload',
+    staticCheck('web-ui: index.html includes the character-card sheet with a crest gallery + upload',
       html.includes('id="card-sheet"') && html.includes('id="card-gallery"') && html.includes('id="card-file"'));
 
     // Character-setup flow: a prominent, discoverable creator with a persistent
     // topbar entry, name/class/bio/import controls, and a live portrait preview.
-    check('web-ui: index.html has a persistent "Your character" button and the creator panel',
+    staticCheck('web-ui: index.html has a persistent "Your character" button and the creator panel',
       html.includes('id="creator-btn"') && html.includes('id="creator"') &&
       html.includes('id="creator-name"') && html.includes('id="creator-bio"') &&
       html.includes('id="creator-portrait"') && html.includes('id="creator-import"'));
-    check('web-ui: the creator opens from the button/own seat, auto-prompts first-timers, and wires class/name/bio/import',
+    staticCheck('web-ui: the creator opens from the button/own seat, auto-prompts first-timers, and wires class/name/bio/import',
       appSrc.includes('function openCreator(') && appSrc.includes('maybePromptCreator') &&
       /openCard[\s\S]*openCreator\(\)/.test(appSrc) &&
       appSrc.includes('/dm join ') && appSrc.includes('/dm class ') &&
       appSrc.includes('/dm bio ') && appSrc.includes('/dm import '));
-    check('web-ui: the creator class gallery previews all 12 classes with the procedural bust',
+    staticCheck('web-ui: the creator class gallery previews all 12 classes with the procedural bust',
       appSrc.includes('buildCreatorGallery') && appSrc.includes('CLASS_INFO') &&
       PORTRAIT_PRESETS.every((id) => appSrc.includes(`'${id}'`)) && appSrc.includes('portraitSVG(seed'));
 
@@ -1191,35 +1192,35 @@ export function registerAll(suite: Suite): void {
     // descriptor + portraitSVG), with a name label and distinct pc/npc + actor
     // styling; drags are throttled and send a final position on drop.
     const styleSrc = await cssRes.text();
-    check('web-ui: the board draws portrait tokens (crest/image) with a name label, not bare hue dots',
+    staticCheck('web-ui: the board draws portrait tokens (crest/image) with a name label, not bare hue dots',
       appSrc.includes('renderBoard') && appSrc.includes('tokenPortrait') && appSrc.includes('portraitForToken') &&
       appSrc.includes('crestNode') && appSrc.includes('token-label'));
-    check('web-ui: board CSS distinguishes pc/npc tokens, glows the actor, and fades the dice pop',
+    staticCheck('web-ui: board CSS distinguishes pc/npc tokens, glows the actor, and fades the dice pop',
       /\.token\.pc/.test(styleSrc) && /\.token\.npc/.test(styleSrc) &&
       /\.token\.actor/.test(styleSrc) && /@keyframes tokenglow/.test(styleSrc) && /\.board-pop/.test(styleSrc));
-    check('web-ui: index.html carries the token board with a Map toggle',
+    staticCheck('web-ui: index.html carries the token board with a Map toggle',
       html.includes('id="board-svg"') && html.includes('id="board-toggle"'));
-    check('web-ui: token drags are throttled and send a final move on drop',
+    staticCheck('web-ui: token drags are throttled and send a final move on drop',
       appSrc.includes('lastMoveSent') && appSrc.includes("type: 'move'") && /pointerup/.test(appSrc));
     // Client fixes smoke can't execute, pinned statically: the portrait upload
     // authorizes with the per-seat token (never the room password), and the board
     // dice-pop dedupes on the monotonic rollSeq with a first-frame baseline (so
     // repeat rolls still pop and a late joiner never pops a roll that predates it).
-    check('web-ui: portrait upload authorizes with the per-seat upload token (not the password)',
+    staticCheck('web-ui: portrait upload authorizes with the per-seat upload token (not the password)',
       appSrc.includes("'x-upload-token'") && appSrc.includes('state.uploadToken') && !/password=\$\{/.test(appSrc));
-    check('web-ui: the board dice-pop dedupes on rollSeq with a first-frame baseline',
+    staticCheck('web-ui: the board dice-pop dedupes on rollSeq with a first-frame baseline',
       appSrc.includes('rollSeq') && appSrc.includes('lastRollSeen') && !appSrc.includes('lastRollSig'));
     // Creator Save honesty: a name/bio Save must NOT flip the status to "Saved"
     // optimistically (a `/dm join`/`/dm bio` before `/dm new` is rejected). It
     // shows "Saving…" and only reconcileCreatorStatus() promotes it once the
     // enriched roster actually reflects the change.
-    check('web-ui: creator name/bio Saves confirm from the server roster, never optimistically (no false "Saved")',
+    staticCheck('web-ui: creator name/bio Saves confirm from the server roster, never optimistically (no false "Saved")',
       appSrc.includes('reconcileCreatorStatus') && appSrc.includes('state.creator.pendingName') &&
       appSrc.includes('state.creator.pendingBio') && appSrc.includes("textContent = 'Saving…'") &&
       !/\/dm join \$\{name\}`\);\s*\$\('creator-name-status'\)\.textContent = `Saved/.test(appSrc));
     // Class highlight/label must track the optimistic pick (like the live preview),
     // not lag a class change behind a roster round-trip on the stale server value.
-    check('web-ui: currentClassId prefers the optimistic pendingClass, matching creatorPreviewSeat',
+    staticCheck('web-ui: currentClassId prefers the optimistic pendingClass, matching creatorPreviewSeat',
       /function currentClassId\(\)[^]*?state\.creator\.pendingClass \|\| \(u &&/.test(appSrc));
 
     // Optional, offline: render a crest in headless chromium to prove the
@@ -1245,28 +1246,28 @@ export function registerAll(suite: Suite): void {
       bundleRes.ok && Boolean(bundleRes.headers.get('content-type')?.startsWith('text/javascript')));
     const transportSrc = await transportRes.text();
     const engineSrc = await bundleRes.text();
-    check('web-ui: HTML loads the in-app engine bundle and the transport layer (same-origin scripts)',
+    staticCheck('web-ui: HTML loads the in-app engine bundle and the transport layer (same-origin scripts)',
       html.includes('src="engine.bundle.js"') && html.includes('src="transport.js"'));
-    check('web-ui: transport.js defines both Remote and Local transports and exposes them',
+    staticCheck('web-ui: transport.js defines both Remote and Local transports and exposes them',
       /class RemoteTransport/.test(transportSrc) && /class LocalTransport/.test(transportSrc) &&
       transportSrc.includes('OmniDMTransport'));
-    check('web-ui: RemoteTransport keeps the unchanged WebSocket protocol (hello/say/move over ws), Local drives the in-page engine',
+    staticCheck('web-ui: RemoteTransport keeps the unchanged WebSocket protocol (hello/say/move over ws), Local drives the in-page engine',
       /new WebSocket\(/.test(transportSrc) && transportSrc.includes('createLocalEngine') && transportSrc.includes('handleFrame'));
-    check('web-ui: the engine bundle exposes OmniDMEngine.createLocalEngine and pulls in NO live node: builtin',
+    staticCheck('web-ui: the engine bundle exposes OmniDMEngine.createLocalEngine and pulls in NO live node: builtin',
       engineSrc.includes('OmniDMEngine') && engineSrc.includes('createLocalEngine') &&
       !/\brequire\(["']node:/.test(engineSrc) && !/from\s*["']node:/.test(engineSrc) && !/import\(["']node:/.test(engineSrc));
-    check('web-ui: app.js selects a transport (never a bare WebSocket) and sends hello through it',
+    staticCheck('web-ui: app.js selects a transport (never a bare WebSocket) and sends hello through it',
       appSrc.includes('OmniDMTransport') && appSrc.includes('LocalTransport') && appSrc.includes('RemoteTransport') &&
       !/new WebSocket\(/.test(appSrc) && appSrc.includes("type: 'hello'"));
 
     // Launch/settings UI: choose in-app vs server, name/room, the BYO-model
     // fields (local) and server URL/password (server), with a Settings re-entry.
-    check('web-ui: index.html has the launch mode picker (this device vs a server) and a Settings button',
+    staticCheck('web-ui: index.html has the launch mode picker (this device vs a server) and a Settings button',
       html.includes('id="mode-local"') && html.includes('id="mode-server"') && html.includes('id="settings-btn"'));
-    check('web-ui: index.html has the in-app BYO-model fields and the server fields',
+    staticCheck('web-ui: index.html has the in-app BYO-model fields and the server fields',
       html.includes('id="llm-provider"') && html.includes('id="llm-baseurl"') && html.includes('id="llm-apikey"') &&
       html.includes('id="llm-model"') && html.includes('id="j-server"') && html.includes('id="j-pass"'));
-    check('web-ui: app.js persists the mode/settings choice and can change it later (settings button reopens launch)',
+    staticCheck('web-ui: app.js persists the mode/settings choice and can change it later (settings button reopens launch)',
       appSrc.includes('omnidm-settings') && appSrc.includes('persistSettings') && appSrc.includes('applyLaunchMode') &&
       /'settings-btn'\)/.test(appSrc));
     check('web-ui: the in-app mode advertises single-device (solo/hotseat), server mode advertises multiplayer',
@@ -1275,19 +1276,19 @@ export function registerAll(suite: Suite): void {
     // KEY SECRECY: the user's LLM API key must never be logged/rendered. It may
     // only be read from the settings field / storage and handed to the provider.
     const apiKeyLogged = /console\.[a-z]+\([^)]*(apiKey|llm-apikey|__omnidm)/i;
-    check('web-ui: the LLM API key is never logged or rendered (secret stays on-device → provider only)',
+    staticCheck('web-ui: the LLM API key is never logged or rendered (secret stays on-device → provider only)',
       !apiKeyLogged.test(appSrc) && !apiKeyLogged.test(transportSrc) &&
       !/textContent\s*=\s*[^;]*apiKey/i.test(appSrc) && !/textContent\s*=\s*[^;]*apiKey/i.test(transportSrc));
     // The in-app engine must NOT serialize the key into a session (BrowserSessionStorage
     // stores the GameSession, which has no key field) — pin the source note + shape.
-    check('local-engine: the in-app Config carries no secret (apiKey lives only inside the provider)',
+    staticCheck('local-engine: the in-app Config carries no secret (apiKey lives only inside the provider)',
       engineSrc.includes('createLocalEngine'));
 
     // ── First-run onboarding polish ──
     // The launch card must spell out the free-model path as plain TEXT (never a
     // fetched external origin: no <a href>/<script src>/<link href> to it — the
     // asset-origin check above already proves every src/href is same-origin).
-    check('web-ui: the launch card shows free-model guidance (local/Ollama + a free OpenRouter key) as plain text',
+    staticCheck('web-ui: the launch card shows free-model guidance (local/Ollama + a free OpenRouter key) as plain text',
       html.includes('localhost:11434/v1') && /openrouter\.ai\/keys/.test(html) &&
       !/<a\s[^>]*href="https?:\/\/[^"]*openrouter/i.test(html));
     check('web-ui: the API key field explains the local-model (no key) case inline',
@@ -1295,12 +1296,12 @@ export function registerAll(suite: Suite): void {
     // Help/About: reachable from the join screen AND the topbar, explains what
     // OmniDM is, reuses the command palette (no duplicated /dm reference), and
     // states where state + the key live.
-    check('web-ui: index.html has a Help/About affordance (join screen + topbar) and modal',
+    staticCheck('web-ui: index.html has a Help/About affordance (join screen + topbar) and modal',
       html.includes('id="help-btn-join"') && html.includes('id="help-btn"') &&
       html.includes('id="help-sheet"') && html.includes('id="help-open-palette"'));
-    check('web-ui: the Help modal explains device-only storage and key secrecy, textContent-safe (static HTML, no innerHTML)',
+    staticCheck('web-ui: the Help modal explains device-only storage and key secrecy, textContent-safe (static HTML, no innerHTML)',
       /stored only in this browser/i.test(html) && /scrubbed of\s+key-shaped/i.test(html) && !/innerHTML/.test(appSrc.match(/openHelp[\s\S]{0,300}/)?.[0] ?? ''));
-    check('web-ui: app.js wires the Help modal open/close (join screen, topbar, Escape, backdrop click) and hands off to the palette',
+    staticCheck('web-ui: app.js wires the Help modal open/close (join screen, topbar, Escape, backdrop click) and hands off to the palette',
       appSrc.includes('function openHelp()') && appSrc.includes('function closeHelp()') &&
       appSrc.includes("'help-btn-join'") && appSrc.includes("'help-btn'") &&
       /Escape'\)[\s\S]{0,120}closeHelp\(\)/.test(appSrc) &&
@@ -1308,23 +1309,23 @@ export function registerAll(suite: Suite): void {
     // Graceful errors: a proactive check for the single most common dead end
     // (default/typed endpoint isn't local, no key entered) plus a rewrite of the
     // engine's generic turn-failure notice into an actionable, non-stack message.
-    check('web-ui: app.js proactively warns (once, on first join) when a non-local endpoint has no API key',
+    staticCheck('web-ui: app.js proactively warns (once, on first join) when a non-local endpoint has no API key',
       appSrc.includes('function isLocalEndpoint(') && appSrc.includes('function warnIfNoKeyForRemoteEndpoint(') &&
       appSrc.includes('warnIfNoKeyForRemoteEndpoint()'));
-    check('web-ui: app.js turns a failed turn into a friendly, Settings-pointing message — never the raw text verbatim',
+    staticCheck('web-ui: app.js turns a failed turn into a friendly, Settings-pointing message — never the raw text verbatim',
       appSrc.includes('function friendlyEngineError(') && appSrc.includes('⚙ Settings') &&
       appSrc.includes("addLine('warn', '', friendly)"));
     // API key at rest: sessionStorage by default, localStorage only opt-in.
-    check('web-ui: app.js keeps the API key OUT of the durable localStorage record unless "remember" is ticked (sessionStorage by default)',
+    staticCheck('web-ui: app.js keeps the API key OUT of the durable localStorage record unless "remember" is ticked (sessionStorage by default)',
       appSrc.includes("sessionStorage.setItem(SESSION_KEY_STORAGE") &&
       /apiKey:\s*remember\s*\?\s*apiKey\s*:\s*''/.test(appSrc) &&
       appSrc.includes("localStorage.setItem(SETTINGS_KEY"));
-    check('web-ui: the launch form has an unticked-by-default "remember this key" opt-in',
+    staticCheck('web-ui: the launch form has an unticked-by-default "remember this key" opt-in',
       html.includes('id="llm-remember-key"') && !html.includes('id="llm-remember-key" checked'));
     // connect-src narrowing: app.js locks this tab's CSP to the actual configured
     // provider origin at connect-time (see web/index.html's CSP comment for why
     // this can't be baked in statically), never widening a lock it already set.
-    check('web-ui: app.js narrows connect-src to the configured provider origin via a second, stricter <meta> CSP at connect-time',
+    staticCheck('web-ui: app.js narrows connect-src to the configured provider origin via a second, stricter <meta> CSP at connect-time',
       appSrc.includes('function computeProviderOrigin(') && appSrc.includes('function applyProviderCsp(') &&
       appSrc.includes("meta.setAttribute('http-equiv', 'Content-Security-Policy')") &&
       appSrc.includes("=== 'reload-required'"));
@@ -1840,7 +1841,7 @@ export function registerAll(suite: Suite): void {
   // ── Portable engine: bundled rules registry (no node:fs on the narrator path) ──
   {
     const ruleMd = await fs.readFile('src/rules/dnd5e/system.md', 'utf8');
-    check('rules: bundled dnd5e module is byte-identical to rules/dnd5e/system.md (no drift)', BUNDLED_RULES.dnd5e === ruleMd);
+    staticCheck('rules: bundled dnd5e module is byte-identical to rules/dnd5e/system.md (no drift)', BUNDLED_RULES.dnd5e === ruleMd);
     check('rules: provider returns bundled content and empty for unknown systems',
       bundledRulesProvider.system('dnd5e') === ruleMd && bundledRulesProvider.system('nope') === '');
     // The narrator now reads rules through the registry — the on-disk rules text
@@ -1862,7 +1863,7 @@ export function registerAll(suite: Suite): void {
     // Bundled example pack: byte-identical mirror of the on-disk file (no drift),
     // same discipline as the rules-module bundling above.
     const packJsonOnDisk = await fs.readFile('content-packs/frontier-outpost.pack.json', 'utf8');
-    check('content-packs: bundled frontier-outpost pack is byte-identical to content-packs/frontier-outpost.pack.json',
+    staticCheck('content-packs: bundled frontier-outpost pack is byte-identical to content-packs/frontier-outpost.pack.json',
       FRONTIER_OUTPOST_PACK_JSON === packJsonOnDisk);
 
     // The Node file loader validates the same on-disk pack and agrees with the bundled one.
@@ -2480,24 +2481,24 @@ export function registerAll(suite: Suite): void {
     } = {};
     let confValid = true;
     try { conf = JSON.parse(confRaw); } catch { confValid = false; }
-    check('tauri: tauri.conf.json is valid JSON', confValid);
-    check('tauri: app identifier is com.omnidm.app', conf.identifier === 'com.omnidm.app');
-    check('tauri: frontendDist points at the committed web client (../web)', conf.build?.frontendDist === '../web');
+    staticCheck('tauri: tauri.conf.json is valid JSON', confValid);
+    staticCheck('tauri: app identifier is com.omnidm.app', conf.identifier === 'com.omnidm.app');
+    staticCheck('tauri: frontendDist points at the committed web client (../web)', conf.build?.frontendDist === '../web');
 
     // The referenced frontend dir + its entry HTML actually exist.
     const distRel = conf.build?.frontendDist ?? '';
     const webIndex = path.join(tauriDir, distRel, 'index.html');
-    check('tauri: the frontendDist directory resolves to web/index.html on disk',
+    staticCheck('tauri: the frontendDist directory resolves to web/index.html on disk',
       await fs.access(webIndex).then(() => true, () => false));
 
     const csp = conf.app?.security?.csp ?? '';
-    check('tauri: CSP keeps script-src \'self\' (no inline/injected script — XSS stays shut)',
+    staticCheck('tauri: CSP keeps script-src \'self\' (no inline/injected script — XSS stays shut)',
       /script-src\s+'self'/.test(csp) && !/script-src[^;]*'unsafe-inline'/.test(csp));
-    check('tauri: CSP allows the user-configured LLM endpoint via connect-src (https + loopback)',
+    staticCheck('tauri: CSP allows the user-configured LLM endpoint via connect-src (https + loopback)',
       /connect-src[^;]*\bhttps:/.test(csp) && /connect-src[^;]*127\.0\.0\.1/.test(csp));
-    check('tauri: CSP bakes in NO external origin (only schemes/loopback are allowed)',
+    staticCheck('tauri: CSP bakes in NO external origin (only schemes/loopback are allowed)',
       !/(?:script|default|img|style)-src[^;]*https?:\/\//.test(csp));
-    check('tauri: a native window carries the app title', Boolean(conf.app?.windows?.[0]?.title));
+    staticCheck('tauri: a native window carries the app title', Boolean(conf.app?.windows?.[0]?.title));
 
     // The Rust + capability + icon files a real build consumes are all present.
     const need = [
@@ -2506,23 +2507,23 @@ export function registerAll(suite: Suite): void {
       'icons/32x32.png', 'icons/128x128.png', 'icons/icon.ico', 'icons/icon.icns',
     ];
     const present = await Promise.all(need.map((f) => fs.access(path.join(tauriDir, f)).then(() => true, () => false)));
-    check('tauri: the Rust/build/capability/icon scaffold files all exist', present.every(Boolean));
+    staticCheck('tauri: the Rust/build/capability/icon scaffold files all exist', present.every(Boolean));
 
     // Every bundle-referenced icon exists on disk (a real build fails otherwise).
     const icons = conf.bundle?.icon ?? [];
     const iconsPresent = await Promise.all(icons.map((f) => fs.access(path.join(tauriDir, f)).then(() => true, () => false)));
-    check('tauri: every icon listed in bundle.icon exists', icons.length > 0 && iconsPresent.every(Boolean));
+    staticCheck('tauri: every icon listed in bundle.icon exists', icons.length > 0 && iconsPresent.every(Boolean));
 
     // The capability grants only Tauri core defaults — no fs/shell/http reach.
     const capRaw = await fs.readFile(path.join(tauriDir, 'capabilities/default.json'), 'utf8');
     const cap = JSON.parse(capRaw) as { permissions?: string[] };
-    check('tauri: capability grants only core defaults (no fs/shell/http permission)',
+    staticCheck('tauri: capability grants only core defaults (no fs/shell/http permission)',
       Array.isArray(cap.permissions) && cap.permissions.includes('core:default') &&
       !cap.permissions.some((p) => /^(fs|shell|http):/.test(p)));
 
     // The npm scripts a developer runs are wired at the repo root.
     const pkg = JSON.parse(await fs.readFile('package.json', 'utf8')) as { scripts?: Record<string, string>; devDependencies?: Record<string, string> };
-    check('tauri: package.json exposes tauri:dev / tauri:build scripts + the CLI devDependency',
+    staticCheck('tauri: package.json exposes tauri:dev / tauri:build scripts + the CLI devDependency',
       Boolean(pkg.scripts?.['tauri:dev']) && Boolean(pkg.scripts?.['tauri:build']) && Boolean(pkg.devDependencies?.['@tauri-apps/cli']));
   }
 
@@ -2538,27 +2539,27 @@ export function registerAll(suite: Suite): void {
   {
     const mainRaw = await fs.readFile('electron/main.cjs', 'utf8');
     // Every window is hardened per the Electron security checklist.
-    check('electron: renderer runs with contextIsolation:true (page JS isolated from Electron internals)',
+    staticCheck('electron: renderer runs with contextIsolation:true (page JS isolated from Electron internals)',
       /contextIsolation:\s*true/.test(mainRaw) && !/contextIsolation:\s*false/.test(mainRaw));
-    check('electron: nodeIntegration:false (no require/Node globals reachable from the untrusted page)',
+    staticCheck('electron: nodeIntegration:false (no require/Node globals reachable from the untrusted page)',
       /nodeIntegration:\s*false/.test(mainRaw) && !/nodeIntegration:\s*true/.test(mainRaw));
-    check('electron: sandbox:true (renderer runs in Chromium\'s OS sandbox like a real tab)',
+    staticCheck('electron: sandbox:true (renderer runs in Chromium\'s OS sandbox like a real tab)',
       /sandbox:\s*true/.test(mainRaw) && !/sandbox:\s*false/.test(mainRaw));
-    check('electron: no preload bridge is exposed to the page (nothing on window.* to call into)',
+    staticCheck('electron: no preload bridge is exposed to the page (nothing on window.* to call into)',
       !/preload:\s*(['"`]|path\.)/.test(mainRaw));
-    check('electron: webSecurity is never disabled + insecure content is refused',
+    staticCheck('electron: webSecurity is never disabled + insecure content is refused',
       !/webSecurity:\s*false/.test(mainRaw) && !/allowRunningInsecureContent:\s*true/.test(mainRaw));
-    check('electron: only a local file is loaded — no remote URL ever reaches loadURL/loadFile',
+    staticCheck('electron: only a local file is loaded — no remote URL ever reaches loadURL/loadFile',
       /loadFile\(/.test(mainRaw) && !/loadURL\(\s*['"`]https?:/.test(mainRaw));
-    check('electron: external links/navigations are handed to shell.openExternal, not loaded in-app',
+    staticCheck('electron: external links/navigations are handed to shell.openExternal, not loaded in-app',
       /setWindowOpenHandler/.test(mainRaw) && /will-navigate/.test(mainRaw) && /shell\.openExternal/.test(mainRaw) &&
       /action:\s*'deny'/.test(mainRaw));
-    check('electron: untrusted content cannot be granted device permissions',
+    staticCheck('electron: untrusted content cannot be granted device permissions',
       /setPermissionRequestHandler/.test(mainRaw) && /callback\(false\)/.test(mainRaw));
     // shell.openExternal is only ever reached through a scheme allowlist — a
     // file:/smb:/custom-protocol external "link" (rendered LLM output, a
     // hostile character card) must never launch a local app or reach a share.
-    check('electron: shell.openExternal is gated by an http(s)/mailto scheme allowlist (file:/smb:/custom schemes refused)',
+    staticCheck('electron: shell.openExternal is gated by an http(s)/mailto scheme allowlist (file:/smb:/custom schemes refused)',
       /SAFE_EXTERNAL_SCHEMES\s*=\s*new Set\(\[[^\]]*'http:'[^\]]*'https:'[^\]]*'mailto:'[^\]]*\]\)/.test(mainRaw) &&
       /function openExternalIfSafe/.test(mainRaw) &&
       /if\s*\(!SAFE_EXTERNAL_SCHEMES\.has\(scheme\)\)/.test(mainRaw) &&
@@ -2579,41 +2580,41 @@ export function registerAll(suite: Suite): void {
         mac?: { target?: string[]; icon?: string };
       };
     };
-    check('electron: package.json main + electron/electron:build scripts + the electron/electron-builder devDeps',
+    staticCheck('electron: package.json main + electron/electron:build scripts + the electron/electron-builder devDeps',
       ePkg.main === 'electron/main.cjs' &&
       Boolean(ePkg.scripts?.['electron']) && Boolean(ePkg.scripts?.['electron:build']) &&
       Boolean(ePkg.devDependencies?.['electron']) && Boolean(ePkg.devDependencies?.['electron-builder']));
-    check('electron: builder appId is com.omnidm.app and productName is OmniDM',
+    staticCheck('electron: builder appId is com.omnidm.app and productName is OmniDM',
       ePkg.build?.appId === 'com.omnidm.app' && ePkg.build?.productName === 'OmniDM');
-    check('electron: builder bundles the web client + engine bundle (files globs cover electron/ + web/)',
+    staticCheck('electron: builder bundles the web client + engine bundle (files globs cover electron/ + web/)',
       Array.isArray(ePkg.build?.files) &&
       ePkg.build!.files!.some((g) => /^web\//.test(g)) && ePkg.build!.files!.some((g) => /^electron\//.test(g)));
-    check('electron: Linux AppImage + Windows nsis + macOS dmg targets are all configured',
+    staticCheck('electron: Linux AppImage + Windows nsis + macOS dmg targets are all configured',
       (ePkg.build?.linux?.target ?? []).includes('AppImage') &&
       (ePkg.build?.win?.target ?? []).includes('nsis') &&
       (ePkg.build?.mac?.target ?? []).includes('dmg'));
     // Every icon the builder references exists on disk (a real build fails otherwise).
     const eIcons = [ePkg.build?.linux?.icon, ePkg.build?.win?.icon, ePkg.build?.mac?.icon].filter(Boolean) as string[];
     const eIconsPresent = await Promise.all(eIcons.map((f) => fs.access(f).then(() => true, () => false)));
-    check('electron: every builder-referenced icon exists on disk', eIcons.length > 0 && eIconsPresent.every(Boolean));
+    staticCheck('electron: every builder-referenced icon exists on disk', eIcons.length > 0 && eIconsPresent.every(Boolean));
     // The window actually loads the committed web client on disk.
-    check('electron: main.cjs targets web/index.html and it exists on disk',
+    staticCheck('electron: main.cjs targets web/index.html and it exists on disk',
       /web['"`],\s*['"`]index\.html/.test(mainRaw) &&
       await fs.access(path.join('web', 'index.html')).then(() => true, () => false));
     // will-navigate is registered exactly once (a per-window + a module-level
     // handler would double every external-link openExternal call).
-    check('electron: the will-navigate guard is registered exactly once (no doubled openExternal)',
+    staticCheck('electron: the will-navigate guard is registered exactly once (no doubled openExternal)',
       (mainRaw.match(/\.on\('will-navigate'/g) || []).length === 1 &&
       !/win\.webContents\.on\('will-navigate'/.test(mainRaw));
     // Running the Electron entry under plain Node fails with a clear message.
-    check('electron: main.cjs guards against `node .` (clear message, not a cryptic TypeError)',
+    staticCheck('electron: main.cjs guards against `node .` (clear message, not a cryptic TypeError)',
       /typeof app\.setName !== 'function'/.test(mainRaw) && /process\.exit\(1\)/.test(mainRaw));
     // The offline renderer check the README points at actually exists.
-    check('electron: the documented offline renderer check (electron/webview-check.mjs) exists',
+    staticCheck('electron: the documented offline renderer check (electron/webview-check.mjs) exists',
       await fs.access(path.join('electron', 'webview-check.mjs')).then(() => true, () => false));
     // README documents the packaging command that now exists (no stale "out of scope" claim).
     const readme = await fs.readFile('README.md', 'utf8');
-    check('electron: README documents `npm run electron:build` and no longer claims packaging is unconfigured',
+    staticCheck('electron: README documents `npm run electron:build` and no longer claims packaging is unconfigured',
       /npm run electron:build/.test(readme) && !/add\s+`electron-builder`\s+and configure/.test(readme));
   }
 
@@ -2692,26 +2693,26 @@ export function registerAll(suite: Suite): void {
   {
     // (1) Config points at the committed web client, with CapacitorHttp enabled.
     const capConfRaw = await fs.readFile('capacitor.config.ts', 'utf8');
-    check('capacitor: appId is com.omnidm.app and appName is OmniDM',
+    staticCheck('capacitor: appId is com.omnidm.app and appName is OmniDM',
       /appId:\s*'com\.omnidm\.app'/.test(capConfRaw) && /appName:\s*'OmniDM'/.test(capConfRaw));
     const webDirMatch = capConfRaw.match(/webDir:\s*'([^']+)'/);
-    check('capacitor: webDir points at the committed web client',
+    staticCheck('capacitor: webDir points at the committed web client',
       Boolean(webDirMatch) && webDirMatch![1] === 'web');
-    check('capacitor: the webDir resolves to web/index.html + the engine bundle on disk',
+    staticCheck('capacitor: the webDir resolves to web/index.html + the engine bundle on disk',
       webDirMatch != null &&
       await fs.access(path.join(webDirMatch[1], 'index.html')).then(() => true, () => false) &&
       await fs.access(path.join(webDirMatch[1], 'engine.bundle.js')).then(() => true, () => false));
-    check('capacitor: CapacitorHttp plugin is enabled (native LLM transport, CORS bypass)',
+    staticCheck('capacitor: CapacitorHttp plugin is enabled (native LLM transport, CORS bypass)',
       /CapacitorHttp:\s*\{[^}]*enabled:\s*true/.test(capConfRaw));
     const capPkg = JSON.parse(await fs.readFile('package.json', 'utf8')) as { scripts?: Record<string, string>; devDependencies?: Record<string, string> };
-    check('capacitor: package.json exposes cap:sync / cap:android / cap:ios + the @capacitor devDeps',
+    staticCheck('capacitor: package.json exposes cap:sync / cap:android / cap:ios + the @capacitor devDeps',
       Boolean(capPkg.scripts?.['cap:sync']) && Boolean(capPkg.scripts?.['cap:android']) && Boolean(capPkg.scripts?.['cap:ios']) &&
       Boolean(capPkg.devDependencies?.['@capacitor/core']) && Boolean(capPkg.devDependencies?.['@capacitor/cli']) &&
       Boolean(capPkg.devDependencies?.['@capacitor/android']) && Boolean(capPkg.devDependencies?.['@capacitor/ios']));
 
     // (2a) Feature detection — Node is NOT a native platform, so the providers
     // keep their default fetch (selectFetch returns undefined, changing nothing).
-    check('capacitor: plain Node/browser is not detected as native → default fetch kept',
+    staticCheck('capacitor: plain Node/browser is not detected as native → default fetch kept',
       isCapacitorNative(globalThis) === false && selectFetch(globalThis) === undefined);
 
     // (2b) A SIMULATED Capacitor native WebView: a fake global with a native-flag
@@ -2731,10 +2732,10 @@ export function registerAll(suite: Suite): void {
       Response,
     } as unknown as typeof globalThis;
 
-    check('capacitor: a native WebView is detected and exposes CapacitorHttp',
+    staticCheck('capacitor: a native WebView is detected and exposes CapacitorHttp',
       isCapacitorNative(nativeGlobal) === true && getCapacitorHttp(nativeGlobal) === fakeHttp);
     const nativeFetch = selectFetch(nativeGlobal);
-    check('capacitor: selectFetch returns a native-backed fetch on a native platform',
+    staticCheck('capacitor: selectFetch returns a native-backed fetch on a native platform',
       typeof nativeFetch === 'function');
 
     // makeNativeFetch maps a request→native call→a real Response the SDK can read.
@@ -2745,13 +2746,13 @@ export function registerAll(suite: Suite): void {
       body: JSON.stringify({ model: 'claude-opus-4-8', messages: [] }),
     });
     const okJson = (await okRes.json()) as { content?: { text?: string }[] };
-    check('capacitor: makeNativeFetch returns a Response with the native status + JSON body',
+    staticCheck('capacitor: makeNativeFetch returns a Response with the native status + JSON body',
       okRes.ok && okRes.status === 200 && okJson.content?.[0]?.text === 'native narration');
     const lastCall = nativeCalls.at(-1)!;
-    check('capacitor: a JSON body string is reparsed to an object so CapacitorHttp serializes it once',
+    staticCheck('capacitor: a JSON body string is reparsed to an object so CapacitorHttp serializes it once',
       typeof lastCall.data === 'object' && (lastCall.data as { model?: string }).model === 'claude-opus-4-8');
     const missRes = await nf('https://api.anthropic.com/nope', { method: 'GET' });
-    check('capacitor: a native error status surfaces as a non-ok Response (no silent success)',
+    staticCheck('capacitor: a native error status surfaces as a non-ok Response (no silent success)',
       missRes.ok === false && missRes.status === 404);
 
     // (2c) End-to-end through the provider: buildProvider hands the native fetch to
@@ -2766,9 +2767,9 @@ export function registerAll(suite: Suite): void {
     });
     const narration = await nativeProvider.complete({ model: 'claude-opus-4-8', messages: [{ role: 'user', content: 'hi' }] });
     const provCall = nativeCalls.at(-1);
-    check('capacitor: the provider routes its LLM call through the native HTTP path on device',
+    staticCheck('capacitor: the provider routes its LLM call through the native HTTP path on device',
       narration === 'native narration' && provCall?.url === 'https://api.anthropic.com/v1/messages' && provCall?.method === 'POST');
-    check('capacitor: the user API key is sent only in the request headers to the configured endpoint',
+    staticCheck('capacitor: the user API key is sent only in the request headers to the configured endpoint',
       (provCall?.headers?.['x-api-key']) === 'sk-native-secret');
   }
 

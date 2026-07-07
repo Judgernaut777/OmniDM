@@ -36,9 +36,11 @@ async function main(): Promise<void> {
   await suite.runTeardown();
 
   const passed = reporter.total - reporter.failures;
+  const behavioral = reporter.total - reporter.staticTotal;
   console.log(
     `\n${reporter.failures === 0 ? '🎉 all checks passed' : `💥 ${reporter.failures} check(s) failed`} — ` +
-      `${passed} passed, ${reporter.failures} failed, ${reporter.skipped} skipped (${reporter.total} asserted)`,
+      `${passed} passed, ${reporter.failures} failed, ${reporter.skipped} skipped ` +
+      `(${reporter.total} asserted — ${behavioral} behavioral, ${reporter.staticTotal} static source/config/doc)`,
   );
   process.exit(reporter.failures === 0 ? 0 : 1);
 }
