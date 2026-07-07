@@ -29,7 +29,8 @@
     "cap:add:ios": "cap add ios",
     "cap:sync": "cap sync",
     "cap:android": "cap run android",
-    "cap:ios": "cap run ios"
+    "cap:ios": "cap run ios",
+    "test": "tsx --test --test-force-exit src/smoke/node-test.ts"
   },
   "dependencies": {
     "@slack/bolt": "^4.7.3",
