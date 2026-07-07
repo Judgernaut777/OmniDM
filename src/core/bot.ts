@@ -19,6 +19,7 @@ import { applyHpDelta, clearCondition, findPartyMember, findTarget, setCondition
 import { addMonster, advanceCombat, currentCombatant, endCombat, livingSides, removeMonster, startCombat, summarizeCombat } from './rules/combat.js';
 import { describeStatBlock, findStatBlock, listBestiary, statBlockLine } from './rules/statblock.js';
 import { CONDITIONS, normalizeCondition } from './rules/conditions.js';
+import { attackerProfiles, attackLine, attackTarget, pickAttack, resolveAttack } from './rules/attacks.js';
 import { classPreset, MAX_BIO_CHARS, normalizePresetId, PORTRAIT_PRESETS } from './portraits.js';
 import { getBundledContentPack, listBundledContentPacks } from './content-packs/registry.js';
 import { isPackLockedForDisplay, loadContentPack, PackLockedError } from './content-packs/loader.js';
@@ -314,6 +315,57 @@ export class Bot {
         const change = clearing ? clearCondition(target.vitals, target.name, conditionTok) : setCondition(target.vitals, target.name, conditionTok);
         await this.sessions.save(session);
         return reply(clearing ? `✨ ${target.name} is no longer **${change.condition}**.` : `🩸 ${target.name} is now **${change.condition}**.`);
+      }
+
+      case 'ac': {
+        const session = await this.sessions.get(msg);
+        if (!session) return reply('No game here yet — `/dm new` first.');
+        const m = rest.match(/^(.+?)\s+(\d+)$/);
+        if (!m) return reply('Usage: `/dm ac <character> <n>` — set a character\'s Armor Class (default 10).');
+        const target = findPartyMember(session, m[1]);
+        if (!target) return reply(`No party member named "${m[1]}" — see \`/dm who\`.`);
+        target.ac = parseInt(m[2], 10);
+        await this.sessions.save(session);
+        return reply(`🛡️ ${name(target)}'s Armor Class is now ${target.ac}.`);
+      }
+
+      case 'weapon': {
+        const session = await this.sessions.get(msg);
+        if (!session) return reply('No game here yet — `/dm new` first.');
+        // `/dm weapon <character> <toHit> <damage> [name]` — e.g. `/dm weapon Thorin 5 1d12+3 Greataxe`.
+        const m = rest.match(/^(.+?)\s+([+-]?\d+)\s+(\d*d\d+(?:[+-]\d+)?)(?:\s+(.+))?$/i);
+        if (!m) return reply('Usage: `/dm weapon <character> <toHit> <damage> [name]` — e.g. `/dm weapon Thorin 5 1d12+3 Greataxe`.');
+        const target = findPartyMember(session, m[1]);
+        if (!target) return reply(`No party member named "${m[1]}" — see \`/dm who\`.`);
+        target.attack = { toHit: parseInt(m[2], 10), damage: m[3].toLowerCase(), ...(m[4] ? { name: m[4].trim() } : {}) };
+        await this.sessions.save(session);
+        return reply(`🗡️ ${name(target)}'s weapon: **${target.attack.name ?? 'weapon'}** — ${target.attack.toHit >= 0 ? '+' : ''}${target.attack.toHit} to hit, ${target.attack.damage} damage.`);
+      }
+
+      case 'attack': {
+        const session = await this.sessions.get(msg);
+        if (!session) return reply('No game here yet — `/dm new` first.');
+        // `/dm attack <attacker> vs <target> [with <weapon>]` — ` vs ` splits the
+        // two (possibly multi-word) names unambiguously.
+        const halves = rest.split(/\s+vs\s+/i);
+        if (halves.length !== 2 || !halves[0].trim() || !halves[1].trim())
+          return reply('Usage: `/dm attack <attacker> vs <target> [with <weapon>]` — e.g. `/dm attack Goblin vs Thorin`.');
+        const attackerName = halves[0].trim();
+        let targetName = halves[1].trim();
+        let weaponName: string | undefined;
+        const withM = targetName.match(/^(.*?)\s+with\s+(.+)$/i);
+        if (withM) {
+          targetName = withM[1].trim();
+          weaponName = withM[2].trim();
+        }
+        const attacker = attackerProfiles(session, attackerName);
+        if (!attacker) return reply(`No combatant named "${attackerName}" — see \`/dm who\` (party) or \`/dm combat\` (monsters).`);
+        const target = attackTarget(session, targetName);
+        if (!target) return reply(`No combatant named "${targetName}" — see \`/dm who\` (party) or \`/dm combat\` (monsters).`);
+        const profile = pickAttack(attacker.profiles, weaponName);
+        const result = resolveAttack(attacker.name, profile, target);
+        await this.sessions.save(session);
+        return reply(attackLine(result));
       }
 
       case 'bestiary': {
@@ -742,5 +794,7 @@ const HELP = `**OmniDM — commands**
 \`/dm bestiary [<id>]\` — list bundled monster stat blocks (or show one)
 \`/dm monster add <id> [name]\` — add a monster to the encounter (also \`list\`, \`remove <name>\`)
 \`/dm combat start|next|end\` — roll initiative, advance turns, end the fight; \`/dm init set <name> <mod>\` sets a modifier
+\`/dm attack <attacker> vs <target> [with <weapon>]\` — engine rolls to-hit vs AC + damage on a hit (crit doubles dice)
+\`/dm ac <name> <n>\` / \`/dm weapon <name> <toHit> <damage> [name]\` — set a character's Armor Class / weapon profile
 \`/dm end\` — end the campaign
 Otherwise, just type what your character does.`;

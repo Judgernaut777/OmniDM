@@ -162,6 +162,18 @@ export interface Player {
    * d20 roll. Carried across a seat re-claim like the rest of the character.
    */
   initiativeMod?: number;
+  /**
+   * The character's Armor Class (`/dm ac <name> <n>`) — the DC an attacker's
+   * d20+toHit must meet to hit them. Absent-safe — defaults to unarmored 10
+   * (see `rules/attacks.ts`). Carried across a seat re-claim.
+   */
+  ac?: number;
+  /**
+   * The character's weapon profile (`/dm weapon <name> <toHit> <damage>`) used
+   * when they attack. Absent-safe — defaults to a basic martial weapon. Carried
+   * across a seat re-claim.
+   */
+  attack?: { name?: string; toHit: number; damage: string };
   /** Imported Character Card persona (`/dm import`), if any. */
   card?: CharacterCard;
   /**

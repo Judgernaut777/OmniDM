@@ -152,6 +152,8 @@
         class: prior?.class,
         bio: prior?.bio,
         initiativeMod: prior?.initiativeMod,
+        ac: prior?.ac,
+        attack: prior?.attack,
         card: prior?.card,
         // A seat re-claim (new userId, same character) must carry the portrait
         // across too — a preset OR uploaded image lives on the Player, and the web
@@ -1110,6 +1112,89 @@ Return the updated summary.`
     return lines.join("\n");
   }
 
+  // src/core/rules/attacks.ts
+  var DEFAULT_AC = 10;
+  var DEFAULT_PLAYER_ATTACK = { name: "weapon", toHit: 4, damage: "1d8+2" };
+  var DEFAULT_MONSTER_ATTACK = { name: "strike", toHit: 2, damage: "1d4" };
+  function attackerProfiles(session, name3) {
+    const player = findPartyMember(session, name3);
+    if (player) {
+      const profile = player.attack ? { name: player.attack.name ?? "weapon", toHit: player.attack.toHit, damage: player.attack.damage } : DEFAULT_PLAYER_ATTACK;
+      return { name: player.characterName || player.userName, profiles: [profile] };
+    }
+    const monster = findMonsterCombatant(session, name3);
+    if (monster) {
+      const sb = monster.statBlockId ? BESTIARY[monster.statBlockId] : void 0;
+      const profiles = sb?.attacks?.length ? sb.attacks.map((a) => ({ name: a.name, toHit: a.toHit, damage: a.damage })) : [DEFAULT_MONSTER_ATTACK];
+      return { name: monster.name, profiles };
+    }
+    return void 0;
+  }
+  function attackTarget(session, name3) {
+    const player = findPartyMember(session, name3);
+    if (player) return { name: player.characterName || player.userName, ac: player.ac ?? DEFAULT_AC, vitals: player };
+    const monster = findMonsterCombatant(session, name3);
+    if (monster) return { name: monster.name, ac: monster.ac ?? DEFAULT_AC, vitals: monster };
+    return void 0;
+  }
+  function pickAttack(profiles, name3) {
+    if (name3) {
+      const wanted = name3.trim().toLowerCase();
+      const found = profiles.find((p) => p.name.toLowerCase() === wanted);
+      if (found) return found;
+    }
+    return profiles[0];
+  }
+  function resolveAttack(attackerName, profile, target, opts = {}) {
+    const d20 = opts.d20 ?? roll("d20", attackerName, opts.seed).rolls[0];
+    const crit = d20 === 20;
+    const fumble = d20 === 1;
+    const attackTotal = d20 + profile.toHit;
+    const hit = crit || !fumble && attackTotal >= target.ac;
+    let damage = 0;
+    let damageRolls = [];
+    if (hit) {
+      const base = roll(profile.damage, attackerName, opts.seed);
+      damage = base.total;
+      damageRolls = base.rolls;
+      if (crit) {
+        const p = parseNotation(profile.damage);
+        const extra = roll(`${p.numDice}d${p.dieSize}`, attackerName, opts.seed !== void 0 ? opts.seed + 1 : void 0);
+        damage += extra.total;
+        damageRolls = [...damageRolls, ...extra.rolls];
+      }
+      applyHpDelta(target.vitals, target.name, -damage, "damage");
+    }
+    return {
+      attacker: attackerName,
+      target: target.name,
+      attackName: profile.name,
+      d20,
+      toHit: profile.toHit,
+      attackTotal,
+      targetAC: target.ac,
+      hit,
+      crit,
+      fumble,
+      damage,
+      damageRolls,
+      damageNotation: profile.damage,
+      targetHp: target.vitals.hp,
+      targetMaxHp: target.vitals.maxHp,
+      targetDropped: hit && (target.vitals.hp ?? 1) <= 0
+    };
+  }
+  function attackLine(r) {
+    const roll2 = `d20${r.toHit >= 0 ? "+" : ""}${r.toHit} = ${r.attackTotal} vs AC ${r.targetAC}`;
+    if (!r.hit) {
+      const why = r.fumble ? " (natural 1 \u2014 fumble)" : "";
+      return `\u2694\uFE0F ${r.attacker} attacks ${r.target} (${r.attackName}): ${roll2} \u2192 MISS${why}.`;
+    }
+    const critTag = r.crit ? " \u{1F4A5} CRITICAL HIT (natural 20)" : "";
+    const dropped = r.targetDropped ? ` \u2014 ${r.target} drops!` : "";
+    return `\u2694\uFE0F ${r.attacker} attacks ${r.target} (${r.attackName}): ${roll2} \u2192 HIT${critTag}! ${r.damage} damage (${r.damageNotation}${r.crit ? ", doubled dice" : ""}). ${r.target}: HP ${r.targetHp}/${r.targetMaxHp}.${dropped}`;
+  }
+
   // src/core/content-packs/types.ts
   var CONTENT_PACK_FORMAT_VERSION = 1;
 
@@ -1616,6 +1701,51 @@ Set one with \`/dm condition <character> <condition>\`, lift with \`/dm conditio
           await this.sessions.save(session);
           return reply(clearing ? `\u2728 ${target.name} is no longer **${change.condition}**.` : `\u{1FA78} ${target.name} is now **${change.condition}**.`);
         }
+        case "ac": {
+          const session = await this.sessions.get(msg);
+          if (!session) return reply("No game here yet \u2014 `/dm new` first.");
+          const m = rest.match(/^(.+?)\s+(\d+)$/);
+          if (!m) return reply("Usage: `/dm ac <character> <n>` \u2014 set a character's Armor Class (default 10).");
+          const target = findPartyMember(session, m[1]);
+          if (!target) return reply(`No party member named "${m[1]}" \u2014 see \`/dm who\`.`);
+          target.ac = parseInt(m[2], 10);
+          await this.sessions.save(session);
+          return reply(`\u{1F6E1}\uFE0F ${name2(target)}'s Armor Class is now ${target.ac}.`);
+        }
+        case "weapon": {
+          const session = await this.sessions.get(msg);
+          if (!session) return reply("No game here yet \u2014 `/dm new` first.");
+          const m = rest.match(/^(.+?)\s+([+-]?\d+)\s+(\d*d\d+(?:[+-]\d+)?)(?:\s+(.+))?$/i);
+          if (!m) return reply("Usage: `/dm weapon <character> <toHit> <damage> [name]` \u2014 e.g. `/dm weapon Thorin 5 1d12+3 Greataxe`.");
+          const target = findPartyMember(session, m[1]);
+          if (!target) return reply(`No party member named "${m[1]}" \u2014 see \`/dm who\`.`);
+          target.attack = { toHit: parseInt(m[2], 10), damage: m[3].toLowerCase(), ...m[4] ? { name: m[4].trim() } : {} };
+          await this.sessions.save(session);
+          return reply(`\u{1F5E1}\uFE0F ${name2(target)}'s weapon: **${target.attack.name ?? "weapon"}** \u2014 ${target.attack.toHit >= 0 ? "+" : ""}${target.attack.toHit} to hit, ${target.attack.damage} damage.`);
+        }
+        case "attack": {
+          const session = await this.sessions.get(msg);
+          if (!session) return reply("No game here yet \u2014 `/dm new` first.");
+          const halves = rest.split(/\s+vs\s+/i);
+          if (halves.length !== 2 || !halves[0].trim() || !halves[1].trim())
+            return reply("Usage: `/dm attack <attacker> vs <target> [with <weapon>]` \u2014 e.g. `/dm attack Goblin vs Thorin`.");
+          const attackerName = halves[0].trim();
+          let targetName = halves[1].trim();
+          let weaponName;
+          const withM = targetName.match(/^(.*?)\s+with\s+(.+)$/i);
+          if (withM) {
+            targetName = withM[1].trim();
+            weaponName = withM[2].trim();
+          }
+          const attacker = attackerProfiles(session, attackerName);
+          if (!attacker) return reply(`No combatant named "${attackerName}" \u2014 see \`/dm who\` (party) or \`/dm combat\` (monsters).`);
+          const target = attackTarget(session, targetName);
+          if (!target) return reply(`No combatant named "${targetName}" \u2014 see \`/dm who\` (party) or \`/dm combat\` (monsters).`);
+          const profile = pickAttack(attacker.profiles, weaponName);
+          const result = resolveAttack(attacker.name, profile, target);
+          await this.sessions.save(session);
+          return reply(attackLine(result));
+        }
         case "bestiary": {
           if (!rest) {
             const list = listBestiary().map((sb2) => `\u2022 \`${sb2.id}\` \u2014 ${statBlockLine(sb2)}`).join("\n");
@@ -1983,6 +2113,8 @@ Set yours with \`/dm portrait <id>\` (e.g. \`/dm portrait fighter\`), or upload 
 \`/dm bestiary [<id>]\` \u2014 list bundled monster stat blocks (or show one)
 \`/dm monster add <id> [name]\` \u2014 add a monster to the encounter (also \`list\`, \`remove <name>\`)
 \`/dm combat start|next|end\` \u2014 roll initiative, advance turns, end the fight; \`/dm init set <name> <mod>\` sets a modifier
+\`/dm attack <attacker> vs <target> [with <weapon>]\` \u2014 engine rolls to-hit vs AC + damage on a hit (crit doubles dice)
+\`/dm ac <name> <n>\` / \`/dm weapon <name> <toHit> <damage> [name]\` \u2014 set a character's Armor Class / weapon profile
 \`/dm end\` \u2014 end the campaign
 Otherwise, just type what your character does.`;
 

@@ -32,6 +32,7 @@ import { pickAdapter, parseAdapterArg } from '../../index.js';
 import { MAX_CARD_SUMMARY_CHARS, MAX_FRAME_BYTES, MAX_NAME_CHARS, MAX_PORTRAIT_BYTES, MAX_TEXT_CHARS, RATE_LIMIT_PER_SEC, UNJOINED_FRAMES_PER_SEC, WebAdapter } from '../../adapters/web.js';
 import { MAX_BIO_CHARS, PORTRAIT_PRESETS, resolvePresetId } from '../../core/portraits.js';
 import { BUNDLED_RULES, bundledRulesProvider, clearRuntimeRules, registerRulesModule } from '../../core/rules/registry.js';
+import { attackerProfiles, attackTarget, DEFAULT_AC, DEFAULT_PLAYER_ATTACK, pickAttack, resolveAttack } from '../../core/rules/attacks.js';
 import { CONDITIONS, conditionDef, describeConditions, normalizeCondition } from '../../core/rules/conditions.js';
 import { BESTIARY, findStatBlock, listBestiary, statBlockLine } from '../../core/rules/statblock.js';
 import { addMonster, advanceCombat, currentCombatant, endCombat, findMonsterCombatant, isOutOfFight, livingSides, removeMonster, startCombat, summarizeCombat } from '../../core/rules/combat.js';
@@ -314,6 +315,102 @@ export function registerRules(suite: Suite, ctx: SmokeCtx): void {
     const s2: GameSession = { id: 'x', platform: 'cli', channelId: 'c2', systemId: 'dnd5e', model: 'm', players: {}, npcs: [], lorebook: [], history: [], summary: '', memories: [], turnMode: 'immediate', turnIndex: 0, fogOfWar: false, createdAt: 0 };
     addMonster(s2, BESTIARY.goblin);
     check('combat: removeMonster drops a staged monster', removeMonster(s2, 'Goblin') === true && (s2.encounter?.order.length ?? -1) === 0 && removeMonster(s2, 'Ghost') === false);
+  }
+
+  });
+  suite.section("Rules engine: attack resolution (to-hit vs AC, damage vs HP, crits)", async () => {
+  // ── Rules engine: attacks (pure) ── (inject the d20 for deterministic hit/miss)
+  {
+    const mkTarget = () => ({ name: 'Thorin', ac: 13, vitals: { hp: 20, maxHp: 20, conditions: [] as string[] } });
+
+    // A hit: d20(15)+4 = 19 >= AC 13 → damage rolled and applied.
+    const t1 = mkTarget();
+    const hit = resolveAttack('Goblin', { name: 'Scimitar', toHit: 4, damage: '1d6+2' }, t1, { d20: 15, seed: 7 });
+    check('attack: a beating-AC roll hits and applies damage to the target', hit.hit && hit.damage > 0 && t1.vitals.hp === 20 - hit.damage && hit.targetHp === t1.vitals.hp);
+
+    // A miss: d20(3)+4 = 7 < AC 13 → no damage, target untouched.
+    const t2 = mkTarget();
+    const miss = resolveAttack('Goblin', { name: 'Scimitar', toHit: 4, damage: '1d6+2' }, t2, { d20: 3 });
+    check('attack: a roll under AC misses and deals no damage', !miss.hit && miss.damage === 0 && t2.vitals.hp === 20);
+
+    // Natural 20: auto-hit even against absurd AC, and doubles the damage DICE.
+    const t3 = { name: 'Ogre', ac: 99, vitals: { hp: 60, maxHp: 60, conditions: [] as string[] } };
+    const crit = resolveAttack('Thorin', { name: 'Greatsword', toHit: 5, damage: '2d6+3' }, t3, { d20: 20, seed: 4 });
+    check('attack: a natural 20 auto-hits regardless of AC and is flagged a crit', crit.hit && crit.crit);
+    check('attack: a crit doubles the damage dice (4d6, not 2d6) — 4 dice rolled + modifier', crit.damageRolls.length === 4 && crit.damage >= 4 + 3 && crit.damage <= 24 + 3);
+
+    // Natural 1: auto-miss even against trivial AC.
+    const t4 = { name: 'Dummy', ac: 1, vitals: { hp: 10, maxHp: 10, conditions: [] as string[] } };
+    const fumble = resolveAttack('Goblin', { name: 'Scimitar', toHit: 10, damage: '1d6' }, t4, { d20: 1 });
+    check('attack: a natural 1 auto-misses regardless of AC', !fumble.hit && fumble.fumble && t4.vitals.hp === 10);
+
+    // A hit that drops the target to 0 sets the flag + unconscious (via applyHpDelta).
+    const t5 = { name: 'Kobold', ac: 5, vitals: { hp: 3, maxHp: 5, conditions: [] as string[] } };
+    const kill = resolveAttack('Thorin', { name: 'Maul', toHit: 5, damage: '2d6+4' }, t5, { d20: 18, seed: 1 });
+    check('attack: a lethal hit clamps hp to 0, flags the drop, and downs the target', kill.hit && t5.vitals.hp === 0 && kill.targetDropped && t5.vitals.conditions.includes('unconscious'));
+
+    // Session-aware profile/target resolution.
+    const session: GameSession = {
+      id: 's', platform: 'cli', channelId: 'atk', systemId: 'dnd5e', model: 'm',
+      players: { u1: { userId: 'u1', userName: 'Alice', characterName: 'Thorin', hp: 20, maxHp: 20 } },
+      npcs: [], lorebook: [], history: [], summary: '', memories: [],
+      turnMode: 'immediate', turnIndex: 0, fogOfWar: false, createdAt: 0,
+    };
+    addMonster(session, BESTIARY.goblin);
+    check('attack: a monster attacker exposes its stat-block attacks', attackerProfiles(session, 'Goblin')?.profiles[0].name === 'Scimitar');
+    check('attack: a player with no weapon set falls back to the default profile', attackerProfiles(session, 'Thorin')?.profiles[0].toHit === DEFAULT_PLAYER_ATTACK.toHit);
+    check('attack: a player target defaults to unarmored AC 10; a monster uses its stat-block AC',
+      attackTarget(session, 'Thorin')?.ac === DEFAULT_AC && attackTarget(session, 'Goblin')?.ac === BESTIARY.goblin.ac);
+    check('attack: pickAttack selects a named attack, else the first', pickAttack([{ name: 'a', toHit: 1, damage: '1d4' }, { name: 'b', toHit: 2, damage: '1d6' }], 'b').name === 'b');
+  }
+
+  });
+  suite.section("Rules engine: /dm attack, /dm ac, /dm weapon through the bot (fully isolated)", async () => {
+  // ── Rules engine: attacks through the bot ──
+  {
+    const mp = new MockProvider();
+    const aBot = new Bot(config, mp, new MemoryStorage());
+    const aOut: OutgoingMessage[] = [];
+    const aSend = async (m: OutgoingMessage) => void aOut.push(m);
+    const af = (userId: string, userName: string, text: string): IncomingMessage => ({ platform: 'cli', channelId: 'atk', userId, userName, text });
+    const sessionOf = () => aBot['sessions'].get(af('u1', 'Alice', ''));
+    await aBot.handle(af('u1', 'Alice', '/dm new'), aSend);
+    await aBot.handle(af('u1', 'Alice', '/dm join Thorin'), aSend);
+    await aBot.handle(af('u1', 'Alice', '/dm monster add goblin'), aSend);
+
+    // /dm ac sets a player's Armor Class.
+    aOut.length = 0;
+    await aBot.handle(af('u1', 'Alice', '/dm ac Thorin 16'), aSend);
+    check('attack: /dm ac sets a party member\'s Armor Class', aOut.at(-1)!.text.includes('16') && (await sessionOf())?.players.u1?.ac === 16);
+
+    // /dm weapon sets a player's weapon profile.
+    aOut.length = 0;
+    await aBot.handle(af('u1', 'Alice', '/dm weapon Thorin 6 1d12+4 Greataxe'), aSend);
+    const wSession = await sessionOf();
+    check('attack: /dm weapon sets a party member\'s weapon profile', wSession?.players.u1?.attack?.toHit === 6 && wSession?.players.u1?.attack?.damage === '1d12+4' && wSession?.players.u1?.attack?.name === 'Greataxe');
+
+    // /dm attack Thorin vs Goblin — player hits the monster, engine applies damage to the monster's hp.
+    aOut.length = 0;
+    await aBot.handle(af('u1', 'Alice', '/dm attack Thorin vs Goblin'), aSend);
+    const line = aOut.at(-1)!.text;
+    check('attack: /dm attack resolves to-hit vs AC and reports the outcome', /attacks Goblin/.test(line) && (/HIT/.test(line) || /MISS/.test(line)));
+    const gob = ((await sessionOf())?.encounter?.order ?? []).find((c) => c.name === 'Goblin');
+    // A goblin has 7 HP; Thorin's Greataxe (1d12+4 = 5..16) one-shots on any hit, so a HIT means hp 0.
+    check('attack: a hit applies engine damage to the monster (goblin drops or takes damage)',
+      /MISS/.test(line) ? gob?.hp === 7 : (gob?.hp ?? 7) < 7);
+
+    // /dm attack Goblin vs Thorin — monster attacks the player using its stat-block attack.
+    aOut.length = 0;
+    await aBot.handle(af('u1', 'Alice', '/dm attack Goblin vs Thorin'), aSend);
+    check('attack: a monster attacker uses its stat-block attack name (Scimitar)', /Goblin attacks Thorin \(Scimitar\)/.test(aOut.at(-1)!.text));
+
+    // Bad syntax and unknown combatants are handled.
+    aOut.length = 0;
+    await aBot.handle(af('u1', 'Alice', '/dm attack Thorin Goblin'), aSend);
+    check('attack: /dm attack without " vs " shows usage', /Usage/.test(aOut.at(-1)!.text));
+    aOut.length = 0;
+    await aBot.handle(af('u1', 'Alice', '/dm attack Ghost vs Thorin'), aSend);
+    check('attack: /dm attack names an unknown attacker clearly', /No combatant named "Ghost"/.test(aOut.at(-1)!.text));
   }
 
   });
