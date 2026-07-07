@@ -204,7 +204,15 @@ export function registerBilling(suite: Suite, ctx: SmokeCtx): void {
 
     // Status: reports a tenant's unlocks.
     const status = await handler(req({ method: 'GET', pathname: '/billing/status', query: { platform: 'web', channelId: 'room9' } }));
-    check('billing: GET /billing/status lists a tenant\'s unlocked packs', status.status === 200 && JSON.parse(status.body).unlocked.includes('frontier-outpost'));
+    const statusBody = JSON.parse(status.body);
+    check('billing: GET /billing/status lists a tenant\'s unlocked packs', status.status === 200 && statusBody.unlocked.includes('frontier-outpost'));
+    // The shop catalog: purchasable premium packs (with a price), each flagged owned-or-not for this tenant.
+    const ownedPack = (statusBody.purchasable ?? []).find((p: { id: string }) => p.id === 'frontier-outpost');
+    check('billing: /billing/status returns a shop catalog of priced premium packs, flagged owned for a paid tenant',
+      Boolean(ownedPack) && ownedPack.unlocked === true && typeof ownedPack.name === 'string');
+    const freshStatus = await handler(req({ method: 'GET', pathname: '/billing/status', query: { platform: 'web', channelId: 'stranger' } }));
+    const freshPack = (JSON.parse(freshStatus.body).purchasable ?? []).find((p: { id: string }) => p.id === 'frontier-outpost');
+    check('billing: the catalog flags a premium pack NOT owned for a tenant who has not paid', Boolean(freshPack) && freshPack.unlocked === false);
   }
 
   });

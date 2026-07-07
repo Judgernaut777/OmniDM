@@ -161,6 +161,16 @@ function onFrame(f) {
     // needs a key, and none is set) BEFORE the first turn silently fails, so a
     // brand-new user isn't left guessing why nothing happened.
     if (firstJoin && state.mode === 'local') warnIfNoKeyForRemoteEndpoint();
+    // Server mode only: ask the server whether it sells content packs; if so,
+    // reveal the ✦ Shop button. Local (in-page) play has no server to bill.
+    if (state.mode === 'server') probeBilling();
+    // Confirm a just-completed Stripe checkout (we returned here via success_url).
+    if (state.checkoutReturn === 'success') {
+      addLine('sys', '', '✦ Purchase complete — your pack is unlocked for this table. Open ✦ Shop, or load it with /dm pack load <id>.');
+    } else if (state.checkoutReturn === 'cancel') {
+      addLine('sys', '', 'Checkout cancelled — nothing was charged.');
+    }
+    state.checkoutReturn = null;
     $('say').focus();
   } else if (f.type === 'roster') {
     state.roster = Array.isArray(f.users) ? f.users : [];
@@ -800,6 +810,103 @@ $('help-close')?.addEventListener('click', closeHelp);
 $('help-sheet')?.addEventListener('click', (e) => { if (e.target === $('help-sheet')) closeHelp(); });
 $('help-open-palette')?.addEventListener('click', () => { closeHelp(); $('palette').hidden = false; });
 
+/* ── Content-pack shop (server mode + billing configured) ─────────────────────
+ * A completed checkout unlocks the pack SERVER-SIDE via the Stripe webhook — the
+ * client only starts checkout and reflects ownership. All fetches go to the same
+ * server as the game (httpBase(): '' for same-origin, else the configured URL).
+ * The LLM key is never involved here; these are ordinary same-origin requests. */
+function billingBase() {
+  return state.transport && state.transport.httpBase ? state.transport.httpBase() : '';
+}
+
+/* Ask the server whether it sells packs; reveal ✦ Shop only if it offers some. */
+async function probeBilling() {
+  try {
+    const ch = encodeURIComponent(state.join.channelId);
+    const res = await fetch(`${billingBase()}/billing/status?platform=web&channelId=${ch}`);
+    if (!res.ok) { $('shop-btn').hidden = true; return; }
+    const data = await res.json();
+    state.shop = data && Array.isArray(data.purchasable) ? data.purchasable : [];
+    $('shop-btn').hidden = state.shop.length === 0;
+  } catch { $('shop-btn').hidden = true; }
+}
+
+function renderShop() {
+  const list = $('shop-list');
+  list.textContent = '';
+  const packs = state.shop || [];
+  if (!packs.length) {
+    const p = document.createElement('p');
+    p.className = 'shop-empty';
+    p.textContent = 'No premium packs are available for this table.';
+    list.appendChild(p);
+    return;
+  }
+  for (const pack of packs) {
+    const row = document.createElement('div');
+    row.className = 'shop-item';
+    const info = document.createElement('div');
+    info.className = 'shop-item-info';
+    const name = document.createElement('div');
+    name.className = 'shop-item-name';
+    name.textContent = pack.name || pack.id; // textContent — never innerHTML (XSS-safe)
+    const desc = document.createElement('div');
+    desc.className = 'shop-item-desc';
+    desc.textContent = pack.description || '';
+    info.appendChild(name); info.appendChild(desc);
+    row.appendChild(info);
+    if (pack.unlocked) {
+      const owned = document.createElement('span');
+      owned.className = 'shop-owned';
+      owned.textContent = '✓ Unlocked';
+      row.appendChild(owned);
+    } else {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn-gold shop-buy';
+      btn.textContent = 'Unlock';
+      btn.addEventListener('click', () => unlockPack(pack.id, btn));
+      row.appendChild(btn);
+    }
+    list.appendChild(row);
+  }
+}
+
+/* Start a Stripe checkout for a pack. On success the server returns a hosted
+ * checkout URL we navigate to; the unlock itself is fulfilled by the webhook. */
+async function unlockPack(packId, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
+  setShopStatus('Starting secure checkout…');
+  try {
+    const res = await fetch(`${billingBase()}/billing/checkout`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ platform: 'web', channelId: state.join.channelId, packId }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (data && data.alreadyUnlocked) { setShopStatus('You already own this pack.'); await refreshShop(); return; }
+    if (res.ok && data && data.url) { window.location.href = data.url; return; } // → Stripe
+    setShopStatus(`Could not start checkout: ${data && data.error ? data.error : 'unknown error'}.`);
+  } catch {
+    setShopStatus('Could not reach the checkout service.');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Unlock'; }
+  }
+}
+
+async function refreshShop() { await probeBilling(); renderShop(); }
+function setShopStatus(text) { $('shop-status').textContent = text || ''; }
+function openShop() { renderShop(); setShopStatus(''); $('shop').hidden = false; refreshShop(); }
+function closeShop() { $('shop').hidden = true; }
+$('shop-btn')?.addEventListener('click', openShop);
+$('shop-close')?.addEventListener('click', closeShop);
+$('shop')?.addEventListener('click', (e) => { if (e.target === $('shop')) closeShop(); });
+
+/* A completed/cancelled Stripe checkout redirects back here with ?checkout=…;
+ * capture it (and clean the URL) so we can confirm the purchase after reconnect. */
+state.checkoutReturn = (() => { try { return new URLSearchParams(location.search).get('checkout'); } catch { return null; } })();
+if (state.checkoutReturn) { try { history.replaceState(null, '', location.pathname); } catch { /* ignore */ } }
+
 $('creator-name-form')?.addEventListener('submit', (e) => {
   e.preventDefault();
   const name = $('creator-name').value.trim();
@@ -1121,6 +1228,8 @@ function showJoin(error) {
   $('creator').hidden = true;
   $('card-sheet').hidden = true;
   $('help-sheet').hidden = true;
+  $('shop').hidden = true;
+  $('shop-btn').hidden = true;
   state.creatorPrompted = false;
   state.creator.pendingClass = null;
   state.creator.pendingName = null;

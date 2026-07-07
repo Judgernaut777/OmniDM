@@ -124,6 +124,7 @@
     <span id="status" class="status"></span>
     <span id="mode-badge" class="mode-badge" title="How this table is running"></span>
     <button id="creator-btn" type="button" class="creator-btn" title="Create or edit your character">⚔ Your character</button>
+    <button id="shop-btn" type="button" class="creator-btn" title="Unlock premium content packs" hidden>✦ Shop</button>
     <button id="help-btn" type="button" title="Help / About OmniDM">❔ Help</button>
     <button id="settings-btn" type="button" title="Change how you play (mode, model, server)">⚙ Settings</button>
     <button id="leave-btn" type="button" title="Leave the table">Leave</button>
@@ -176,6 +177,20 @@
     <h2 id="card-name" class="card-name"></h2>
     <div id="card-sub" class="card-sub"></div>
     <p id="card-desc" class="card-desc"></p>
+  </div>
+</div>
+
+<!-- Content-pack shop: lists the purchasable premium packs for this table and
+     starts a Stripe checkout. Only shown in server mode when the server has
+     billing configured (probed via GET /billing/status). Unlocks land via the
+     Stripe webhook; a completed checkout returns here with ?checkout=success. -->
+<div id="shop" hidden>
+  <div id="shop-inner" role="dialog" aria-modal="true" aria-label="Content pack shop">
+    <button id="shop-close" type="button" aria-label="Close">✕</button>
+    <h2 class="shop-title">✦ Premium content packs</h2>
+    <p class="shop-intro">Unlock a pack for this table. Checkout is handled securely by Stripe; once it completes, load the pack with <code>/dm pack load &lt;id&gt;</code>.</p>
+    <div id="shop-list" class="shop-list"></div>
+    <div id="shop-status" class="shop-status" role="status" aria-live="polite"></div>
   </div>
 </div>
 

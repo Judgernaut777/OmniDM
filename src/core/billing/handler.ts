@@ -15,6 +15,7 @@
  * then reads live — no redeploy, no static allowlist edit.
  */
 import { tenantKey, type EntitlementScope } from '../entitlements/entitlements.js';
+import { listBundledContentPacks } from '../content-packs/registry.js';
 import type { PurchaseStore } from './purchase-store.js';
 import {
   createCheckoutSession,
@@ -137,7 +138,13 @@ export function createBillingHandler(deps: BillingHandlerDeps): (req: BillingHtt
       const channelId = req.query?.channelId;
       if (!platform || !channelId) return json(400, { error: 'platform and channelId query params are required' });
       const unlocked = deps.store.list(tenantKey({ platform, channelId }));
-      return json(200, { unlocked });
+      const owns = (id: string): boolean => unlocked.includes('*') || unlocked.includes(id);
+      // The shop catalog the client renders: bundled premium packs that have a
+      // configured Stripe price, each flagged as owned-by-this-tenant or not.
+      const purchasable = listBundledContentPacks()
+        .filter((p) => p.premium && isSellable(p.id))
+        .map((p) => ({ id: p.id, name: p.name, description: p.description ?? '', unlocked: owns(p.id) }));
+      return json(200, { unlocked, purchasable });
     }
 
     return json(404, { error: 'not found' });
