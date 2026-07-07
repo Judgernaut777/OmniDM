@@ -15,7 +15,10 @@ import { findEntry, importCardBook, makeEntry } from './lore/lorebook.js';
 import { splitFog } from './narrator/fog.js';
 import { TurnPipeline } from './engine/turn-pipeline.js';
 import { normalizeAbility, rollCheck } from './engine/dice.js';
-import { applyDamage, applyHeal, findPartyMember } from './rules/mechanics.js';
+import { applyHpDelta, clearCondition, findPartyMember, findTarget, setCondition } from './rules/mechanics.js';
+import { addMonster, advanceCombat, currentCombatant, endCombat, livingSides, removeMonster, startCombat, summarizeCombat } from './rules/combat.js';
+import { describeStatBlock, findStatBlock, listBestiary, statBlockLine } from './rules/statblock.js';
+import { CONDITIONS, normalizeCondition } from './rules/conditions.js';
 import { classPreset, MAX_BIO_CHARS, normalizePresetId, PORTRAIT_PRESETS } from './portraits.js';
 import { getBundledContentPack, listBundledContentPacks } from './content-packs/registry.js';
 import { isPackLockedForDisplay, loadContentPack, PackLockedError } from './content-packs/loader.js';
@@ -236,37 +239,170 @@ export class Bot {
         const list = Object.values(session.players)
           .map((p) => `• ${name(p)} — HP ${p.hp ?? '?'}/${p.maxHp ?? '?'}${p.conditions?.length ? ` (${p.conditions.join(', ')})` : ''}`)
           .join('\n');
-        return reply(`**Party HP:**\n${list || '(empty)'}`);
+        const monsters = (session.encounter?.order ?? []).filter((c) => c.kind === 'monster');
+        const monsterList = monsters.length
+          ? `\n**Monsters:**\n${monsters.map((c) => `• ${c.name} — HP ${c.hp}/${c.maxHp}, AC ${c.ac}${c.conditions?.length ? ` (${c.conditions.join(', ')})` : ''}`).join('\n')}`
+          : '';
+        return reply(`**Party HP:**\n${list || '(empty)'}${monsterList}`);
       }
 
       case 'damage': {
         const session = await this.sessions.get(msg);
         if (!session) return reply('No game here yet — `/dm new` first.');
         const m = rest.match(/^(.+?)\s+(-?\d+)$/);
-        if (!m) return reply('Usage: `/dm damage <character> <amount>` — e.g. `/dm damage Thorin 5`.');
-        const target = findPartyMember(session, m[1]);
-        if (!target) return reply(`No party member named "${m[1]}" — see \`/dm who\`.`);
+        if (!m) return reply('Usage: `/dm damage <character> <amount>` — e.g. `/dm damage Thorin 5` (party member or an encounter monster).');
+        const target = findTarget(session, m[1]);
+        if (!target) return reply(`No combatant named "${m[1]}" — see \`/dm who\` (party) or \`/dm combat\` (monsters).`);
         const amount = parseInt(m[2], 10);
         if (!Number.isFinite(amount) || amount < 0) return reply('Damage amount must be a non-negative number.');
-        const change = applyDamage(target, amount);
+        const change = applyHpDelta(target.vitals, target.name, -amount, 'damage');
         await this.sessions.save(session);
-        const status = change.becameUnconscious ? ` — ${name(target)} drops to 0 HP and falls unconscious!` : '';
-        return reply(`💥 ${name(target)} takes ${amount} damage: HP ${change.hp}/${change.maxHp}.${status}`);
+        const status = change.becameUnconscious
+          ? target.kind === 'monster'
+            ? ` — ${target.name} drops to 0 HP and falls!`
+            : ` — ${target.name} drops to 0 HP and falls unconscious!`
+          : '';
+        return reply(`💥 ${target.name} takes ${amount} damage: HP ${change.hp}/${change.maxHp}.${status}`);
       }
 
       case 'heal': {
         const session = await this.sessions.get(msg);
         if (!session) return reply('No game here yet — `/dm new` first.');
         const m = rest.match(/^(.+?)\s+(-?\d+)$/);
-        if (!m) return reply('Usage: `/dm heal <character> <amount>` — e.g. `/dm heal Thorin 5`.');
-        const target = findPartyMember(session, m[1]);
-        if (!target) return reply(`No party member named "${m[1]}" — see \`/dm who\`.`);
+        if (!m) return reply('Usage: `/dm heal <character> <amount>` — e.g. `/dm heal Thorin 5` (party member or an encounter monster).');
+        const target = findTarget(session, m[1]);
+        if (!target) return reply(`No combatant named "${m[1]}" — see \`/dm who\` (party) or \`/dm combat\` (monsters).`);
         const amount = parseInt(m[2], 10);
         if (!Number.isFinite(amount) || amount < 0) return reply('Heal amount must be a non-negative number.');
-        const change = applyHeal(target, amount);
+        const change = applyHpDelta(target.vitals, target.name, amount, 'heal');
         await this.sessions.save(session);
-        const status = change.recovered ? ` — ${name(target)} regains consciousness!` : '';
-        return reply(`💚 ${name(target)} heals ${amount}: HP ${change.hp}/${change.maxHp}.${status}`);
+        const status = change.recovered ? ` — ${target.name} regains consciousness!` : '';
+        return reply(`💚 ${target.name} heals ${amount}: HP ${change.hp}/${change.maxHp}.${status}`);
+      }
+
+      case 'conditions': {
+        // The condition glossary — usable without a game (a rules reference).
+        const list = Object.values(CONDITIONS).map((c) => `• **${c.name}** — ${c.summary}`).join('\n');
+        return reply(`**Conditions:**\n${list}\n\nSet one with \`/dm condition <character> <condition>\`, lift with \`/dm condition <character> clear <condition>\`.`);
+      }
+
+      case 'condition': {
+        const session = await this.sessions.get(msg);
+        if (!session) return reply('No game here yet — `/dm new` first.');
+        const tokens = rest.split(/\s+/).filter(Boolean);
+        if (tokens.length < 2)
+          return reply('Usage: `/dm condition <character> <condition>` to impose, `/dm condition <character> clear <condition>` to lift. See `/dm conditions`.');
+        // Parse a (possibly multi-word) name, an optional clear/remove verb, and the condition (last token).
+        const conditionTok = tokens[tokens.length - 1];
+        const verb = tokens[tokens.length - 2]?.toLowerCase();
+        const clearing = verb === 'clear' || verb === 'remove';
+        const nameTokens = clearing ? tokens.slice(0, -2) : tokens.slice(0, -1);
+        const targetName = nameTokens.join(' ');
+        if (!targetName) return reply('Name a character (or monster) before the condition.');
+        if (!normalizeCondition(conditionTok))
+          return reply(`\`${conditionTok}\` isn't a valid condition word — see \`/dm conditions\`.`);
+        const target = findTarget(session, targetName);
+        if (!target) return reply(`No combatant named "${targetName}" — see \`/dm who\` (party) or \`/dm combat\` (monsters).`);
+        const change = clearing ? clearCondition(target.vitals, target.name, conditionTok) : setCondition(target.vitals, target.name, conditionTok);
+        await this.sessions.save(session);
+        return reply(clearing ? `✨ ${target.name} is no longer **${change.condition}**.` : `🩸 ${target.name} is now **${change.condition}**.`);
+      }
+
+      case 'bestiary': {
+        if (!rest) {
+          const list = listBestiary().map((sb) => `• \`${sb.id}\` — ${statBlockLine(sb)}`).join('\n');
+          return reply(`**Bestiary** (add to an encounter with \`/dm monster add <id>\`):\n${list}`);
+        }
+        const sb = findStatBlock(rest);
+        if (!sb) return reply(`No monster matches \`${rest}\` — see \`/dm bestiary\`.`);
+        return reply(describeStatBlock(sb));
+      }
+
+      case 'monster': {
+        const session = await this.sessions.get(msg);
+        if (!session) return reply('No game here yet — `/dm new` first.');
+        const sub = (parts.shift() || 'list').toLowerCase();
+        const arg = parts.join(' ').trim();
+        if (sub === 'add') {
+          const argTokens = arg.split(/\s+/).filter(Boolean);
+          const id = argTokens.shift();
+          const sb = id ? findStatBlock(id) : undefined;
+          if (!sb) return reply(`Unknown monster \`${id || '(none)'}\` — see \`/dm bestiary\` for ids.`);
+          const custom = argTokens.join(' ') || undefined;
+          const combatant = addMonster(session, sb, custom);
+          await this.sessions.save(session);
+          const inFight = session.encounter?.active
+            ? ' It rolled into the initiative order.'
+            : ' Begin the fight with `/dm combat start`.';
+          return reply(`👹 **${combatant.name}** joins the encounter — AC ${combatant.ac}, HP ${combatant.hp}/${combatant.maxHp}.${inFight}`);
+        }
+        if (sub === 'remove') {
+          if (!arg) return reply('Usage: `/dm monster remove <name>` — see `/dm combat`.');
+          const removed = removeMonster(session, arg);
+          if (removed) await this.sessions.save(session);
+          return reply(removed ? `🗑️ **${arg}** leaves the encounter.` : `No monster named "${arg}" in this encounter — see \`/dm combat\`.`);
+        }
+        // list
+        const monsters = (session.encounter?.order ?? []).filter((c) => c.kind === 'monster');
+        if (!monsters.length) return reply('No monsters in this encounter yet — add one with `/dm monster add <id>` (see `/dm bestiary`).');
+        const list = monsters
+          .map((c) => `• ${c.name} — HP ${c.hp}/${c.maxHp}, AC ${c.ac}${c.conditions?.length ? ` (${c.conditions.join(', ')})` : ''}`)
+          .join('\n');
+        return reply(`**Monsters in the encounter:**\n${list}`);
+      }
+
+      case 'combat':
+      case 'initiative':
+      case 'init': {
+        const session = await this.sessions.get(msg);
+        if (!session) return reply('No game here yet — `/dm new` first.');
+        // `/dm combat` defaults to showing status; `/dm init`/`/dm initiative` default to starting.
+        const sub = (parts.shift() || (cmd === 'combat' ? 'status' : 'start')).toLowerCase();
+
+        if (sub === 'set') {
+          // `/dm init set <character> <mod>` — the character's initiative modifier.
+          if (!this.sessions.isPlayer(session, msg.userId)) return reply('Join first with `/dm join <name>` to set an initiative modifier.');
+          const setArg = parts.join(' ').trim();
+          const m = setArg.match(/^(.+?)\s+(-?\d+)$/);
+          if (!m) return reply('Usage: `/dm init set <character> <modifier>` — e.g. `/dm init set Thorin 2`.');
+          const member = findPartyMember(session, m[1]);
+          if (!member) return reply(`No party member named "${m[1]}" — see \`/dm who\`.`);
+          member.initiativeMod = parseInt(m[2], 10);
+          await this.sessions.save(session);
+          return reply(`🎯 ${name(member)}'s initiative modifier is now ${member.initiativeMod >= 0 ? '+' : ''}${member.initiativeMod}.`);
+        }
+
+        if (sub === 'start') {
+          if (!Object.keys(session.players).length) return reply('The party is empty — `/dm join <name>` before rolling initiative.');
+          startCombat(session);
+          await this.sessions.save(session);
+          const current = currentCombatant(session);
+          return reply(`⚔️ **Roll for initiative!**\n${summarizeCombat(session)}\n\n${current ? `${current.name} acts first.` : ''} Advance with \`/dm combat next\`.`);
+        }
+
+        if (sub === 'next') {
+          if (!session.encounter?.active) return reply('No combat in progress — start one with `/dm combat start`.');
+          const next = advanceCombat(session);
+          await this.sessions.save(session);
+          const { players, monsters } = livingSides(session);
+          if (!monsters.length) return reply(`🏆 The enemies are defeated — the party wins the fight! End it with \`/dm combat end\`.`);
+          if (!players.length) return reply(`💀 The party has fallen. End the encounter with \`/dm combat end\`.`);
+          return reply(next ? `➡️ Round ${session.encounter.round}: **${next.name}** is up.` : 'No combatants left standing.');
+        }
+
+        if (sub === 'end') {
+          if (!session.encounter) return reply('No combat to end.');
+          endCombat(session);
+          await this.sessions.save(session);
+          return reply('🕊️ Combat ends.');
+        }
+
+        // status (default for `/dm combat`)
+        if (!session.encounter?.active) {
+          const staged = (session.encounter?.order ?? []).filter((c) => c.kind === 'monster').length;
+          return reply(staged ? `No combat rolling yet — ${staged} monster(s) staged. Start with \`/dm combat start\`.` : 'No combat in progress. Add monsters with `/dm monster add <id>`, then `/dm combat start`.');
+        }
+        return reply(summarizeCombat(session));
       }
 
       case 'import': {
@@ -591,8 +727,12 @@ const HELP = `**OmniDM — commands**
 \`/dm models [filter]\` — list models you can use (🆓 = free)
 \`/dm model <id>\` — pick the model for this game
 \`/dm roll <notation>\` — roll dice (e.g. \`d20+5\`, \`2d6\`, \`d20 adv\`)
-\`/dm hp\` — show the party's HP and conditions
-\`/dm damage <character> <n>\` / \`/dm heal <character> <n>\` — apply mechanical damage/healing
+\`/dm hp\` — show the party's (and any monsters') HP and conditions
+\`/dm damage <name> <n>\` / \`/dm heal <name> <n>\` — apply mechanical damage/healing to a party member OR an encounter monster
+\`/dm condition <name> <cond>\` — impose a condition (\`clear <cond>\` to lift it); \`/dm conditions\` lists them all
 \`/dm check <character> <ABILITY> <DC> [modifier]\` — engine-rolled d20 check vs a DC (STR/DEX/CON/INT/WIS/CHA)
+\`/dm bestiary [<id>]\` — list bundled monster stat blocks (or show one)
+\`/dm monster add <id> [name]\` — add a monster to the encounter (also \`list\`, \`remove <name>\`)
+\`/dm combat start|next|end\` — roll initiative, advance turns, end the fight; \`/dm init set <name> <mod>\` sets a modifier
 \`/dm end\` — end the campaign
 Otherwise, just type what your character does.`;

@@ -13,6 +13,8 @@ import { classPreset, MAX_BIO_CHARS } from '../portraits.js';
 import { buildWorldInfo } from '../lore/lorebook.js';
 import { HISTORY_WINDOW, type MemoryRecord } from '../memory/retrieval.js';
 import { bundledRulesProvider, type RulesProvider } from '../rules/registry.js';
+import { summarizeCombat } from '../rules/combat.js';
+import { describeConditions } from '../rules/conditions.js';
 import { FOG_PROMPT } from './fog.js';
 
 const BASE_DM_PROMPT = `You are an expert tabletop RPG Dungeon Master running a game for multiple players in a shared chat channel. You are collaborative, vivid, and fair. You keep the spotlight moving between players and never railroad them. Stay in character as the narrator/DM at all times.`;
@@ -25,11 +27,12 @@ const BASE_DM_PROMPT = `You are an expert tabletop RPG Dungeon Master running a 
  * turn, exactly as before this existed.
  */
 const MECHANICS_PROMPT = `## Mechanical state markers (optional, invisible to players)
-HP and conditions are tracked by the game engine, not by you. When your narration deals damage, heals someone, or imposes a condition (e.g. unconscious, prone, dead) on a REAL party member, end your reply with one machine marker per change, each ALONE on its own line, in exactly this form:
-<<hp CharacterName -7>>            (damage — a negative number)
-<<heal CharacterName 4>>           (healing — a positive number)
-<<condition CharacterName prone>>  (a condition, one lowercase word)
-Use the character's exact name as shown under "The party". The engine reads these markers, applies the mechanical change, and STRIPS them before players see your text — never mention the marker syntax in your prose, never fabricate a marker for someone who isn't a real party member, and never emit one when nothing mechanical happened.`;
+HP and conditions are tracked by the game engine, not by you. When your narration deals damage, heals someone, or imposes/lifts a condition (e.g. unconscious, prone, frightened, dead) on a REAL combatant — a party member OR a monster listed under "Combat" — end your reply with one machine marker per change, each ALONE on its own line, in exactly this form:
+<<hp CharacterName -7>>              (damage — a negative number)
+<<heal CharacterName 4>>             (healing — a positive number)
+<<condition CharacterName prone>>    (impose a condition, one lowercase word)
+<<uncondition CharacterName prone>>  (lift a condition the character had)
+Use the exact name as shown under "The party" or the combat order. The engine reads these markers, applies the mechanical change, and STRIPS them before players see your text — never mention the marker syntax in your prose, never fabricate a marker for someone who isn't a real combatant, and never emit one when nothing mechanical happened.`;
 
 /**
  * A one-line character sheet for the prompt: the player's class (with its flavor
@@ -72,8 +75,23 @@ export class Narrator {
     checks: CheckResult[] = [],
   ): ChatMessage[] {
     const roster = Object.values(session.players)
-      .map((p) => `- ${p.characterName || p.userName} (HP ${p.hp}/${p.maxHp})`)
+      .map((p) => {
+        const conds = p.conditions?.length ? ` [${p.conditions.join(', ')}]` : '';
+        return `- ${p.characterName || p.userName} (HP ${p.hp}/${p.maxHp})${conds}`;
+      })
       .join('\n') || '- (no characters yet)';
+
+    // Live combat: engine-owned initiative order + round, so the DM narrates the
+    // turn whose combatant is acting and never invents turn order or round count.
+    const combatText = summarizeCombat(session);
+
+    // A glossary of the conditions currently in play (players + monsters), so the
+    // DM plays "restrained"/"frightened" by its rules, not as a flavor word.
+    const activeConditions = [
+      ...Object.values(session.players).flatMap((p) => p.conditions ?? []),
+      ...(session.encounter?.order ?? []).flatMap((c) => c.conditions ?? []),
+    ];
+    const conditionGlossary = describeConditions(activeConditions);
 
     // Lightweight per-player character notes (class + bio) — a complement to any
     // imported card, not a duplicate: the sheet is a one-liner, the card its own
@@ -104,6 +122,8 @@ export class Narrator {
       MECHANICS_PROMPT,
       rulesText,
       `## The party\n${roster}`,
+      combatText,
+      conditionGlossary ? `## Active conditions (play these by their rules)\n${conditionGlossary}` : '',
       sheets.length ? `## Player characters (play each true to their class and bio)\n${sheets.join('\n')}` : '',
       cards.length ? `## Imported characters (portray each consistently with their card)\n${cards.join('\n\n')}` : '',
       session.fogOfWar ? FOG_PROMPT : '',

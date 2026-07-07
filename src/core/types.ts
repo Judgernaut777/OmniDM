@@ -8,6 +8,9 @@
  */
 
 import type { CharacterCard, Portrait } from './cards/card-parse.js';
+// StatBlock lives in ./rules/statblock.js; Combatant only stores its id (a
+// string), so there is no type import needed here — the reference above is
+// documentation only.
 import type { LoreEntry } from './lore/lorebook.js';
 import type { MemoryRecord } from './memory/retrieval.js';
 
@@ -153,6 +156,12 @@ export interface Player {
    * stand-in for players who don't import a full Character Card. Absent-safe.
    */
   bio?: string;
+  /**
+   * The character's initiative modifier (`/dm init set <name> <mod>`), added to
+   * their d20 when combat rolls initiative. Absent-safe — defaults to 0, a flat
+   * d20 roll. Carried across a seat re-claim like the rest of the character.
+   */
+  initiativeMod?: number;
   /** Imported Character Card persona (`/dm import`), if any. */
   card?: CharacterCard;
   /**
@@ -209,8 +218,57 @@ export interface StateChange {
   hp?: number;           // resulting hp, for 'damage' | 'heal'
   maxHp?: number;
   condition?: string;    // for 'condition'
+  cleared?: boolean;     // for 'condition': the condition was REMOVED, not added
   becameUnconscious?: boolean; // hp crossed down to 0 on this change
   recovered?: boolean;         // hp rose back above 0, clearing 'unconscious'
+}
+
+/**
+ * One participant in a combat encounter, in initiative order. A `'player'`
+ * combatant is a thin pointer to a live {@link Player} (`playerUserId`) — the
+ * Player stays the single source of truth for that character's hp/conditions,
+ * so combat never forks a second copy of a PC's mechanical state. A `'monster'`
+ * combatant has NO backing Player, so it carries its OWN engine-owned vitals
+ * (`hp`/`maxHp`/`ac`/`conditions`) right here — this is where a monster's HP
+ * lives and gets damaged/healed.
+ */
+export interface Combatant {
+  /** Unique within the encounter (`goblin-1`, or a player's userId). */
+  id: string;
+  name: string;
+  kind: 'player' | 'monster';
+  /** Set when `kind === 'player'`: the userId of the backing {@link Player}. */
+  playerUserId?: string;
+  /** Set when `kind === 'monster'`: the {@link StatBlock} id it was spawned from. */
+  statBlockId?: string;
+  /** Rolled initiative total (d20 + `initiativeMod`); 0 until combat starts. */
+  initiative: number;
+  /** Initiative modifier — the DEX-ish bonus, also the initiative tiebreaker. */
+  initiativeMod: number;
+  /** Monster AC (players' AC is narrative, not engine-tracked). */
+  ac?: number;
+  /** Monster hp — the engine-owned vitals a Player would otherwise hold. */
+  hp?: number;
+  maxHp?: number;
+  /** Monster conditions (players keep theirs on the {@link Player}). */
+  conditions?: string[];
+}
+
+/**
+ * An engine-owned combat encounter: an initiative order plus a pointer into it.
+ * Created in a staging state (`active: false`, monsters added but initiative
+ * unrolled) by `/dm monster add`, then rolled and started by `/dm combat start`
+ * (see `rules/combat.ts`). Absent on a session with no fight in progress.
+ */
+export interface CombatState {
+  /** False while staging monsters pre-initiative; true once `/dm combat start` rolls. */
+  active: boolean;
+  /** 1-based round counter, incremented each time the pointer wraps the order. */
+  round: number;
+  /** Pointer into `order` — whose turn it is. */
+  turnIndex: number;
+  /** Combatants in descending initiative order once started. */
+  order: Combatant[];
 }
 
 export interface TurnRecord {
@@ -258,4 +316,12 @@ export interface GameSession {
    * rules registry.
    */
   customRules?: { id: string; markdown: string };
+  /**
+   * The active combat encounter (initiative order + round pointer), or absent
+   * when no fight is in progress. Engine-owned like hp: `/dm monster add`
+   * stages it, `/dm combat start` rolls initiative, `/dm combat next` advances,
+   * `/dm combat end` clears it. See `rules/combat.ts`. Absent-safe — pre-combat
+   * saves simply have none.
+   */
+  encounter?: CombatState;
 }

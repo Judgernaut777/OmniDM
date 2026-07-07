@@ -150,6 +150,7 @@ export class SessionManager {
       // seat re-claim (a reconnect mints a fresh userId), like the portrait.
       class: prior?.class,
       bio: prior?.bio,
+      initiativeMod: prior?.initiativeMod,
       card: prior?.card,
       // A seat re-claim (new userId, same character) must carry the portrait
       // across too — a preset OR uploaded image lives on the Player, and the web

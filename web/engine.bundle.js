@@ -13,8 +13,8 @@
     }
   };
   var __export = (target, all) => {
-    for (var name2 in all)
-      __defProp(target, name2, { get: all[name2], enumerable: true });
+    for (var name3 in all)
+      __defProp(target, name3, { get: all[name3], enumerable: true });
   };
   var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
 
@@ -128,29 +128,30 @@
      * never consults reclaim-by-name, so renaming never takes another seat.
      */
     async join(session, msg, characterName) {
-      const name2 = characterName === void 0 ? void 0 : characterName.slice(0, MAX_CHARACTER_NAME_CHARS);
+      const name3 = characterName === void 0 ? void 0 : characterName.slice(0, MAX_CHARACTER_NAME_CHARS);
       const token = typeof msg.resumeToken === "string" && msg.resumeToken ? msg.resumeToken.slice(0, MAX_RESUME_TOKEN_CHARS) : void 0;
       let prior = session.players[msg.userId];
-      if (!prior && name2) {
-        const named = this.reclaimable(session, name2);
+      if (!prior && name3) {
+        const named = this.reclaimable(session, name3);
         if (named) {
           if (token && named.resumeToken && token === named.resumeToken) {
             prior = named;
           } else {
-            throw new SeatTakenError(named.characterName || named.userName || name2);
+            throw new SeatTakenError(named.characterName || named.userName || name3);
           }
         }
       }
       const player = {
         userId: msg.userId,
         userName: msg.userName,
-        characterName: name2 ?? prior?.characterName,
+        characterName: name3 ?? prior?.characterName,
         hp: prior?.hp ?? 10,
         maxHp: prior?.maxHp ?? 10,
         // Class + bio are part of the character identity — carry them across a
         // seat re-claim (a reconnect mints a fresh userId), like the portrait.
         class: prior?.class,
         bio: prior?.bio,
+        initiativeMod: prior?.initiativeMod,
         card: prior?.card,
         // A seat re-claim (new userId, same character) must carry the portrait
         // across too — a preset OR uploaded image lives on the Player, and the web
@@ -210,12 +211,12 @@
   function parseCardJson(json) {
     const obj = json ?? {};
     const data = obj.data ?? obj;
-    const name2 = str(data.name);
-    if (!name2) throw new Error("not a character card (missing data.name)");
+    const name3 = str(data.name);
+    if (!name3) throw new Error("not a character card (missing data.name)");
     const entries = data.character_book?.entries;
     return {
       specVersion: str(obj.spec_version) || "2.0",
-      name: name2,
+      name: name3,
       description: str(data.description),
       personality: str(data.personality),
       scenario: str(data.scenario),
@@ -348,8 +349,8 @@
   }
 
   // src/core/lore/lorebook.ts
-  function makeEntry(name2, keywords, content) {
-    return { id: nanoid(6), name: name2, keywords, content, enabled: true };
+  function makeEntry(name3, keywords, content) {
+    return { id: nanoid(6), name: name3, keywords, content, enabled: true };
   }
   function findEntry(book, idOrName) {
     const q = idOrName.toLowerCase();
@@ -477,7 +478,7 @@
   };
 
   // src/core/rules/dnd5e.system.ts
-  var DND5E_SYSTEM = '# System Module \u2014 D&D 5e (lite)\n\nYou are the Dungeon Master for a Dungeons & Dragons 5th Edition game. This module\ndefines the rules context. Generic GM craft is in the narrator\'s base prompt.\n\n## Your role\n- Narrate the world, voice NPCs, and adjudicate the fiction.\n- Keep responses tight: 2\u20134 short paragraphs. End by inviting the players to act.\n- Address the party as a group, but acknowledge individual players by their\n  character names when they act.\n\n## Dice \u2014 IMPORTANT\n- You do NOT roll dice. Dice are rolled by the game engine and the results are\n  given to you under "RESOLVED ROLLS". Narrate the outcome those numbers dictate \u2014\n  never invent a different result, and never pretend a roll happened that isn\'t listed.\n- When a player attempts something uncertain (attack, skill check, save), ask them\n  to roll by stating the check, e.g. "Make a Dexterity (Stealth) check \u2014 roll d20."\n  The engine resolves it on their next message.\n\n## Core resolution\n- d20 + relevant modifier vs a Difficulty Class (DC) or Armor Class (AC).\n- Natural 20 = critical success; natural 1 = critical failure.\n- Advantage/disadvantage: the engine handles the two-roll math; you just narrate.\n\n## Checks \u2014 use the engine, don\'t adjudicate pass/fail yourself\n- For an uncertain action (attack, skill check, save), prefer asking for\n  `/dm check <character> <ABILITY> <DC>` (ABILITY is STR, DEX, CON, INT, WIS, or CHA).\n  The engine rolls d20, compares it to the DC, and gives you the outcome under\n  "RESOLVED CHECKS" as PASS or FAIL. State that exact result \u2014 never decide\n  success or failure yourself, and never invent a different outcome.\n\n## Mechanical state \u2014 HP and conditions\n- HP, damage, healing, and conditions (unconscious, dead, prone, ...) are owned\n  by the game engine, not by you. When your narration deals damage, heals someone,\n  or imposes a condition on a party member, end your reply with a machine marker\n  ALONE on its own line, naming the character exactly as it appears in "The party":\n  `<<hp CharacterName -7>>` (damage, a negative number), `<<heal CharacterName 4>>`\n  (healing, a positive number), `<<condition CharacterName prone>>` (a condition).\n  These markers are read by the engine and stripped before players ever see them \u2014\n  never mention the marker syntax in your prose, and never invent one for a\n  character who isn\'t a real party member.\n\n## Tone\n- Reward creative and bold play. Telegraph danger before it strikes.\n- Never decide a player character\'s thoughts, words, or actions for them.\n';
+  var DND5E_SYSTEM = '# System Module \u2014 D&D 5e (lite)\n\nYou are the Dungeon Master for a Dungeons & Dragons 5th Edition game. This module\ndefines the rules context. Generic GM craft is in the narrator\'s base prompt.\n\n## Your role\n- Narrate the world, voice NPCs, and adjudicate the fiction.\n- Keep responses tight: 2\u20134 short paragraphs. End by inviting the players to act.\n- Address the party as a group, but acknowledge individual players by their\n  character names when they act.\n\n## Dice \u2014 IMPORTANT\n- You do NOT roll dice. Dice are rolled by the game engine and the results are\n  given to you under "RESOLVED ROLLS". Narrate the outcome those numbers dictate \u2014\n  never invent a different result, and never pretend a roll happened that isn\'t listed.\n- When a player attempts something uncertain (attack, skill check, save), ask them\n  to roll by stating the check, e.g. "Make a Dexterity (Stealth) check \u2014 roll d20."\n  The engine resolves it on their next message.\n\n## Core resolution\n- d20 + relevant modifier vs a Difficulty Class (DC) or Armor Class (AC).\n- Natural 20 = critical success; natural 1 = critical failure.\n- Advantage/disadvantage: the engine handles the two-roll math; you just narrate.\n\n## Checks \u2014 use the engine, don\'t adjudicate pass/fail yourself\n- For an uncertain action (attack, skill check, save), prefer asking for\n  `/dm check <character> <ABILITY> <DC>` (ABILITY is STR, DEX, CON, INT, WIS, or CHA).\n  The engine rolls d20, compares it to the DC, and gives you the outcome under\n  "RESOLVED CHECKS" as PASS or FAIL. State that exact result \u2014 never decide\n  success or failure yourself, and never invent a different outcome.\n\n## Mechanical state \u2014 HP and conditions\n- HP, damage, healing, and conditions (unconscious, dead, prone, frightened, ...)\n  are owned by the game engine, not by you. When your narration deals damage,\n  heals someone, or imposes/lifts a condition on a REAL combatant \u2014 a party\n  member or a monster listed under "Combat" \u2014 end your reply with a machine\n  marker ALONE on its own line, naming the combatant exactly as it appears:\n  `<<hp CharacterName -7>>` (damage, a negative number), `<<heal CharacterName 4>>`\n  (healing, a positive number), `<<condition CharacterName prone>>` (impose a\n  condition), `<<uncondition CharacterName prone>>` (lift one it had).\n  These markers are read by the engine and stripped before players ever see them \u2014\n  never mention the marker syntax in your prose, and never invent one for a\n  combatant who isn\'t really in play.\n- When a condition is active, play it by its rules (the engine reminds you of the\n  effect under "Active conditions") \u2014 a restrained creature can\'t move, a\n  frightened one has disadvantage while it can see the source of its fear.\n\n## Combat \u2014 initiative and monsters\n- Combat is engine-run. Initiative order, the current actor, and the round number\n  are given to you under "Combat"; narrate the turn of whoever is acting (marked\n  \u25B6) and never invent turn order or a round count yourself.\n- Monsters listed in the combat order have engine-owned HP and AC just like\n  players. Resolve hits against their AC, and apply damage with the `<<hp ...>>`\n  marker using the monster\'s exact name (e.g. `<<hp Goblin 2 -5>>`).\n- To ask for a fight to begin, tell the players to roll initiative; the engine\n  builds the order when someone runs `/dm combat start`.\n\n## Tone\n- Reward creative and bold play. Telegraph danger before it strikes.\n- Never decide a player character\'s thoughts, words, or actions for them.\n';
 
   // src/core/rules/registry.ts
   var BUNDLED_RULES = {
@@ -489,218 +490,6 @@
       return runtimeRules[systemId] ?? BUNDLED_RULES[systemId] ?? "";
     }
   };
-
-  // src/core/narrator/fog.ts
-  var FOG_PROMPT = `## Fog of war (private narration)
-Fog of war is ON. After the shared narration, you MAY append private sections that only one character perceives (whispers, hidden details, secret perception results), using EXACTLY this format:
-[PRIVATE:CharacterName]text only that character learns[/PRIVATE]
-Use a character's exact name from the party roster. Everything outside these markers is public to the whole party. Never reveal one character's private information in the public text.`;
-  var TOKEN = /\[PRIVATE:([^\]]*)\]|\[\/PRIVATE\]/g;
-  function splitFog(narration) {
-    const privates = [];
-    const publicParts = [];
-    const stack = [];
-    let cursor = 0;
-    const flush = (end) => {
-      const segment = narration.slice(cursor, end);
-      const owner = stack.at(-1);
-      if (owner === void 0) publicParts.push(segment);
-      else if (owner && segment.trim()) privates.push({ characterName: owner, content: segment.trim() });
-    };
-    for (const match of narration.matchAll(TOKEN)) {
-      flush(match.index);
-      cursor = match.index + match[0].length;
-      if (match[1] !== void 0) stack.push(match[1].trim());
-      else stack.pop();
-    }
-    flush(narration.length);
-    const publicText = publicParts.join("").replace(/\n{3,}/g, "\n\n").trim();
-    return { publicText, privates };
-  }
-
-  // src/core/narrator/narrator.ts
-  var BASE_DM_PROMPT = `You are an expert tabletop RPG Dungeon Master running a game for multiple players in a shared chat channel. You are collaborative, vivid, and fair. You keep the spotlight moving between players and never railroad them. Stay in character as the narrator/DM at all times.`;
-  var MECHANICS_PROMPT = `## Mechanical state markers (optional, invisible to players)
-HP and conditions are tracked by the game engine, not by you. When your narration deals damage, heals someone, or imposes a condition (e.g. unconscious, prone, dead) on a REAL party member, end your reply with one machine marker per change, each ALONE on its own line, in exactly this form:
-<<hp CharacterName -7>>            (damage \u2014 a negative number)
-<<heal CharacterName 4>>           (healing \u2014 a positive number)
-<<condition CharacterName prone>>  (a condition, one lowercase word)
-Use the character's exact name as shown under "The party". The engine reads these markers, applies the mechanical change, and STRIPS them before players see your text \u2014 never mention the marker syntax in your prose, never fabricate a marker for someone who isn't a real party member, and never emit one when nothing mechanical happened.`;
-  function characterSheet(p) {
-    const parts = [];
-    if (p.class) {
-      const cls = classPreset(p.class);
-      parts.push(`Class: ${cls.name} (${cls.flavor})`);
-    }
-    if (p.bio) {
-      const bio = p.bio.length > MAX_BIO_CHARS ? `${p.bio.slice(0, MAX_BIO_CHARS)}\u2026` : p.bio;
-      parts.push(`Bio: ${bio}`);
-    }
-    if (!parts.length) return "";
-    const name2 = p.characterName || p.userName;
-    return `- ${name2} (played by ${p.userName}) \u2014 ${parts.join(". ")}`;
-  }
-  var Narrator = class {
-    /**
-     * @param provider the LLM backend
-     * @param rules where the per-session system module (rules markdown) comes
-     *   from. Defaults to the bundled, dependency-free registry so the narrator
-     *   never touches node:fs and can run in a browser; a Node host may inject a
-     *   filesystem-backed provider to restore the "drop a markdown file" flow.
-     */
-    constructor(provider, rules = bundledRulesProvider) {
-      __publicField(this, "provider", provider);
-      __publicField(this, "rules", rules);
-    }
-    buildMessages(session, actions, rolls, pastEvents, checks = []) {
-      const roster = Object.values(session.players).map((p) => `- ${p.characterName || p.userName} (HP ${p.hp}/${p.maxHp})`).join("\n") || "- (no characters yet)";
-      const sheets = Object.values(session.players).map((p) => characterSheet(p)).filter(Boolean);
-      const cards = [
-        ...Object.values(session.players).filter((p) => p.card).map((p) => renderCard(p.card, `player character (played by ${p.userName})`)),
-        ...(session.npcs ?? []).map((c) => renderCard(c, "NPC (portrayed by you, the DM)"))
-      ];
-      const rulesText = session.customRules?.id === session.systemId ? session.customRules.markdown : this.rules.system(session.systemId);
-      const system = [
-        BASE_DM_PROMPT,
-        MECHANICS_PROMPT,
-        rulesText,
-        `## The party
-${roster}`,
-        sheets.length ? `## Player characters (play each true to their class and bio)
-${sheets.join("\n")}` : "",
-        cards.length ? `## Imported characters (portray each consistently with their card)
-${cards.join("\n\n")}` : "",
-        session.fogOfWar ? FOG_PROMPT : "",
-        session.summary ? `## Story so far
-${session.summary}` : ""
-      ].filter(Boolean).join("\n\n");
-      const historyText = session.history.slice(-HISTORY_WINDOW).map((t) => {
-        const acts = t.actions.map((a) => `${a.name}: ${a.text}`).join("\n");
-        return `${acts}
-DM: ${t.narration}`;
-      }).join("\n\n");
-      const rollText = rolls.length ? rolls.map((r) => `${r.by} rolled ${r.notation} \u2192 ${r.total} [${r.rolls.join(", ")}]${r.note ? ` (${r.note})` : ""}`).join("\n") : "(no dice this turn)";
-      const checkText = checks.length ? checks.map((c) => {
-        const mod = c.modifier ? c.modifier > 0 ? `+${c.modifier}` : `${c.modifier}` : "";
-        return `${c.by} attempted a ${c.ability} check (DC ${c.dc}): rolled ${c.roll}${mod} = ${c.total} \u2192 ${c.pass ? "PASS" : "FAIL"}${c.note ? ` (${c.note})` : ""}`;
-      }).join("\n") : "";
-      const actionText = actions.map((a) => `${a.name}: ${a.text}`).join("\n");
-      const scanTexts = [
-        actions.map((a) => a.text).join("\n"),
-        ...session.history.slice(-HISTORY_WINDOW).reverse().map((t) => [...t.actions.map((a) => a.text), t.narration].join("\n"))
-      ];
-      const worldInfo = buildWorldInfo(session.lorebook ?? [], scanTexts);
-      const pastText = pastEvents.map((m) => `- ${m.text}`).join("\n");
-      const user = [
-        worldInfo ? `WORLD INFO (established lore \u2014 keep your narration consistent with it):
-${worldInfo}` : "",
-        pastText ? `RELEVANT PAST EVENTS (recalled from earlier in the campaign \u2014 stay consistent with them):
-${pastText}` : "",
-        historyText ? `RECENT HISTORY:
-${historyText}` : "",
-        `RESOLVED ROLLS (narrate these exact outcomes; do not change them):
-${rollText}`,
-        checkText ? `RESOLVED CHECKS (state each result as PASS or FAIL exactly as given; do not change it):
-${checkText}` : "",
-        `THE PLAYERS' ACTIONS THIS TURN:
-${actionText}`,
-        `As the DM, narrate what happens next.`
-      ].filter(Boolean).join("\n\n");
-      return [
-        { role: "system", content: system },
-        { role: "user", content: user }
-      ];
-    }
-    async narrate(session, actions, rolls, pastEvents = [], checks = []) {
-      const messages = this.buildMessages(session, actions, rolls, pastEvents, checks);
-      return this.provider.complete({ model: session.model, messages });
-    }
-  };
-
-  // src/core/rules/mechanics.ts
-  function clamp(n, lo, hi) {
-    return Math.max(lo, Math.min(hi, n));
-  }
-  function adjustHp(player, delta, kind2) {
-    const maxHp = player.maxHp ?? 10;
-    const before = player.hp ?? maxHp;
-    const after = clamp(before + delta, 0, maxHp);
-    player.hp = after;
-    player.maxHp = maxHp;
-    const conditions = new Set(player.conditions ?? []);
-    let becameUnconscious = false;
-    let recovered = false;
-    if (after <= 0) {
-      if (!conditions.has("unconscious")) becameUnconscious = true;
-      conditions.add("unconscious");
-    } else if (conditions.has("unconscious")) {
-      conditions.delete("unconscious");
-      recovered = true;
-    }
-    player.conditions = [...conditions];
-    return {
-      characterName: player.characterName || player.userName,
-      kind: kind2,
-      amount: Math.abs(delta),
-      hp: after,
-      maxHp,
-      becameUnconscious,
-      recovered
-    };
-  }
-  function applyDamage(player, amount) {
-    return adjustHp(player, -Math.abs(amount), "damage");
-  }
-  function applyHeal(player, amount) {
-    return adjustHp(player, Math.abs(amount), "heal");
-  }
-  function setCondition(player, condition) {
-    const conditions = new Set(player.conditions ?? []);
-    conditions.add(condition);
-    player.conditions = [...conditions];
-    return { characterName: player.characterName || player.userName, kind: "condition", condition };
-  }
-  function findPartyMember(session, characterName) {
-    const wanted = characterName.trim().toLowerCase();
-    if (!wanted) return void 0;
-    return Object.values(session.players).find((p) => (p.characterName || p.userName).toLowerCase() === wanted);
-  }
-  var MARKER_RE = /<<\s*([^<>]+?)\s*>>/g;
-  var INT_RE = /^-?\d+$/;
-  var CONDITION_RE = /^[a-zA-Z-]+$/;
-  function applyMarkers(session, narration) {
-    const changes = [];
-    const text = narration.replace(MARKER_RE, (_whole, inner) => {
-      const tokens = inner.trim().split(/\s+/);
-      if (tokens.length < 3) return "";
-      const kind2 = tokens[0].toLowerCase();
-      const value = tokens[tokens.length - 1];
-      const characterName = tokens.slice(1, -1).join(" ");
-      const player = findPartyMember(session, characterName);
-      if (!player) return "";
-      if (kind2 === "hp") {
-        if (!INT_RE.test(value)) return "";
-        const delta = parseInt(value, 10);
-        changes.push(delta < 0 ? applyDamage(player, -delta) : applyHeal(player, delta));
-        return "";
-      }
-      if (kind2 === "heal") {
-        if (!INT_RE.test(value)) return "";
-        const amount = parseInt(value, 10);
-        if (amount < 0) return "";
-        changes.push(applyHeal(player, amount));
-        return "";
-      }
-      if (kind2 === "condition") {
-        if (!CONDITION_RE.test(value)) return "";
-        changes.push(setCondition(player, value.toLowerCase()));
-        return "";
-      }
-      return "";
-    });
-    const cleaned = text.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
-    return { text: cleaned, changes };
-  }
 
   // src/core/engine/dice.ts
   function makeRng(seed) {
@@ -792,6 +581,400 @@ ${actionText}`,
       pass = false;
     }
     return { by, ability, dc, roll: die, modifier, total, pass, note };
+  }
+
+  // src/core/rules/combat.ts
+  var name = (p) => p.characterName || p.userName;
+  var OUT_OF_FIGHT = /* @__PURE__ */ new Set(["unconscious", "dead", "paralyzed", "petrified", "stunned", "incapacitated"]);
+  function isOutOfFight(c) {
+    return (c.conditions ?? []).some((cond) => OUT_OF_FIGHT.has(cond));
+  }
+  function ensureEncounter(session) {
+    if (!session.encounter) session.encounter = { active: false, round: 0, turnIndex: 0, order: [] };
+    return session.encounter;
+  }
+  function addMonster(session, sb, customName, rollInit = defaultRollInit) {
+    const enc = ensureEncounter(session);
+    const baseName = customName?.trim() || sb.name;
+    const sameName = enc.order.filter((c) => c.kind === "monster" && stripNum(c.name) === baseName);
+    const display = customName?.trim() ? baseName : sameName.length ? `${baseName} ${sameName.length + 1}` : baseName;
+    const idBase = sb.id;
+    const idNum = enc.order.filter((c) => c.statBlockId === sb.id).length + 1;
+    const combatant = {
+      id: `${idBase}-${idNum}`,
+      name: display,
+      kind: "monster",
+      statBlockId: sb.id,
+      initiative: enc.active ? rollInit(sb.initiativeMod) : 0,
+      initiativeMod: sb.initiativeMod,
+      ac: sb.ac,
+      hp: sb.maxHp,
+      maxHp: sb.maxHp,
+      conditions: []
+    };
+    enc.order.push(combatant);
+    if (enc.active) sortOrder(enc);
+    return combatant;
+  }
+  function removeMonster(session, monsterName) {
+    const enc = session.encounter;
+    if (!enc) return false;
+    const wanted = monsterName.trim().toLowerCase();
+    const idx = enc.order.findIndex((c) => c.kind === "monster" && c.name.toLowerCase() === wanted);
+    if (idx === -1) return false;
+    if (idx < enc.turnIndex) enc.turnIndex--;
+    enc.order.splice(idx, 1);
+    if (enc.active && enc.order.length) enc.turnIndex %= enc.order.length;
+    else if (!enc.order.length) enc.turnIndex = 0;
+    return true;
+  }
+  function startCombat(session, rollInit = defaultRollInit) {
+    const enc = ensureEncounter(session);
+    const monsters = enc.order.filter((c) => c.kind === "monster");
+    const players = Object.values(session.players).map((p) => ({
+      id: p.userId,
+      name: name(p),
+      kind: "player",
+      playerUserId: p.userId,
+      initiative: 0,
+      initiativeMod: p.initiativeMod ?? 0
+    }));
+    enc.order = [...players, ...monsters];
+    for (const c of enc.order) c.initiative = rollInit(c.initiativeMod);
+    sortOrder(enc);
+    enc.active = true;
+    enc.round = 1;
+    enc.turnIndex = 0;
+    return enc;
+  }
+  function currentCombatant(session) {
+    const enc = session.encounter;
+    if (!enc || !enc.active || !enc.order.length) return null;
+    return enc.order[enc.turnIndex % enc.order.length] ?? null;
+  }
+  function advanceCombat(session) {
+    const enc = session.encounter;
+    if (!enc || !enc.active || !enc.order.length) return null;
+    const n = enc.order.length;
+    for (let step = 0; step < n; step++) {
+      enc.turnIndex++;
+      if (enc.turnIndex >= n) {
+        enc.turnIndex = 0;
+        enc.round++;
+      }
+      if (!isOutOfFight(enc.order[enc.turnIndex])) return enc.order[enc.turnIndex];
+    }
+    return null;
+  }
+  function endCombat(session) {
+    session.encounter = void 0;
+  }
+  function livingSides(session) {
+    const order = session.encounter?.order ?? [];
+    const alive = order.filter((c) => !isOutOfFight(c));
+    return {
+      players: alive.filter((c) => c.kind === "player"),
+      monsters: alive.filter((c) => c.kind === "monster")
+    };
+  }
+  function findMonsterCombatant(session, monsterName) {
+    const enc = session.encounter;
+    if (!enc) return void 0;
+    const wanted = monsterName.trim().toLowerCase();
+    return enc.order.find((c) => c.kind === "monster" && c.name.toLowerCase() === wanted);
+  }
+  function summarizeCombat(session) {
+    const enc = session.encounter;
+    if (!enc || !enc.active || !enc.order.length) return "";
+    const current = currentCombatant(session);
+    const lines = enc.order.map((c) => {
+      const mark = c === current ? "\u25B6" : " ";
+      const down = isOutOfFight(c) ? " [down]" : "";
+      const vitals = c.kind === "monster" ? ` \u2014 HP ${c.hp}/${c.maxHp}, AC ${c.ac}` : "";
+      const conds = c.conditions?.length ? ` (${c.conditions.join(", ")})` : "";
+      return `${mark} ${c.initiative} \u2014 ${c.name}${vitals}${conds}${down}`;
+    });
+    return `## Combat \u2014 round ${enc.round} (initiative order; \u25B6 = acting now)
+${lines.join("\n")}`;
+  }
+  function defaultRollInit(mod) {
+    return roll("d20").total + mod;
+  }
+  function sortOrder(enc) {
+    const active = enc.order[enc.turnIndex];
+    enc.order.sort((a, b) => b.initiative - a.initiative || b.initiativeMod - a.initiativeMod || a.name.localeCompare(b.name));
+    if (active) enc.turnIndex = Math.max(0, enc.order.indexOf(active));
+  }
+  function stripNum(display) {
+    return display.replace(/\s+\d+$/, "");
+  }
+
+  // src/core/rules/conditions.ts
+  var CONDITIONS = {
+    blinded: { id: "blinded", name: "Blinded", summary: "can't see; auto-fails sight checks; attacks against it have advantage, its own have disadvantage." },
+    charmed: { id: "charmed", name: "Charmed", summary: "can't attack the charmer; the charmer has advantage on social checks against it." },
+    deafened: { id: "deafened", name: "Deafened", summary: "can't hear; auto-fails hearing checks." },
+    frightened: { id: "frightened", name: "Frightened", summary: "disadvantage on checks and attacks while the source of fear is in sight; cannot willingly move closer to it." },
+    grappled: { id: "grappled", name: "Grappled", summary: "speed 0; ends if the grappler is incapacitated or the two are forced apart." },
+    incapacitated: { id: "incapacitated", name: "Incapacitated", summary: "can't take actions or reactions." },
+    invisible: { id: "invisible", name: "Invisible", summary: "unseen without magic; attacks against it have disadvantage, its own have advantage." },
+    paralyzed: { id: "paralyzed", name: "Paralyzed", summary: "incapacitated, can't move or speak; auto-fails STR/DEX saves; melee hits against it are critical." },
+    petrified: { id: "petrified", name: "Petrified", summary: "turned to stone: incapacitated, unaware, resistant to all damage, immune to poison/disease." },
+    poisoned: { id: "poisoned", name: "Poisoned", summary: "disadvantage on attack rolls and ability checks." },
+    prone: { id: "prone", name: "Prone", summary: "can only crawl; disadvantage on attacks; melee attackers have advantage, ranged have disadvantage." },
+    restrained: { id: "restrained", name: "Restrained", summary: "speed 0; disadvantage on attacks and DEX saves; attacks against it have advantage." },
+    stunned: { id: "stunned", name: "Stunned", summary: "incapacitated, can't move, can barely speak; auto-fails STR/DEX saves; attacks against it have advantage." },
+    unconscious: { id: "unconscious", name: "Unconscious", summary: "incapacitated, prone, unaware; drops what it holds; melee hits against it are critical. Set by the engine at 0 hp." },
+    exhaustion: { id: "exhaustion", name: "Exhaustion", summary: "fatigue: disadvantage on ability checks (worse at higher levels \u2014 halved speed, disadvantage on attacks/saves, and eventually death)." },
+    dead: { id: "dead", name: "Dead", summary: "out of the fight for good; only powerful magic returns the character to life." }
+  };
+  var CONDITION_TOKEN_RE = /^[a-z][a-z-]*$/;
+  function normalizeCondition(input) {
+    const slug = input.trim().toLowerCase().replace(/\s+/g, "-");
+    if (!CONDITION_TOKEN_RE.test(slug)) return void 0;
+    return CONDITIONS[slug]?.id ?? slug;
+  }
+  function describeConditions(ids = []) {
+    const seen = /* @__PURE__ */ new Set();
+    const lines = [];
+    for (const raw of ids) {
+      const id = raw.toLowerCase();
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const def = CONDITIONS[id];
+      lines.push(def ? `- ${def.name}: ${def.summary}` : `- ${raw}`);
+    }
+    return lines.join("\n");
+  }
+
+  // src/core/narrator/fog.ts
+  var FOG_PROMPT = `## Fog of war (private narration)
+Fog of war is ON. After the shared narration, you MAY append private sections that only one character perceives (whispers, hidden details, secret perception results), using EXACTLY this format:
+[PRIVATE:CharacterName]text only that character learns[/PRIVATE]
+Use a character's exact name from the party roster. Everything outside these markers is public to the whole party. Never reveal one character's private information in the public text.`;
+  var TOKEN = /\[PRIVATE:([^\]]*)\]|\[\/PRIVATE\]/g;
+  function splitFog(narration) {
+    const privates = [];
+    const publicParts = [];
+    const stack = [];
+    let cursor = 0;
+    const flush = (end) => {
+      const segment = narration.slice(cursor, end);
+      const owner = stack.at(-1);
+      if (owner === void 0) publicParts.push(segment);
+      else if (owner && segment.trim()) privates.push({ characterName: owner, content: segment.trim() });
+    };
+    for (const match of narration.matchAll(TOKEN)) {
+      flush(match.index);
+      cursor = match.index + match[0].length;
+      if (match[1] !== void 0) stack.push(match[1].trim());
+      else stack.pop();
+    }
+    flush(narration.length);
+    const publicText = publicParts.join("").replace(/\n{3,}/g, "\n\n").trim();
+    return { publicText, privates };
+  }
+
+  // src/core/narrator/narrator.ts
+  var BASE_DM_PROMPT = `You are an expert tabletop RPG Dungeon Master running a game for multiple players in a shared chat channel. You are collaborative, vivid, and fair. You keep the spotlight moving between players and never railroad them. Stay in character as the narrator/DM at all times.`;
+  var MECHANICS_PROMPT = `## Mechanical state markers (optional, invisible to players)
+HP and conditions are tracked by the game engine, not by you. When your narration deals damage, heals someone, or imposes/lifts a condition (e.g. unconscious, prone, frightened, dead) on a REAL combatant \u2014 a party member OR a monster listed under "Combat" \u2014 end your reply with one machine marker per change, each ALONE on its own line, in exactly this form:
+<<hp CharacterName -7>>              (damage \u2014 a negative number)
+<<heal CharacterName 4>>             (healing \u2014 a positive number)
+<<condition CharacterName prone>>    (impose a condition, one lowercase word)
+<<uncondition CharacterName prone>>  (lift a condition the character had)
+Use the exact name as shown under "The party" or the combat order. The engine reads these markers, applies the mechanical change, and STRIPS them before players see your text \u2014 never mention the marker syntax in your prose, never fabricate a marker for someone who isn't a real combatant, and never emit one when nothing mechanical happened.`;
+  function characterSheet(p) {
+    const parts = [];
+    if (p.class) {
+      const cls = classPreset(p.class);
+      parts.push(`Class: ${cls.name} (${cls.flavor})`);
+    }
+    if (p.bio) {
+      const bio = p.bio.length > MAX_BIO_CHARS ? `${p.bio.slice(0, MAX_BIO_CHARS)}\u2026` : p.bio;
+      parts.push(`Bio: ${bio}`);
+    }
+    if (!parts.length) return "";
+    const name3 = p.characterName || p.userName;
+    return `- ${name3} (played by ${p.userName}) \u2014 ${parts.join(". ")}`;
+  }
+  var Narrator = class {
+    /**
+     * @param provider the LLM backend
+     * @param rules where the per-session system module (rules markdown) comes
+     *   from. Defaults to the bundled, dependency-free registry so the narrator
+     *   never touches node:fs and can run in a browser; a Node host may inject a
+     *   filesystem-backed provider to restore the "drop a markdown file" flow.
+     */
+    constructor(provider, rules = bundledRulesProvider) {
+      __publicField(this, "provider", provider);
+      __publicField(this, "rules", rules);
+    }
+    buildMessages(session, actions, rolls, pastEvents, checks = []) {
+      const roster = Object.values(session.players).map((p) => {
+        const conds = p.conditions?.length ? ` [${p.conditions.join(", ")}]` : "";
+        return `- ${p.characterName || p.userName} (HP ${p.hp}/${p.maxHp})${conds}`;
+      }).join("\n") || "- (no characters yet)";
+      const combatText = summarizeCombat(session);
+      const activeConditions = [
+        ...Object.values(session.players).flatMap((p) => p.conditions ?? []),
+        ...(session.encounter?.order ?? []).flatMap((c) => c.conditions ?? [])
+      ];
+      const conditionGlossary = describeConditions(activeConditions);
+      const sheets = Object.values(session.players).map((p) => characterSheet(p)).filter(Boolean);
+      const cards = [
+        ...Object.values(session.players).filter((p) => p.card).map((p) => renderCard(p.card, `player character (played by ${p.userName})`)),
+        ...(session.npcs ?? []).map((c) => renderCard(c, "NPC (portrayed by you, the DM)"))
+      ];
+      const rulesText = session.customRules?.id === session.systemId ? session.customRules.markdown : this.rules.system(session.systemId);
+      const system = [
+        BASE_DM_PROMPT,
+        MECHANICS_PROMPT,
+        rulesText,
+        `## The party
+${roster}`,
+        combatText,
+        conditionGlossary ? `## Active conditions (play these by their rules)
+${conditionGlossary}` : "",
+        sheets.length ? `## Player characters (play each true to their class and bio)
+${sheets.join("\n")}` : "",
+        cards.length ? `## Imported characters (portray each consistently with their card)
+${cards.join("\n\n")}` : "",
+        session.fogOfWar ? FOG_PROMPT : "",
+        session.summary ? `## Story so far
+${session.summary}` : ""
+      ].filter(Boolean).join("\n\n");
+      const historyText = session.history.slice(-HISTORY_WINDOW).map((t) => {
+        const acts = t.actions.map((a) => `${a.name}: ${a.text}`).join("\n");
+        return `${acts}
+DM: ${t.narration}`;
+      }).join("\n\n");
+      const rollText = rolls.length ? rolls.map((r) => `${r.by} rolled ${r.notation} \u2192 ${r.total} [${r.rolls.join(", ")}]${r.note ? ` (${r.note})` : ""}`).join("\n") : "(no dice this turn)";
+      const checkText = checks.length ? checks.map((c) => {
+        const mod = c.modifier ? c.modifier > 0 ? `+${c.modifier}` : `${c.modifier}` : "";
+        return `${c.by} attempted a ${c.ability} check (DC ${c.dc}): rolled ${c.roll}${mod} = ${c.total} \u2192 ${c.pass ? "PASS" : "FAIL"}${c.note ? ` (${c.note})` : ""}`;
+      }).join("\n") : "";
+      const actionText = actions.map((a) => `${a.name}: ${a.text}`).join("\n");
+      const scanTexts = [
+        actions.map((a) => a.text).join("\n"),
+        ...session.history.slice(-HISTORY_WINDOW).reverse().map((t) => [...t.actions.map((a) => a.text), t.narration].join("\n"))
+      ];
+      const worldInfo = buildWorldInfo(session.lorebook ?? [], scanTexts);
+      const pastText = pastEvents.map((m) => `- ${m.text}`).join("\n");
+      const user = [
+        worldInfo ? `WORLD INFO (established lore \u2014 keep your narration consistent with it):
+${worldInfo}` : "",
+        pastText ? `RELEVANT PAST EVENTS (recalled from earlier in the campaign \u2014 stay consistent with them):
+${pastText}` : "",
+        historyText ? `RECENT HISTORY:
+${historyText}` : "",
+        `RESOLVED ROLLS (narrate these exact outcomes; do not change them):
+${rollText}`,
+        checkText ? `RESOLVED CHECKS (state each result as PASS or FAIL exactly as given; do not change it):
+${checkText}` : "",
+        `THE PLAYERS' ACTIONS THIS TURN:
+${actionText}`,
+        `As the DM, narrate what happens next.`
+      ].filter(Boolean).join("\n\n");
+      return [
+        { role: "system", content: system },
+        { role: "user", content: user }
+      ];
+    }
+    async narrate(session, actions, rolls, pastEvents = [], checks = []) {
+      const messages = this.buildMessages(session, actions, rolls, pastEvents, checks);
+      return this.provider.complete({ model: session.model, messages });
+    }
+  };
+
+  // src/core/rules/mechanics.ts
+  function clamp(n, lo, hi) {
+    return Math.max(lo, Math.min(hi, n));
+  }
+  function applyHpDelta(target, name3, delta, kind2) {
+    const maxHp = target.maxHp ?? 10;
+    const before = target.hp ?? maxHp;
+    const after = clamp(before + delta, 0, maxHp);
+    target.hp = after;
+    target.maxHp = maxHp;
+    const conditions = new Set(target.conditions ?? []);
+    let becameUnconscious = false;
+    let recovered = false;
+    if (after <= 0) {
+      if (!conditions.has("unconscious") && !conditions.has("dead")) becameUnconscious = true;
+      if (!conditions.has("dead")) conditions.add("unconscious");
+    } else if (conditions.has("unconscious")) {
+      conditions.delete("unconscious");
+      recovered = true;
+    }
+    target.conditions = [...conditions];
+    return { characterName: name3, kind: kind2, amount: Math.abs(delta), hp: after, maxHp, becameUnconscious, recovered };
+  }
+  function setCondition(target, name3, condition) {
+    const id = normalizeCondition(condition) ?? condition.toLowerCase();
+    const conditions = new Set(target.conditions ?? []);
+    conditions.add(id);
+    target.conditions = [...conditions];
+    return { characterName: name3, kind: "condition", condition: id };
+  }
+  function clearCondition(target, name3, condition) {
+    const id = normalizeCondition(condition) ?? condition.toLowerCase();
+    const conditions = new Set(target.conditions ?? []);
+    conditions.delete(id);
+    target.conditions = [...conditions];
+    return { characterName: name3, kind: "condition", condition: id, cleared: true };
+  }
+  function findPartyMember(session, characterName) {
+    const wanted = characterName.trim().toLowerCase();
+    if (!wanted) return void 0;
+    return Object.values(session.players).find((p) => (p.characterName || p.userName).toLowerCase() === wanted);
+  }
+  function findTarget(session, characterName) {
+    const player = findPartyMember(session, characterName);
+    if (player) return { vitals: player, name: player.characterName || player.userName, kind: "player" };
+    const monster = findMonsterCombatant(session, characterName);
+    if (monster) return { vitals: monster, name: monster.name, kind: "monster" };
+    return void 0;
+  }
+  var MARKER_RE = /<<\s*([^<>]+?)\s*>>/g;
+  var INT_RE = /^-?\d+$/;
+  function applyMarkers(session, narration) {
+    const changes = [];
+    const text = narration.replace(MARKER_RE, (_whole, inner) => {
+      const tokens = inner.trim().split(/\s+/);
+      if (tokens.length < 3) return "";
+      const kind2 = tokens[0].toLowerCase();
+      const value = tokens[tokens.length - 1];
+      const characterName = tokens.slice(1, -1).join(" ");
+      const target = findTarget(session, characterName);
+      if (!target) return "";
+      if (kind2 === "hp") {
+        if (!INT_RE.test(value)) return "";
+        const delta = parseInt(value, 10);
+        changes.push(applyHpDelta(target.vitals, target.name, delta < 0 ? -Math.abs(delta) : Math.abs(delta), delta < 0 ? "damage" : "heal"));
+        return "";
+      }
+      if (kind2 === "heal") {
+        if (!INT_RE.test(value)) return "";
+        const amount = parseInt(value, 10);
+        if (amount < 0) return "";
+        changes.push(applyHpDelta(target.vitals, target.name, Math.abs(amount), "heal"));
+        return "";
+      }
+      if (kind2 === "condition") {
+        if (!normalizeCondition(value)) return "";
+        changes.push(setCondition(target.vitals, target.name, value));
+        return "";
+      }
+      if (kind2 === "uncondition") {
+        if (!normalizeCondition(value)) return "";
+        changes.push(clearCondition(target.vitals, target.name, value));
+        return "";
+      }
+      return "";
+    });
+    const cleaned = text.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+    return { text: cleaned, changes };
   }
 
   // src/core/engine/turn-pipeline.ts
@@ -895,6 +1078,38 @@ Return the updated summary.`
     }
   };
 
+  // src/core/rules/statblock.ts
+  var BESTIARY = {
+    goblin: { id: "goblin", name: "Goblin", ac: 15, maxHp: 7, initiativeMod: 2, cr: "1/4", attacks: [{ name: "Scimitar", toHit: 4, damage: "1d6+2" }], traits: "Nimble Escape \u2014 can Disengage or Hide as a bonus action." },
+    kobold: { id: "kobold", name: "Kobold", ac: 12, maxHp: 5, initiativeMod: 2, cr: "1/8", attacks: [{ name: "Dagger", toHit: 4, damage: "1d4+2" }], traits: "Pack Tactics \u2014 advantage when an ally is adjacent to the target." },
+    "giant-rat": { id: "giant-rat", name: "Giant Rat", ac: 12, maxHp: 7, initiativeMod: 2, cr: "1/8", attacks: [{ name: "Bite", toHit: 4, damage: "1d4+2" }], traits: "Pack Tactics." },
+    bandit: { id: "bandit", name: "Bandit", ac: 12, maxHp: 11, initiativeMod: 1, cr: "1/8", attacks: [{ name: "Scimitar", toHit: 3, damage: "1d6+1" }, { name: "Light Crossbow", toHit: 3, damage: "1d8+1" }] },
+    skeleton: { id: "skeleton", name: "Skeleton", ac: 13, maxHp: 13, initiativeMod: 2, cr: "1/4", attacks: [{ name: "Shortsword", toHit: 4, damage: "1d6+2" }], traits: "Undead \u2014 vulnerable to bludgeoning; immune to poison and exhaustion." },
+    zombie: { id: "zombie", name: "Zombie", ac: 8, maxHp: 22, initiativeMod: -2, cr: "1/4", attacks: [{ name: "Slam", toHit: 3, damage: "1d6+1" }], traits: "Undead Fortitude \u2014 a CON save can leave it at 1 hp instead of dropping." },
+    wolf: { id: "wolf", name: "Wolf", ac: 13, maxHp: 11, initiativeMod: 2, cr: "1/4", attacks: [{ name: "Bite", toHit: 4, damage: "2d4+2" }], traits: "Pack Tactics; a hit can knock a target prone (DC 11 STR)." },
+    orc: { id: "orc", name: "Orc", ac: 13, maxHp: 15, initiativeMod: 1, cr: "1/2", attacks: [{ name: "Greataxe", toHit: 5, damage: "1d12+3" }], traits: "Aggressive \u2014 can dash toward a foe as a bonus action." },
+    "dire-wolf": { id: "dire-wolf", name: "Dire Wolf", ac: 14, maxHp: 37, initiativeMod: 2, cr: "1", attacks: [{ name: "Bite", toHit: 5, damage: "2d6+3" }], traits: "Pack Tactics; a hit can knock a target prone (DC 13 STR)." },
+    ogre: { id: "ogre", name: "Ogre", ac: 11, maxHp: 59, initiativeMod: -1, cr: "2", attacks: [{ name: "Greatclub", toHit: 6, damage: "2d8+4" }] }
+  };
+  function findStatBlock(input) {
+    const slug = input.trim().toLowerCase().replace(/\s+/g, "-");
+    return BESTIARY[slug];
+  }
+  function listBestiary() {
+    return Object.values(BESTIARY).sort((a, b) => a.maxHp - b.maxHp || a.name.localeCompare(b.name));
+  }
+  function statBlockLine(sb) {
+    return `${sb.name} \u2014 AC ${sb.ac}, HP ${sb.maxHp}, init ${sb.initiativeMod >= 0 ? "+" : ""}${sb.initiativeMod}${sb.cr ? `, CR ${sb.cr}` : ""}`;
+  }
+  function describeStatBlock(sb) {
+    const lines = [`**${sb.name}** (\`${sb.id}\`)`, statBlockLine(sb)];
+    for (const atk of sb.attacks ?? []) {
+      lines.push(`  \u2022 ${atk.name}: ${atk.toHit >= 0 ? "+" : ""}${atk.toHit} to hit, ${atk.damage} damage`);
+    }
+    if (sb.traits) lines.push(`  ${sb.traits}`);
+    return lines.join("\n");
+  }
+
   // src/core/content-packs/types.ts
   var CONTENT_PACK_FORMAT_VERSION = 1;
 
@@ -929,7 +1144,7 @@ Return the updated summary.`
   var ID_RE = /^[a-z0-9][a-z0-9-]{1,63}$/;
   function validateLoreEntry(raw, index) {
     if (!isObj(raw)) throw new ContentPackError(`content pack lorebook[${index}] must be an object`);
-    const name2 = requireStr(raw.name, `lorebook[${index}].name`);
+    const name3 = requireStr(raw.name, `lorebook[${index}].name`);
     const content = requireStr(raw.content, `lorebook[${index}].content`, MAX_LONG_FIELD_CHARS);
     const rawKeywords = raw.keywords;
     if (rawKeywords !== void 0 && !Array.isArray(rawKeywords))
@@ -939,7 +1154,7 @@ Return the updated summary.`
       throw new ContentPackError(`content pack lorebook[${index}].keywords has too many entries (max ${MAX_KEYWORDS_PER_ENTRY})`);
     const keywords = keywordArr.map((k) => str2(k)).filter(Boolean);
     const enabled = raw.enabled === void 0 ? true : Boolean(raw.enabled);
-    return { name: name2, keywords, content, enabled };
+    return { name: name3, keywords, content, enabled };
   }
   function validateNpc(raw, index) {
     if (!isObj(raw)) throw new ContentPackError(`content pack npcs[${index}] must be an object`);
@@ -1100,9 +1315,9 @@ Return the updated summary.`
     return BUNDLED_CONTENT_PACKS[id];
   }
   function listBundledContentPacks() {
-    return Object.values(BUNDLED_CONTENT_PACKS).map(({ id, name: name2, version, description, premium }) => ({
+    return Object.values(BUNDLED_CONTENT_PACKS).map(({ id, name: name3, version, description, premium }) => ({
       id,
-      name: name2,
+      name: name3,
       version,
       description,
       premium
@@ -1259,12 +1474,12 @@ Check your LLM_API_KEY / model id, or try \`/dm models\`.` : SERVER_TURN_FAILURE
      */
     async playAction(session, msg, text, send) {
       const player = session.players[msg.userId];
-      const result = await this.pipeline.processTurn(session, { actorName: name(player), text }, msg.userId);
+      const result = await this.pipeline.processTurn(session, { actorName: name2(player), text }, msg.userId);
       if (result.notYourTurn) {
-        return await send({ channelId: msg.channelId, text: `\u23F3 It's ${name(result.notYourTurn)}'s turn \u2014 yours is coming up.` });
+        return await send({ channelId: msg.channelId, text: `\u23F3 It's ${name2(result.notYourTurn)}'s turn \u2014 yours is coming up.` });
       }
       await this.broadcast(session, result.record.narration, send, result.record.rolls);
-      if (result.next) await send({ channelId: msg.channelId, text: `\u27A1\uFE0F Next up: ${name(result.next)}.` });
+      if (result.next) await send({ channelId: msg.channelId, text: `\u27A1\uFE0F Next up: ${name2(result.next)}.` });
     }
     /**
      * Deliver a narration. With fog of war on, [PRIVATE:<Character>] sections are
@@ -1280,7 +1495,7 @@ Check your LLM_API_KEY / model id, or try \`/dm models\`.` : SERVER_TURN_FAILURE
       const publicBody = publicText || (rollPayload ? rollLine(rollPayload) : "");
       if (publicBody) await send({ channelId: session.channelId, text: publicBody, speaker: "Dungeon Master", ...rollPayload ? { rolls: rollPayload } : {} });
       for (const p of privates) {
-        const player = Object.values(session.players).reverse().find((pl) => name(pl).toLowerCase() === p.characterName.toLowerCase());
+        const player = Object.values(session.players).reverse().find((pl) => name2(pl).toLowerCase() === p.characterName.toLowerCase());
         if (!player) continue;
         await send({
           channelId: session.channelId,
@@ -1333,37 +1548,154 @@ ${list || "(empty)"}`);
         case "hp": {
           const session = await this.sessions.get(msg);
           if (!session) return reply("No game here yet.");
-          const list = Object.values(session.players).map((p) => `\u2022 ${name(p)} \u2014 HP ${p.hp ?? "?"}/${p.maxHp ?? "?"}${p.conditions?.length ? ` (${p.conditions.join(", ")})` : ""}`).join("\n");
+          const list = Object.values(session.players).map((p) => `\u2022 ${name2(p)} \u2014 HP ${p.hp ?? "?"}/${p.maxHp ?? "?"}${p.conditions?.length ? ` (${p.conditions.join(", ")})` : ""}`).join("\n");
+          const monsters = (session.encounter?.order ?? []).filter((c) => c.kind === "monster");
+          const monsterList = monsters.length ? `
+**Monsters:**
+${monsters.map((c) => `\u2022 ${c.name} \u2014 HP ${c.hp}/${c.maxHp}, AC ${c.ac}${c.conditions?.length ? ` (${c.conditions.join(", ")})` : ""}`).join("\n")}` : "";
           return reply(`**Party HP:**
-${list || "(empty)"}`);
+${list || "(empty)"}${monsterList}`);
         }
         case "damage": {
           const session = await this.sessions.get(msg);
           if (!session) return reply("No game here yet \u2014 `/dm new` first.");
           const m = rest.match(/^(.+?)\s+(-?\d+)$/);
-          if (!m) return reply("Usage: `/dm damage <character> <amount>` \u2014 e.g. `/dm damage Thorin 5`.");
-          const target = findPartyMember(session, m[1]);
-          if (!target) return reply(`No party member named "${m[1]}" \u2014 see \`/dm who\`.`);
+          if (!m) return reply("Usage: `/dm damage <character> <amount>` \u2014 e.g. `/dm damage Thorin 5` (party member or an encounter monster).");
+          const target = findTarget(session, m[1]);
+          if (!target) return reply(`No combatant named "${m[1]}" \u2014 see \`/dm who\` (party) or \`/dm combat\` (monsters).`);
           const amount = parseInt(m[2], 10);
           if (!Number.isFinite(amount) || amount < 0) return reply("Damage amount must be a non-negative number.");
-          const change = applyDamage(target, amount);
+          const change = applyHpDelta(target.vitals, target.name, -amount, "damage");
           await this.sessions.save(session);
-          const status = change.becameUnconscious ? ` \u2014 ${name(target)} drops to 0 HP and falls unconscious!` : "";
-          return reply(`\u{1F4A5} ${name(target)} takes ${amount} damage: HP ${change.hp}/${change.maxHp}.${status}`);
+          const status = change.becameUnconscious ? target.kind === "monster" ? ` \u2014 ${target.name} drops to 0 HP and falls!` : ` \u2014 ${target.name} drops to 0 HP and falls unconscious!` : "";
+          return reply(`\u{1F4A5} ${target.name} takes ${amount} damage: HP ${change.hp}/${change.maxHp}.${status}`);
         }
         case "heal": {
           const session = await this.sessions.get(msg);
           if (!session) return reply("No game here yet \u2014 `/dm new` first.");
           const m = rest.match(/^(.+?)\s+(-?\d+)$/);
-          if (!m) return reply("Usage: `/dm heal <character> <amount>` \u2014 e.g. `/dm heal Thorin 5`.");
-          const target = findPartyMember(session, m[1]);
-          if (!target) return reply(`No party member named "${m[1]}" \u2014 see \`/dm who\`.`);
+          if (!m) return reply("Usage: `/dm heal <character> <amount>` \u2014 e.g. `/dm heal Thorin 5` (party member or an encounter monster).");
+          const target = findTarget(session, m[1]);
+          if (!target) return reply(`No combatant named "${m[1]}" \u2014 see \`/dm who\` (party) or \`/dm combat\` (monsters).`);
           const amount = parseInt(m[2], 10);
           if (!Number.isFinite(amount) || amount < 0) return reply("Heal amount must be a non-negative number.");
-          const change = applyHeal(target, amount);
+          const change = applyHpDelta(target.vitals, target.name, amount, "heal");
           await this.sessions.save(session);
-          const status = change.recovered ? ` \u2014 ${name(target)} regains consciousness!` : "";
-          return reply(`\u{1F49A} ${name(target)} heals ${amount}: HP ${change.hp}/${change.maxHp}.${status}`);
+          const status = change.recovered ? ` \u2014 ${target.name} regains consciousness!` : "";
+          return reply(`\u{1F49A} ${target.name} heals ${amount}: HP ${change.hp}/${change.maxHp}.${status}`);
+        }
+        case "conditions": {
+          const list = Object.values(CONDITIONS).map((c) => `\u2022 **${c.name}** \u2014 ${c.summary}`).join("\n");
+          return reply(`**Conditions:**
+${list}
+
+Set one with \`/dm condition <character> <condition>\`, lift with \`/dm condition <character> clear <condition>\`.`);
+        }
+        case "condition": {
+          const session = await this.sessions.get(msg);
+          if (!session) return reply("No game here yet \u2014 `/dm new` first.");
+          const tokens = rest.split(/\s+/).filter(Boolean);
+          if (tokens.length < 2)
+            return reply("Usage: `/dm condition <character> <condition>` to impose, `/dm condition <character> clear <condition>` to lift. See `/dm conditions`.");
+          const conditionTok = tokens[tokens.length - 1];
+          const verb = tokens[tokens.length - 2]?.toLowerCase();
+          const clearing = verb === "clear" || verb === "remove";
+          const nameTokens = clearing ? tokens.slice(0, -2) : tokens.slice(0, -1);
+          const targetName = nameTokens.join(" ");
+          if (!targetName) return reply("Name a character (or monster) before the condition.");
+          if (!normalizeCondition(conditionTok))
+            return reply(`\`${conditionTok}\` isn't a valid condition word \u2014 see \`/dm conditions\`.`);
+          const target = findTarget(session, targetName);
+          if (!target) return reply(`No combatant named "${targetName}" \u2014 see \`/dm who\` (party) or \`/dm combat\` (monsters).`);
+          const change = clearing ? clearCondition(target.vitals, target.name, conditionTok) : setCondition(target.vitals, target.name, conditionTok);
+          await this.sessions.save(session);
+          return reply(clearing ? `\u2728 ${target.name} is no longer **${change.condition}**.` : `\u{1FA78} ${target.name} is now **${change.condition}**.`);
+        }
+        case "bestiary": {
+          if (!rest) {
+            const list = listBestiary().map((sb2) => `\u2022 \`${sb2.id}\` \u2014 ${statBlockLine(sb2)}`).join("\n");
+            return reply(`**Bestiary** (add to an encounter with \`/dm monster add <id>\`):
+${list}`);
+          }
+          const sb = findStatBlock(rest);
+          if (!sb) return reply(`No monster matches \`${rest}\` \u2014 see \`/dm bestiary\`.`);
+          return reply(describeStatBlock(sb));
+        }
+        case "monster": {
+          const session = await this.sessions.get(msg);
+          if (!session) return reply("No game here yet \u2014 `/dm new` first.");
+          const sub = (parts.shift() || "list").toLowerCase();
+          const arg = parts.join(" ").trim();
+          if (sub === "add") {
+            const argTokens = arg.split(/\s+/).filter(Boolean);
+            const id = argTokens.shift();
+            const sb = id ? findStatBlock(id) : void 0;
+            if (!sb) return reply(`Unknown monster \`${id || "(none)"}\` \u2014 see \`/dm bestiary\` for ids.`);
+            const custom = argTokens.join(" ") || void 0;
+            const combatant = addMonster(session, sb, custom);
+            await this.sessions.save(session);
+            const inFight = session.encounter?.active ? " It rolled into the initiative order." : " Begin the fight with `/dm combat start`.";
+            return reply(`\u{1F479} **${combatant.name}** joins the encounter \u2014 AC ${combatant.ac}, HP ${combatant.hp}/${combatant.maxHp}.${inFight}`);
+          }
+          if (sub === "remove") {
+            if (!arg) return reply("Usage: `/dm monster remove <name>` \u2014 see `/dm combat`.");
+            const removed = removeMonster(session, arg);
+            if (removed) await this.sessions.save(session);
+            return reply(removed ? `\u{1F5D1}\uFE0F **${arg}** leaves the encounter.` : `No monster named "${arg}" in this encounter \u2014 see \`/dm combat\`.`);
+          }
+          const monsters = (session.encounter?.order ?? []).filter((c) => c.kind === "monster");
+          if (!monsters.length) return reply("No monsters in this encounter yet \u2014 add one with `/dm monster add <id>` (see `/dm bestiary`).");
+          const list = monsters.map((c) => `\u2022 ${c.name} \u2014 HP ${c.hp}/${c.maxHp}, AC ${c.ac}${c.conditions?.length ? ` (${c.conditions.join(", ")})` : ""}`).join("\n");
+          return reply(`**Monsters in the encounter:**
+${list}`);
+        }
+        case "combat":
+        case "initiative":
+        case "init": {
+          const session = await this.sessions.get(msg);
+          if (!session) return reply("No game here yet \u2014 `/dm new` first.");
+          const sub = (parts.shift() || (cmd === "combat" ? "status" : "start")).toLowerCase();
+          if (sub === "set") {
+            if (!this.sessions.isPlayer(session, msg.userId)) return reply("Join first with `/dm join <name>` to set an initiative modifier.");
+            const setArg = parts.join(" ").trim();
+            const m = setArg.match(/^(.+?)\s+(-?\d+)$/);
+            if (!m) return reply("Usage: `/dm init set <character> <modifier>` \u2014 e.g. `/dm init set Thorin 2`.");
+            const member = findPartyMember(session, m[1]);
+            if (!member) return reply(`No party member named "${m[1]}" \u2014 see \`/dm who\`.`);
+            member.initiativeMod = parseInt(m[2], 10);
+            await this.sessions.save(session);
+            return reply(`\u{1F3AF} ${name2(member)}'s initiative modifier is now ${member.initiativeMod >= 0 ? "+" : ""}${member.initiativeMod}.`);
+          }
+          if (sub === "start") {
+            if (!Object.keys(session.players).length) return reply("The party is empty \u2014 `/dm join <name>` before rolling initiative.");
+            startCombat(session);
+            await this.sessions.save(session);
+            const current = currentCombatant(session);
+            return reply(`\u2694\uFE0F **Roll for initiative!**
+${summarizeCombat(session)}
+
+${current ? `${current.name} acts first.` : ""} Advance with \`/dm combat next\`.`);
+          }
+          if (sub === "next") {
+            if (!session.encounter?.active) return reply("No combat in progress \u2014 start one with `/dm combat start`.");
+            const next = advanceCombat(session);
+            await this.sessions.save(session);
+            const { players, monsters } = livingSides(session);
+            if (!monsters.length) return reply(`\u{1F3C6} The enemies are defeated \u2014 the party wins the fight! End it with \`/dm combat end\`.`);
+            if (!players.length) return reply(`\u{1F480} The party has fallen. End the encounter with \`/dm combat end\`.`);
+            return reply(next ? `\u27A1\uFE0F Round ${session.encounter.round}: **${next.name}** is up.` : "No combatants left standing.");
+          }
+          if (sub === "end") {
+            if (!session.encounter) return reply("No combat to end.");
+            endCombat(session);
+            await this.sessions.save(session);
+            return reply("\u{1F54A}\uFE0F Combat ends.");
+          }
+          if (!session.encounter?.active) {
+            const staged = (session.encounter?.order ?? []).filter((c) => c.kind === "monster").length;
+            return reply(staged ? `No combat rolling yet \u2014 ${staged} monster(s) staged. Start with \`/dm combat start\`.` : "No combat in progress. Add monsters with `/dm monster add <id>`, then `/dm combat start`.");
+          }
+          return reply(summarizeCombat(session));
         }
         case "import": {
           const session = await this.sessions.get(msg);
@@ -1494,14 +1826,14 @@ Set one with \`/dm model <id>\`.`);
           if (!ability) return reply("Ability must be one of STR, DEX, CON, INT, WIS, CHA.");
           const dc = parseInt(m[3], 10);
           const modifier = m[4] ? parseInt(m[4], 10) : 0;
-          const checkResult = rollCheck(ability, dc, modifier, name(target));
+          const checkResult = rollCheck(ability, dc, modifier, name2(target));
           const text2 = `attempts a ${ability} check (DC ${dc})`;
-          const result = await this.pipeline.processTurn(session, { actorName: name(target), text: text2, checks: [checkResult] }, msg.userId);
+          const result = await this.pipeline.processTurn(session, { actorName: name2(target), text: text2, checks: [checkResult] }, msg.userId);
           if (result.notYourTurn) {
-            return await send({ channelId: msg.channelId, text: `\u23F3 It's ${name(result.notYourTurn)}'s turn \u2014 yours is coming up.` });
+            return await send({ channelId: msg.channelId, text: `\u23F3 It's ${name2(result.notYourTurn)}'s turn \u2014 yours is coming up.` });
           }
           await this.broadcast(session, result.record.narration, send, result.record.rolls);
-          if (result.next) await send({ channelId: msg.channelId, text: `\u27A1\uFE0F Next up: ${name(result.next)}.` });
+          if (result.next) await send({ channelId: msg.channelId, text: `\u27A1\uFE0F Next up: ${name2(result.next)}.` });
           return;
         }
         case "mode": {
@@ -1513,7 +1845,7 @@ Set one with \`/dm model <id>\`.`);
           await this.sessions.save(session);
           if (rest === "immediate") return reply("\u26A1 Immediate mode \u2014 every message is a turn.");
           const current = this.sessions.currentPlayer(session);
-          return reply(`\u{1F504} Round-robin mode \u2014 players act in join order.${current ? ` It's ${name(current)}'s turn.` : ""}`);
+          return reply(`\u{1F504} Round-robin mode \u2014 players act in join order.${current ? ` It's ${name2(current)}'s turn.` : ""}`);
         }
         case "class": {
           if (!rest) {
@@ -1584,7 +1916,7 @@ Set yours with \`/dm portrait <id>\` (e.g. \`/dm portrait fighter\`), or upload 
           if (!session) return reply("No game here yet.");
           if (session.turnMode !== "round-robin") return reply("Turn mode is `immediate` \u2014 anyone can act anytime.");
           const current = this.sessions.currentPlayer(session);
-          return reply(current ? `\u{1F3AF} It's ${name(current)}'s turn.` : "The party is empty \u2014 `/dm join <name>` first.");
+          return reply(current ? `\u{1F3AF} It's ${name2(current)}'s turn.` : "The party is empty \u2014 `/dm join <name>` first.");
         }
         case "pass": {
           const session = await this.sessions.get(msg);
@@ -1592,8 +1924,8 @@ Set yours with \`/dm portrait <id>\` (e.g. \`/dm portrait fighter\`), or upload 
             return reply("Join a game first with `/dm new` or `/dm join <name>`.");
           if (session.turnMode !== "round-robin") return reply("Nothing to pass \u2014 turn mode is `immediate`.");
           const result = await this.pipeline.pass(session, msg.userId);
-          if (result.notYourTurn) return reply(`\u23F3 It's ${name(result.notYourTurn)}'s turn, not yours.`);
-          return reply(`\u23ED\uFE0F ${name(session.players[msg.userId])} passes.${result.next ? ` Next up: ${name(result.next)}.` : ""}`);
+          if (result.notYourTurn) return reply(`\u23F3 It's ${name2(result.notYourTurn)}'s turn, not yours.`);
+          return reply(`\u23ED\uFE0F ${name2(session.players[msg.userId])} passes.${result.next ? ` Next up: ${name2(result.next)}.` : ""}`);
         }
         case "end": {
           const session = await this.sessions.get(msg);
@@ -1606,7 +1938,7 @@ Set yours with \`/dm portrait <id>\` (e.g. \`/dm portrait fighter\`), or upload 
       }
     }
   };
-  var name = (p) => p.characterName || p.userName;
+  var name2 = (p) => p.characterName || p.userName;
   function rollLine(rolls) {
     return rolls.map((r) => `\u{1F3B2} ${r.actor} rolls ${r.notation}: ${r.total}${r.note ? ` (${r.note})` : ""}`).join("\n");
   }
@@ -1639,9 +1971,13 @@ Set yours with \`/dm portrait <id>\` (e.g. \`/dm portrait fighter\`), or upload 
 \`/dm models [filter]\` \u2014 list models you can use (\u{1F193} = free)
 \`/dm model <id>\` \u2014 pick the model for this game
 \`/dm roll <notation>\` \u2014 roll dice (e.g. \`d20+5\`, \`2d6\`, \`d20 adv\`)
-\`/dm hp\` \u2014 show the party's HP and conditions
-\`/dm damage <character> <n>\` / \`/dm heal <character> <n>\` \u2014 apply mechanical damage/healing
+\`/dm hp\` \u2014 show the party's (and any monsters') HP and conditions
+\`/dm damage <name> <n>\` / \`/dm heal <name> <n>\` \u2014 apply mechanical damage/healing to a party member OR an encounter monster
+\`/dm condition <name> <cond>\` \u2014 impose a condition (\`clear <cond>\` to lift it); \`/dm conditions\` lists them all
 \`/dm check <character> <ABILITY> <DC> [modifier]\` \u2014 engine-rolled d20 check vs a DC (STR/DEX/CON/INT/WIS/CHA)
+\`/dm bestiary [<id>]\` \u2014 list bundled monster stat blocks (or show one)
+\`/dm monster add <id> [name]\` \u2014 add a monster to the encounter (also \`list\`, \`remove <name>\`)
+\`/dm combat start|next|end\` \u2014 roll initiative, advance turns, end the fight; \`/dm init set <name> <mod>\` sets a modifier
 \`/dm end\` \u2014 end the campaign
 Otherwise, just type what your character does.`;
 
@@ -3016,26 +3352,26 @@ ${m.content}`;
   var isUploadable = (value) => {
     return isFileLike(value) || isResponseLike(value) || isFsReadStream(value);
   };
-  async function toFile(value, name2, options) {
+  async function toFile(value, name3, options) {
     value = await value;
     if (isFileLike(value)) {
       return value;
     }
     if (isResponseLike(value)) {
       const blob = await value.blob();
-      name2 || (name2 = new URL(value.url).pathname.split(/[\\/]/).pop() ?? "unknown_file");
+      name3 || (name3 = new URL(value.url).pathname.split(/[\\/]/).pop() ?? "unknown_file");
       const data = isBlobLike(blob) ? [await blob.arrayBuffer()] : [blob];
-      return new File2(data, name2, options);
+      return new File2(data, name3, options);
     }
     const bits = await getBytes(value);
-    name2 || (name2 = getName(value) ?? "unknown_file");
+    name3 || (name3 = getName(value) ?? "unknown_file");
     if (!options?.type) {
       const type = bits[0]?.type;
       if (typeof type === "string") {
         options = { ...options, type };
       }
     }
-    return new File2(bits, name2, options);
+    return new File2(bits, name3, options);
   }
   async function getBytes(value) {
     let parts = [];
@@ -3093,7 +3429,7 @@ ${m.content}`;
     } else if (Array.isArray(value)) {
       await Promise.all(value.map((entry) => addFormValue(form, key + "[]", entry)));
     } else if (typeof value === "object") {
-      await Promise.all(Object.entries(value).map(([name2, prop]) => addFormValue(form, `${key}[${name2}]`, prop)));
+      await Promise.all(Object.entries(value).map(([name3, prop]) => addFormValue(form, `${key}[${name3}]`, prop)));
     } else {
       throw new TypeError(`Invalid value given to form, expected a string, number, boolean, object, Array, File or Blob but got ${value} instead`);
     }
@@ -3579,8 +3915,8 @@ ${m.content}`;
       // @ts-ignore
       headers.entries()
     ), {
-      get(target, name2) {
-        const key = name2.toString();
+      get(target, name3) {
+        const key = name3.toString();
         return target[key.toLowerCase()] || target[key];
       }
     });
@@ -3728,12 +4064,12 @@ ${m.content}`;
     return startsWithSchemeRegexp.test(url);
   };
   var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-  var validatePositiveInteger = (name2, n) => {
+  var validatePositiveInteger = (name3, n) => {
     if (typeof n !== "number" || !Number.isInteger(n)) {
-      throw new OpenAIError(`${name2} must be an integer`);
+      throw new OpenAIError(`${name3} must be an integer`);
     }
     if (n < 0) {
-      throw new OpenAIError(`${name2} must be a positive integer`);
+      throw new OpenAIError(`${name3} must be a positive integer`);
     }
     return n;
   };
@@ -5219,15 +5555,15 @@ ${m.content}`;
         }
         if (!message.function_call)
           return;
-        const { name: name2, arguments: args } = message.function_call;
-        const fn = functionsByName[name2];
+        const { name: name3, arguments: args } = message.function_call;
+        const fn = functionsByName[name3];
         if (!fn) {
-          const content2 = `Invalid function_call: ${JSON.stringify(name2)}. Available options are: ${functions.map((f) => JSON.stringify(f.name)).join(", ")}. Please try again`;
-          this._addMessage({ role, name: name2, content: content2 });
+          const content2 = `Invalid function_call: ${JSON.stringify(name3)}. Available options are: ${functions.map((f) => JSON.stringify(f.name)).join(", ")}. Please try again`;
+          this._addMessage({ role, name: name3, content: content2 });
           continue;
-        } else if (singleFunctionToCall && singleFunctionToCall !== name2) {
-          const content2 = `Invalid function_call: ${JSON.stringify(name2)}. ${JSON.stringify(singleFunctionToCall)} requested. Please try again`;
-          this._addMessage({ role, name: name2, content: content2 });
+        } else if (singleFunctionToCall && singleFunctionToCall !== name3) {
+          const content2 = `Invalid function_call: ${JSON.stringify(name3)}. ${JSON.stringify(singleFunctionToCall)} requested. Please try again`;
+          this._addMessage({ role, name: name3, content: content2 });
           continue;
         }
         let parsed;
@@ -5236,14 +5572,14 @@ ${m.content}`;
         } catch (error) {
           this._addMessage({
             role,
-            name: name2,
+            name: name3,
             content: error instanceof Error ? error.message : String(error)
           });
           continue;
         }
         const rawContent = await fn.function(parsed, this);
         const content = __classPrivateFieldGet5(this, _AbstractChatCompletionRunner_instances, "m", _AbstractChatCompletionRunner_stringifyFunctionCallResult).call(this, rawContent);
-        this._addMessage({ role, name: name2, content });
+        this._addMessage({ role, name: name3, content });
         if (singleFunctionToCall)
           return;
       }
@@ -5308,14 +5644,14 @@ ${m.content}`;
           if (tool_call.type !== "function")
             continue;
           const tool_call_id = tool_call.id;
-          const { name: name2, arguments: args } = tool_call.function;
-          const fn = functionsByName[name2];
+          const { name: name3, arguments: args } = tool_call.function;
+          const fn = functionsByName[name3];
           if (!fn) {
-            const content2 = `Invalid tool_call: ${JSON.stringify(name2)}. Available options are: ${Object.keys(functionsByName).map((name3) => JSON.stringify(name3)).join(", ")}. Please try again`;
+            const content2 = `Invalid tool_call: ${JSON.stringify(name3)}. Available options are: ${Object.keys(functionsByName).map((name4) => JSON.stringify(name4)).join(", ")}. Please try again`;
             this._addMessage({ role, tool_call_id, content: content2 });
             continue;
-          } else if (singleFunctionToCall && singleFunctionToCall !== name2) {
-            const content2 = `Invalid tool_call: ${JSON.stringify(name2)}. ${JSON.stringify(singleFunctionToCall)} requested. Please try again`;
+          } else if (singleFunctionToCall && singleFunctionToCall !== name3) {
+            const content2 = `Invalid tool_call: ${JSON.stringify(name3)}. ${JSON.stringify(singleFunctionToCall)} requested. Please try again`;
             this._addMessage({ role, tool_call_id, content: content2 });
             continue;
           }
@@ -6055,18 +6391,18 @@ ${m.content}`;
           throw new OpenAIError(`missing role for choice ${index}`);
         }
         if (function_call) {
-          const { arguments: args, name: name2 } = function_call;
+          const { arguments: args, name: name3 } = function_call;
           if (args == null) {
             throw new OpenAIError(`missing function_call.arguments for choice ${index}`);
           }
-          if (!name2) {
+          if (!name3) {
             throw new OpenAIError(`missing function_call.name for choice ${index}`);
           }
           return {
             ...choiceRest,
             message: {
               content,
-              function_call: { arguments: args, name: name2 },
+              function_call: { arguments: args, name: name3 },
               role,
               refusal: message.refusal ?? null
             },
@@ -6088,7 +6424,7 @@ ${m.content}`;
               refusal: message.refusal ?? null,
               tool_calls: tool_calls.map((tool_call, i) => {
                 const { function: fn, type, id: id2, ...toolRest } = tool_call;
-                const { arguments: args, name: name2, ...fnRest } = fn || {};
+                const { arguments: args, name: name3, ...fnRest } = fn || {};
                 if (id2 == null) {
                   throw new OpenAIError(`missing choices[${index}].tool_calls[${i}].id
 ${str3(snapshot)}`);
@@ -6097,7 +6433,7 @@ ${str3(snapshot)}`);
                   throw new OpenAIError(`missing choices[${index}].tool_calls[${i}].type
 ${str3(snapshot)}`);
                 }
-                if (name2 == null) {
+                if (name3 == null) {
                   throw new OpenAIError(`missing choices[${index}].tool_calls[${i}].function.name
 ${str3(snapshot)}`);
                 }
@@ -6105,7 +6441,7 @@ ${str3(snapshot)}`);
                   throw new OpenAIError(`missing choices[${index}].tool_calls[${i}].function.arguments
 ${str3(snapshot)}`);
                 }
-                return { ...toolRest, id: id2, type, function: { ...fnRest, name: name2, arguments: args } };
+                return { ...toolRest, id: id2, type, function: { ...fnRest, name: name3, arguments: args } };
               })
             }
           };
@@ -7414,8 +7750,8 @@ ${str3(snapshot)}`);
   function isAutoParsableTool2(tool) {
     return tool?.["$brand"] === "auto-parseable-tool";
   }
-  function getInputToolByName(input_tools, name2) {
-    return input_tools.find((tool) => tool.type === "function" && tool.name === name2);
+  function getInputToolByName(input_tools, name3) {
+    return input_tools.find((tool) => tool.type === "function" && tool.name === name3);
   }
   function parseToolCall2(params, toolCall) {
     const inputTool = getInputToolByName(params.tools ?? [], toolCall.name);
@@ -7522,9 +7858,9 @@ ${str3(snapshot)}`);
     }, _ResponseStream_addEvent = function _ResponseStream_addEvent2(event, starting_after) {
       if (this.ended)
         return;
-      const maybeEmit = (name2, event2) => {
+      const maybeEmit = (name3, event2) => {
         if (starting_after == null || event2.sequence_number > starting_after) {
-          this._emit(name2, event2);
+          this._emit(name3, event2);
         }
       };
       const response = __classPrivateFieldGet7(this, _ResponseStream_instances, "m", _ResponseStream_accumulateResponse).call(this, event);
