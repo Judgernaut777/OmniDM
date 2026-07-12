@@ -19,28 +19,52 @@ import { FilePurchaseStore } from './core/billing/store-node.js';
 import { createBillingHandler, type BillingHttpRequest, type BillingHttpResponse } from './core/billing/handler.js';
 import { CliAdapter } from './adapters/cli.js';
 import { DiscordAdapter } from './adapters/discord.js';
-import { SlackAdapter } from './adapters/slack.js';
-import { MatrixAdapter } from './adapters/matrix.js';
-import { MattermostAdapter } from './adapters/mattermost.js';
 import { WebAdapter } from './adapters/web.js';
 import type { PlatformAdapter } from './core/types.js';
 
+// The Slack/Matrix/Mattermost adapters are archived/experimental (see
+// docs/SUPPORT_MATRIX.md). They are imported DYNAMICALLY, only when actually
+// selected, so their optional npm packages (@slack/bolt, matrix-bot-sdk) are NOT
+// required to run the supported CLI / Discord / web surface — a production image
+// can `npm ci --omit=optional` and still boot. A missing package surfaces as a
+// clear, actionable error rather than a boot-time module-resolution crash.
+async function importArchivedAdapter<T>(name: string, pkg: string, load: () => Promise<T>): Promise<T> {
+  try {
+    return await load();
+  } catch (e) {
+    throw new Error(
+      `The "${name}" integration is experimental/optional and its dependency "${pkg}" is not installed. ` +
+        `Install it with \`npm install ${pkg}\` to use this adapter, or use the supported \`discord\`/\`web\`/\`cli\` adapters. ` +
+        `(underlying error: ${(e as Error).message})`,
+    );
+  }
+}
+
 /** Exported for tests: pure adapter-selection logic, no process/env access. */
-export function pickAdapter(
+export async function pickAdapter(
   name: string,
   config: ReturnType<typeof loadConfig>,
   storage: NodeFileStorage,
   billingHandler?: (req: BillingHttpRequest) => Promise<BillingHttpResponse>,
-): PlatformAdapter {
+): Promise<PlatformAdapter> {
   switch (name) {
     case 'discord':
       return new DiscordAdapter(config.discord.token);
-    case 'slack':
+    case 'slack': {
+      const { SlackAdapter } = await importArchivedAdapter('slack', '@slack/bolt', () => import('./adapters/slack.js'));
       return new SlackAdapter(config.slack.botToken, config.slack.appToken);
-    case 'matrix':
+    }
+    case 'matrix': {
+      const { MatrixAdapter } = await importArchivedAdapter('matrix', 'matrix-bot-sdk', () => import('./adapters/matrix.js'));
       return new MatrixAdapter(config.matrix.homeserverUrl, config.matrix.accessToken, config.dataDir);
-    case 'mattermost':
+    }
+    case 'mattermost': {
+      // Mattermost uses `ws` (a core dependency), so no optional package is
+      // required — it is loaded lazily only for consistency with the other
+      // archived adapters.
+      const { MattermostAdapter } = await import('./adapters/mattermost.js');
       return new MattermostAdapter(config.mattermost.url, config.mattermost.token);
+    }
     case 'web':
       // Share the Bot's storage so the adapter can enrich the roster and serve
       // card portraits from the same live session state.
@@ -91,7 +115,7 @@ async function main() {
   }
 
   const bot = new Bot(config, provider, storage, undefined, 'server', purchases);
-  const adapter = pickAdapter(adapterArg, config, storage, billingHandler);
+  const adapter = await pickAdapter(adapterArg, config, storage, billingHandler);
 
   adapter.onMessage((msg) => bot.handle(msg, (out) => adapter.send(out)));
 

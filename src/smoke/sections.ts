@@ -1063,13 +1063,17 @@ export function registerAll(suite: Suite): void {
       parseAdapterArg(['node', 'index.js', '--adapter']) === 'cli');
 
     const pickStorage = new NodeFileStorage(path.join(dataDir, 'pick-adapter'));
-    check('index: pickAdapter("cli") returns a CliAdapter', pickAdapter('cli', config, pickStorage) instanceof CliAdapter);
-    check('index: an unrecognized adapter name falls back to CliAdapter', pickAdapter('something-unknown', config, pickStorage) instanceof CliAdapter);
+    // pickAdapter is async now: the archived Slack/Matrix/Mattermost adapters are
+    // dynamically imported only when selected (so their optional packages aren't
+    // required to run the supported surface). The supported adapters resolve the
+    // same way; a mis-configured archived adapter still fails fast (rejects).
+    check('index: pickAdapter("cli") returns a CliAdapter', (await pickAdapter('cli', config, pickStorage)) instanceof CliAdapter);
+    check('index: an unrecognized adapter name falls back to CliAdapter', (await pickAdapter('something-unknown', config, pickStorage)) instanceof CliAdapter);
     check('index: pickAdapter("discord") returns a DiscordAdapter wired to config.discord.token',
-      pickAdapter('discord', config, pickStorage) instanceof DiscordAdapter);
-    check('index: pickAdapter("web") returns a WebAdapter sharing the passed-in storage', pickAdapter('web', config, pickStorage) instanceof WebAdapter);
-    check('index: pickAdapter("matrix") throws without homeserver/token config (fails fast, not silently)', (() => {
-      try { pickAdapter('matrix', config, pickStorage); return false; }
+      (await pickAdapter('discord', config, pickStorage)) instanceof DiscordAdapter);
+    check('index: pickAdapter("web") returns a WebAdapter sharing the passed-in storage', (await pickAdapter('web', config, pickStorage)) instanceof WebAdapter);
+    check('index: pickAdapter("matrix") rejects without homeserver/token config (fails fast, not silently)', await (async () => {
+      try { await pickAdapter('matrix', config, pickStorage); return false; }
       catch (e) { return e instanceof Error && e.message.includes('MATRIX_HOMESERVER_URL'); }
     })());
   }

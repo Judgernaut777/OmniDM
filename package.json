@@ -33,13 +33,15 @@
     "test": "tsx src/smoke/node-test.ts"
   },
   "dependencies": {
-    "@slack/bolt": "^4.7.3",
     "discord.js": "^14.16.3",
     "dotenv": "^16.4.5",
-    "matrix-bot-sdk": "^0.8.0",
     "nanoid": "^5.0.7",
     "openai": "^4.67.3",
     "ws": "^8.21.0"
+  },
+  "optionalDependencies": {
+    "@slack/bolt": "^4.7.3",
+    "matrix-bot-sdk": "^0.8.0"
   },
   "build": {
     "appId": "com.omnidm.app",
