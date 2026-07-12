@@ -20,6 +20,15 @@ import { addMonster, advanceCombat, currentCombatant, endCombat, livingSides, re
 import { describeStatBlock, findStatBlock, listBestiary, statBlockLine } from './rules/statblock.js';
 import { CONDITIONS, normalizeCondition } from './rules/conditions.js';
 import { attackerProfiles, attackLine, attackTarget, pickAttack, resolveAttack } from './rules/attacks.js';
+import {
+  DEFAULT_SPELL_ATTACK, DEFAULT_SPELL_DC, expendSlot, findSpell, knowsSpell, learnSpell,
+  listSpellbook, lowestAvailableSlot, resolveCast, restoreSlots, setSlots, slotSummary,
+  spellLine, spellSummary, type CasterProfile,
+} from './rules/spells.js';
+import {
+  describeInventory, dropItem, equip, findCarried, findCatalogItem, giveItem, listArmory,
+  itemSummary, unequip, useItem,
+} from './rules/inventory.js';
 import { classPreset, MAX_BIO_CHARS, normalizePresetId, PORTRAIT_PRESETS } from './portraits.js';
 import { getBundledContentPack, listBundledContentPacks } from './content-packs/registry.js';
 import { isPackLockedForDisplay, loadContentPack, PackLockedError } from './content-packs/loader.js';
@@ -732,6 +741,246 @@ export class Bot {
         return reply('🏁 Campaign ended and saved out. `/dm new` to start fresh.');
       }
 
+      case 'spells': {
+        // Listing needs no game (a reference); a single id shows its detail.
+        if (!rest) {
+          const byLevel = listSpellbook()
+            .map((s) => `• \`${s.id}\` — ${spellSummary(s)}`)
+            .join('\n');
+          return reply(`**Spellbook** (teach a character with \`/dm learn <character> <spell>\`):\n${byLevel}`);
+        }
+        const sp = findSpell(rest);
+        if (!sp) return reply(`No spell matches \`${rest}\` — see \`/dm spells\`.`);
+        return reply(`**${sp.name}** (\`${sp.id}\`)\n${spellSummary(sp)}\n${sp.desc}`);
+      }
+
+      case 'learn': {
+        const session = await this.sessions.get(msg);
+        if (!session) return reply('No game here yet — `/dm new` first.');
+        const tokens = rest.split(/\s+/).filter(Boolean);
+        if (tokens.length < 2) return reply('Usage: `/dm learn <character> <spell>` — e.g. `/dm learn Elaria fireball`.');
+        const spellTok = tokens[tokens.length - 1];
+        const targetName = tokens.slice(0, -1).join(' ');
+        const member = findPartyMember(session, targetName);
+        if (!member) return reply(`No party member named "${targetName}" — see \`/dm who\`.`);
+        const sp = findSpell(spellTok);
+        if (!sp) return reply(`No spell matches \`${spellTok}\` — see \`/dm spells\`.`);
+        learnSpell(member, sp.id);
+        await this.sessions.save(session);
+        return reply(`📖 ${name(member)} learns **${sp.name}** (${sp.level === 0 ? 'cantrip' : `L${sp.level}`}).`);
+      }
+
+      case 'slots': {
+        const session = await this.sessions.get(msg);
+        if (!session) return reply('No game here yet — `/dm new` first.');
+        const tokens = rest.split(/\s+/).filter(Boolean);
+        if (!tokens.length) return reply('Usage: `/dm slots <character> [L1 L2 …]` — e.g. `/dm slots Elaria 4 3 2` sets 4 first-, 3 second-, 2 third-level slots. No numbers shows current slots.');
+        // The character name runs up to the first numeric token.
+        const firstNum = tokens.findIndex((t) => /^\d+$/.test(t));
+        const nameEnd = firstNum === -1 ? tokens.length : firstNum;
+        const targetName = tokens.slice(0, nameEnd).join(' ');
+        const member = targetName ? findPartyMember(session, targetName) : undefined;
+        if (!member) return reply(`No party member named "${targetName || '(none)'}" — see \`/dm who\`.`);
+        if (firstNum === -1) return reply(`🔮 ${name(member)}'s slots: ${slotSummary(member)}.`);
+        const nums = tokens.slice(nameEnd).map((t) => parseInt(t, 10));
+        setSlots(member, nums);
+        await this.sessions.save(session);
+        return reply(`🔮 ${name(member)}'s slots set: ${slotSummary(member)}.`);
+      }
+
+      case 'castdc': {
+        const session = await this.sessions.get(msg);
+        if (!session) return reply('No game here yet — `/dm new` first.');
+        const m = rest.match(/^(.+?)\s+(\d+)(?:\s+([+-]?\d+))?$/);
+        if (!m) return reply('Usage: `/dm castdc <character> <saveDC> [spellAttackBonus]` — e.g. `/dm castdc Elaria 14 6`.');
+        const member = findPartyMember(session, m[1]);
+        if (!member) return reply(`No party member named "${m[1]}" — see \`/dm who\`.`);
+        member.spellDc = parseInt(m[2], 10);
+        if (m[3] !== undefined) member.spellAttack = parseInt(m[3], 10);
+        await this.sessions.save(session);
+        return reply(`🔮 ${name(member)} — spell save DC ${member.spellDc}, spell attack ${(member.spellAttack ?? DEFAULT_SPELL_ATTACK) >= 0 ? '+' : ''}${member.spellAttack ?? DEFAULT_SPELL_ATTACK}.`);
+      }
+
+      case 'spellbook': {
+        const session = await this.sessions.get(msg);
+        if (!session) return reply('No game here yet — `/dm new` first.');
+        const member = rest ? findPartyMember(session, rest) : (this.sessions.isPlayer(session, msg.userId) ? session.players[msg.userId] : undefined);
+        if (!member) return reply(rest ? `No party member named "${rest}" — see \`/dm who\`.` : 'Usage: `/dm spellbook <character>` — or join a game to see your own.');
+        const known = (member.spells ?? []).map((id) => findSpell(id)).filter(Boolean);
+        const knownList = known.length ? known.map((s) => `• ${spellSummary(s!)}`).join('\n') : '  (none — teach with `/dm learn`)';
+        const dc = member.spellDc ?? DEFAULT_SPELL_DC;
+        const atk = member.spellAttack ?? DEFAULT_SPELL_ATTACK;
+        return reply(`**${name(member)}'s spellbook** — save DC ${dc}, attack ${atk >= 0 ? '+' : ''}${atk}\nSlots: ${slotSummary(member)}\nKnown:\n${knownList}`);
+      }
+
+      case 'cast': {
+        const session = await this.sessions.get(msg);
+        if (!session) return reply('No game here yet — `/dm new` first.');
+        // `/dm cast <caster> <spell> [at <target>]` — ` at ` splits the (possibly
+        // multi-word) target off the end unambiguously.
+        let head = rest;
+        let targetName: string | undefined;
+        const atM = rest.match(/^(.*?)\s+at\s+(.+)$/i);
+        if (atM) { head = atM[1].trim(); targetName = atM[2].trim(); }
+        const headTokens = head.split(/\s+/).filter(Boolean);
+        if (headTokens.length < 2) return reply('Usage: `/dm cast <caster> <spell> [at <target>]` — e.g. `/dm cast Elaria fireball at Goblin`.');
+        const spellTok = headTokens[headTokens.length - 1];
+        const casterName = headTokens.slice(0, -1).join(' ');
+        const caster = findPartyMember(session, casterName);
+        if (!caster) return reply(`No party member named "${casterName}" — see \`/dm who\`.`);
+        const sp = findSpell(spellTok);
+        if (!sp) return reply(`No spell matches \`${spellTok}\` — see \`/dm spells\`.`);
+        if (!knowsSpell(caster, sp.id)) return reply(`${name(caster)} hasn't learned **${sp.name}** — teach it with \`/dm learn ${name(caster)} ${sp.id}\`.`);
+        // A leveled spell needs an available slot; a cantrip is free.
+        const slotLevel = lowestAvailableSlot(caster, sp.level);
+        if (slotLevel === undefined) return reply(`${name(caster)} has no level-${sp.level}-or-higher slot left — rest with \`/dm rest\`. (Slots: ${slotSummary(caster)})`);
+        // A spell with a mechanical effect needs a target.
+        let target;
+        if (sp.resolution) {
+          if (!targetName) return reply(`**${sp.name}** needs a target — cast it \`at <character>\` (\`/dm cast ${name(caster)} ${sp.id} at <name>\`).`);
+          target = attackTarget(session, targetName);
+          if (!target) return reply(`No combatant named "${targetName}" — see \`/dm who\` (party) or \`/dm combat\` (monsters).`);
+        }
+        // Committing to the cast expends the slot (5e: spent on a miss too).
+        expendSlot(caster, slotLevel);
+        const profile: CasterProfile = { name: name(caster), spellAttack: caster.spellAttack ?? DEFAULT_SPELL_ATTACK, spellDc: caster.spellDc ?? DEFAULT_SPELL_DC };
+        const result = resolveCast(sp, profile, target, slotLevel);
+        await this.sessions.save(session);
+        const slotsNote = sp.level > 0 ? ` (slots: ${slotSummary(caster)})` : '';
+        return reply(`${spellLine(result)}${slotsNote}`);
+      }
+
+      case 'rest': {
+        const session = await this.sessions.get(msg);
+        if (!session) return reply('No game here yet — `/dm new` first.');
+        // `/dm rest` = a long rest for the whole party; `/dm rest <name>` for one.
+        const targets = rest
+          ? (() => { const m = findPartyMember(session, rest); return m ? [m] : []; })()
+          : Object.values(session.players);
+        if (!targets.length) return reply(rest ? `No party member named "${rest}" — see \`/dm who\`.` : 'The party is empty.');
+        for (const p of targets) {
+          restoreSlots(p);
+          if (p.maxHp !== undefined) applyHpDelta(p, name(p), (p.maxHp ?? 10) - (p.hp ?? 0), 'heal');
+          p.conditions = (p.conditions ?? []).filter((c) => c !== 'unconscious');
+        }
+        await this.sessions.save(session);
+        return reply(rest
+          ? `😴 ${name(targets[0])} takes a long rest — HP and spell slots restored.`
+          : `😴 The party takes a long rest — HP and spell slots restored.`);
+      }
+
+      case 'items': {
+        // A reference — no game needed.
+        if (!rest) {
+          const list = listArmory().map((it) => `• \`${it.id}\` — ${itemSummary(it)}`).join('\n');
+          return reply(`**Armory** (hand one out with \`/dm give <character> <item>\`):\n${list}`);
+        }
+        const it = findCatalogItem(rest);
+        if (!it) return reply(`No item matches \`${rest}\` — see \`/dm items\`.`);
+        return reply(`**${it.name}** (\`${it.id}\`)\n${itemSummary(it)}${it.desc ? `\n${it.desc}` : ''}`);
+      }
+
+      case 'inv':
+      case 'inventory': {
+        const session = await this.sessions.get(msg);
+        if (!session) return reply('No game here yet — `/dm new` first.');
+        const member = rest ? findPartyMember(session, rest) : (this.sessions.isPlayer(session, msg.userId) ? session.players[msg.userId] : undefined);
+        if (!member) return reply(rest ? `No party member named "${rest}" — see \`/dm who\`.` : 'Usage: `/dm inventory <character>` — or join a game to see your own.');
+        return reply(`**${name(member)}'s inventory**\n${describeInventory(member)}`);
+      }
+
+      case 'give': {
+        const session = await this.sessions.get(msg);
+        if (!session) return reply('No game here yet — `/dm new` first.');
+        // `/dm give <character> <item> [qty]` — a trailing number is the quantity.
+        const tokens = rest.split(/\s+/).filter(Boolean);
+        if (tokens.length < 2) return reply('Usage: `/dm give <character> <item> [qty]` — e.g. `/dm give Thorin longsword`. See `/dm items`.');
+        let qty = 1;
+        if (/^\d+$/.test(tokens[tokens.length - 1]) && tokens.length >= 3) qty = parseInt(tokens.pop()!, 10);
+        const itemTok = tokens[tokens.length - 1];
+        const targetName = tokens.slice(0, -1).join(' ');
+        const member = findPartyMember(session, targetName);
+        if (!member) return reply(`No party member named "${targetName}" — see \`/dm who\`.`);
+        const given = giveItem(member, itemTok, qty);
+        if (!given) return reply(`No item matches \`${itemTok}\` — see \`/dm items\`.`);
+        await this.sessions.save(session);
+        return reply(`🎒 ${name(member)} receives **${given.name}**${qty > 1 ? ` ×${qty}` : ''} (carrying ${given.qty}).`);
+      }
+
+      case 'equip': {
+        const session = await this.sessions.get(msg);
+        if (!session) return reply('No game here yet — `/dm new` first.');
+        const tokens = rest.split(/\s+/).filter(Boolean);
+        if (tokens.length < 2) return reply('Usage: `/dm equip <character> <item>` — e.g. `/dm equip Thorin chain-mail`.');
+        const itemTok = tokens[tokens.length - 1];
+        const targetName = tokens.slice(0, -1).join(' ');
+        const member = findPartyMember(session, targetName);
+        if (!member) return reply(`No party member named "${targetName}" — see \`/dm who\`.`);
+        const res = equip(member, itemTok);
+        if ('error' in res) {
+          return reply(res.error === 'not-carried'
+            ? `${name(member)} isn't carrying "${itemTok}" — hand it over with \`/dm give\`, or see \`/dm inventory ${name(member)}\`.`
+            : `\`${itemTok}\` can't be equipped (only weapons, armor, and shields).`);
+        }
+        await this.sessions.save(session);
+        const detail = res.slot === 'weapon'
+          ? `attack ${member.attack!.toHit >= 0 ? '+' : ''}${member.attack!.toHit}, ${member.attack!.damage}`
+          : `AC ${member.ac}`;
+        return reply(`🛡️ ${name(member)} equips **${findCarried(member, itemTok)?.name ?? itemTok}** (${res.slot}) — ${detail}.`);
+      }
+
+      case 'unequip': {
+        const session = await this.sessions.get(msg);
+        if (!session) return reply('No game here yet — `/dm new` first.');
+        const m = rest.match(/^(.+?)\s+(weapon|armor|shield)$/i);
+        if (!m) return reply('Usage: `/dm unequip <character> <weapon|armor|shield>`.');
+        const member = findPartyMember(session, m[1]);
+        if (!member) return reply(`No party member named "${m[1]}" — see \`/dm who\`.`);
+        const slot = m[2].toLowerCase() as 'weapon' | 'armor' | 'shield';
+        const had = unequip(member, slot);
+        await this.sessions.save(session);
+        if (!had) return reply(`${name(member)} had nothing equipped in the ${slot} slot.`);
+        const detail = slot === 'weapon' ? 'back to a basic weapon' : `AC ${member.ac}`;
+        return reply(`🎽 ${name(member)} unequips their ${slot} — ${detail}.`);
+      }
+
+      case 'use': {
+        const session = await this.sessions.get(msg);
+        if (!session) return reply('No game here yet — `/dm new` first.');
+        const tokens = rest.split(/\s+/).filter(Boolean);
+        if (tokens.length < 2) return reply('Usage: `/dm use <character> <item>` — e.g. `/dm use Thorin potion-of-healing`.');
+        const itemTok = tokens[tokens.length - 1];
+        const targetName = tokens.slice(0, -1).join(' ');
+        const member = findPartyMember(session, targetName);
+        if (!member) return reply(`No party member named "${targetName}" — see \`/dm who\`.`);
+        const res = useItem(member, itemTok);
+        if ('error' in res) {
+          return reply(res.error === 'not-carried'
+            ? `${name(member)} isn't carrying "${itemTok}" — see \`/dm inventory ${name(member)}\`.`
+            : `\`${itemTok}\` isn't something you can use (only potions, for now).`);
+        }
+        await this.sessions.save(session);
+        return reply(`🧪 ${name(member)} drinks a **${res.item}** — heals ${res.healed}, HP ${res.hp}/${res.maxHp}.`);
+      }
+
+      case 'drop': {
+        const session = await this.sessions.get(msg);
+        if (!session) return reply('No game here yet — `/dm new` first.');
+        const tokens = rest.split(/\s+/).filter(Boolean);
+        if (tokens.length < 2) return reply('Usage: `/dm drop <character> <item> [qty]`.');
+        let qty: number | undefined;
+        if (/^\d+$/.test(tokens[tokens.length - 1]) && tokens.length >= 3) qty = parseInt(tokens.pop()!, 10);
+        const itemTok = tokens[tokens.length - 1];
+        const targetName = tokens.slice(0, -1).join(' ');
+        const member = findPartyMember(session, targetName);
+        if (!member) return reply(`No party member named "${targetName}" — see \`/dm who\`.`);
+        const carried = findCarried(member, itemTok);
+        const dropped = dropItem(member, itemTok, qty);
+        if (!dropped) return reply(`${name(member)} isn't carrying "${itemTok}" — see \`/dm inventory ${name(member)}\`.`);
+        await this.sessions.save(session);
+        return reply(`🗑️ ${name(member)} drops **${carried?.name ?? itemTok}**${qty ? ` ×${qty}` : ''}.`);
+      }
+
       default:
         return reply(`Unknown command \`${cmd}\`. Try \`/dm help\`.`);
     }
@@ -796,5 +1045,12 @@ const HELP = `**OmniDM — commands**
 \`/dm combat start|next|end\` — roll initiative, advance turns, end the fight; \`/dm init set <name> <mod>\` sets a modifier
 \`/dm attack <attacker> vs <target> [with <weapon>]\` — engine rolls to-hit vs AC + damage on a hit (crit doubles dice)
 \`/dm ac <name> <n>\` / \`/dm weapon <name> <toHit> <damage> [name]\` — set a character's Armor Class / weapon profile
+\`/dm spells [<id>]\` — list bundled spells (or show one); \`/dm learn <character> <spell>\` teaches one
+\`/dm slots <character> [L1 L2 …]\` — set spell slots per level (\`/dm castdc <character> <DC> [atk]\` sets save DC / attack)
+\`/dm cast <caster> <spell> [at <target>]\` — engine resolves attack/save/auto + damage/heal, spends a slot; \`/dm rest\` restores
+\`/dm spellbook <character>\` — show a character's known spells + slots
+\`/dm items [<id>]\` — list the armory (or show one); \`/dm give <character> <item> [qty]\` hands it out
+\`/dm equip <character> <item>\` / \`/dm unequip <character> <weapon|armor|shield>\` — worn gear sets AC / weapon
+\`/dm use <character> <item>\` — drink a potion (engine heals); \`/dm inventory <character>\` shows the pack; \`/dm drop\` discards
 \`/dm end\` — end the campaign
 Otherwise, just type what your character does.`;

@@ -15,6 +15,7 @@ import { HISTORY_WINDOW, type MemoryRecord } from '../memory/retrieval.js';
 import { bundledRulesProvider, type RulesProvider } from '../rules/registry.js';
 import { summarizeCombat } from '../rules/combat.js';
 import { describeConditions } from '../rules/conditions.js';
+import { findSpell, slotSummary } from '../rules/spells.js';
 import { FOG_PROMPT } from './fog.js';
 
 const BASE_DM_PROMPT = `You are an expert tabletop RPG Dungeon Master running a game for multiple players in a shared chat channel. You are collaborative, vivid, and fair. You keep the spotlight moving between players and never railroad them. Stay in character as the narrator/DM at all times.`;
@@ -49,9 +50,26 @@ function characterSheet(p: Player): string {
     const bio = p.bio.length > MAX_BIO_CHARS ? `${p.bio.slice(0, MAX_BIO_CHARS)}…` : p.bio;
     parts.push(`Bio: ${bio}`);
   }
+  // Equipped gear + spellcasting are engine-owned facts (see rules/inventory.ts,
+  // rules/spells.ts): surfaced READ-ONLY so the DM narrates them consistently
+  // (mentions the worn armor, doesn't hand out a slot the caster has spent).
+  const gear = [
+    p.equipped?.weapon ? `wielding ${itemName(p, p.equipped.weapon)}` : '',
+    p.equipped?.armor ? `wearing ${itemName(p, p.equipped.armor)}` : '',
+    p.equipped?.shield ? `with a ${itemName(p, p.equipped.shield)}` : '',
+  ].filter(Boolean);
+  if (gear.length) parts.push(`Equipped: ${gear.join(', ')}`);
+  if (p.spellSlots && Object.keys(p.spellSlots).length) parts.push(`Spell slots: ${slotSummary(p)}`);
+  const spells = (p.spells ?? []).map((id) => findSpell(id)?.name).filter(Boolean);
+  if (spells.length) parts.push(`Knows: ${spells.join(', ')}`);
   if (!parts.length) return '';
   const name = p.characterName || p.userName;
   return `- ${name} (played by ${p.userName}) — ${parts.join('. ')}`;
+}
+
+/** The display name of a carried item id, falling back to the id itself. */
+function itemName(p: Player, id: string): string {
+  return (p.inventory ?? []).find((it) => it.id === id)?.name ?? id;
 }
 
 export class Narrator {

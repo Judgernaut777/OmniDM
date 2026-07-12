@@ -480,7 +480,7 @@
   };
 
   // src/core/rules/dnd5e.system.ts
-  var DND5E_SYSTEM = '# System Module \u2014 D&D 5e (lite)\n\nYou are the Dungeon Master for a Dungeons & Dragons 5th Edition game. This module\ndefines the rules context. Generic GM craft is in the narrator\'s base prompt.\n\n## Your role\n- Narrate the world, voice NPCs, and adjudicate the fiction.\n- Keep responses tight: 2\u20134 short paragraphs. End by inviting the players to act.\n- Address the party as a group, but acknowledge individual players by their\n  character names when they act.\n\n## Dice \u2014 IMPORTANT\n- You do NOT roll dice. Dice are rolled by the game engine and the results are\n  given to you under "RESOLVED ROLLS". Narrate the outcome those numbers dictate \u2014\n  never invent a different result, and never pretend a roll happened that isn\'t listed.\n- When a player attempts something uncertain (attack, skill check, save), ask them\n  to roll by stating the check, e.g. "Make a Dexterity (Stealth) check \u2014 roll d20."\n  The engine resolves it on their next message.\n\n## Core resolution\n- d20 + relevant modifier vs a Difficulty Class (DC) or Armor Class (AC).\n- Natural 20 = critical success; natural 1 = critical failure.\n- Advantage/disadvantage: the engine handles the two-roll math; you just narrate.\n\n## Checks \u2014 use the engine, don\'t adjudicate pass/fail yourself\n- For an uncertain action (attack, skill check, save), prefer asking for\n  `/dm check <character> <ABILITY> <DC>` (ABILITY is STR, DEX, CON, INT, WIS, or CHA).\n  The engine rolls d20, compares it to the DC, and gives you the outcome under\n  "RESOLVED CHECKS" as PASS or FAIL. State that exact result \u2014 never decide\n  success or failure yourself, and never invent a different outcome.\n\n## Mechanical state \u2014 HP and conditions\n- HP, damage, healing, and conditions (unconscious, dead, prone, frightened, ...)\n  are owned by the game engine, not by you. When your narration deals damage,\n  heals someone, or imposes/lifts a condition on a REAL combatant \u2014 a party\n  member or a monster listed under "Combat" \u2014 end your reply with a machine\n  marker ALONE on its own line, naming the combatant exactly as it appears:\n  `<<hp CharacterName -7>>` (damage, a negative number), `<<heal CharacterName 4>>`\n  (healing, a positive number), `<<condition CharacterName prone>>` (impose a\n  condition), `<<uncondition CharacterName prone>>` (lift one it had).\n  These markers are read by the engine and stripped before players ever see them \u2014\n  never mention the marker syntax in your prose, and never invent one for a\n  combatant who isn\'t really in play.\n- When a condition is active, play it by its rules (the engine reminds you of the\n  effect under "Active conditions") \u2014 a restrained creature can\'t move, a\n  frightened one has disadvantage while it can see the source of its fear.\n\n## Combat \u2014 initiative and monsters\n- Combat is engine-run. Initiative order, the current actor, and the round number\n  are given to you under "Combat"; narrate the turn of whoever is acting (marked\n  \u25B6) and never invent turn order or a round count yourself.\n- Monsters listed in the combat order have engine-owned HP and AC just like\n  players. Resolve hits against their AC, and apply damage with the `<<hp ...>>`\n  marker using the monster\'s exact name (e.g. `<<hp Goblin 2 -5>>`).\n- To ask for a fight to begin, tell the players to roll initiative; the engine\n  builds the order when someone runs `/dm combat start`.\n\n## Tone\n- Reward creative and bold play. Telegraph danger before it strikes.\n- Never decide a player character\'s thoughts, words, or actions for them.\n';
+  var DND5E_SYSTEM = '# System Module \u2014 D&D 5e (lite)\n\nYou are the Dungeon Master for a Dungeons & Dragons 5th Edition game. This module\ndefines the rules context. Generic GM craft is in the narrator\'s base prompt.\n\n## Your role\n- Narrate the world, voice NPCs, and adjudicate the fiction.\n- Keep responses tight: 2\u20134 short paragraphs. End by inviting the players to act.\n- Address the party as a group, but acknowledge individual players by their\n  character names when they act.\n\n## Dice \u2014 IMPORTANT\n- You do NOT roll dice. Dice are rolled by the game engine and the results are\n  given to you under "RESOLVED ROLLS". Narrate the outcome those numbers dictate \u2014\n  never invent a different result, and never pretend a roll happened that isn\'t listed.\n- When a player attempts something uncertain (attack, skill check, save), ask them\n  to roll by stating the check, e.g. "Make a Dexterity (Stealth) check \u2014 roll d20."\n  The engine resolves it on their next message.\n\n## Core resolution\n- d20 + relevant modifier vs a Difficulty Class (DC) or Armor Class (AC).\n- Natural 20 = critical success; natural 1 = critical failure.\n- Advantage/disadvantage: the engine handles the two-roll math; you just narrate.\n\n## Checks \u2014 use the engine, don\'t adjudicate pass/fail yourself\n- For an uncertain action (attack, skill check, save), prefer asking for\n  `/dm check <character> <ABILITY> <DC>` (ABILITY is STR, DEX, CON, INT, WIS, or CHA).\n  The engine rolls d20, compares it to the DC, and gives you the outcome under\n  "RESOLVED CHECKS" as PASS or FAIL. State that exact result \u2014 never decide\n  success or failure yourself, and never invent a different outcome.\n\n## Mechanical state \u2014 HP and conditions\n- HP, damage, healing, and conditions (unconscious, dead, prone, frightened, ...)\n  are owned by the game engine, not by you. When your narration deals damage,\n  heals someone, or imposes/lifts a condition on a REAL combatant \u2014 a party\n  member or a monster listed under "Combat" \u2014 end your reply with a machine\n  marker ALONE on its own line, naming the combatant exactly as it appears:\n  `<<hp CharacterName -7>>` (damage, a negative number), `<<heal CharacterName 4>>`\n  (healing, a positive number), `<<condition CharacterName prone>>` (impose a\n  condition), `<<uncondition CharacterName prone>>` (lift one it had).\n  These markers are read by the engine and stripped before players ever see them \u2014\n  never mention the marker syntax in your prose, and never invent one for a\n  combatant who isn\'t really in play.\n- When a condition is active, play it by its rules (the engine reminds you of the\n  effect under "Active conditions") \u2014 a restrained creature can\'t move, a\n  frightened one has disadvantage while it can see the source of its fear.\n\n## Combat \u2014 initiative and monsters\n- Combat is engine-run. Initiative order, the current actor, and the round number\n  are given to you under "Combat"; narrate the turn of whoever is acting (marked\n  \u25B6) and never invent turn order or a round count yourself.\n- Monsters listed in the combat order have engine-owned HP and AC just like\n  players. Resolve hits against their AC, and apply damage with the `<<hp ...>>`\n  marker using the monster\'s exact name (e.g. `<<hp Goblin 2 -5>>`).\n- To ask for a fight to begin, tell the players to roll initiative; the engine\n  builds the order when someone runs `/dm combat start`.\n\n## Spells and gear \u2014 engine-tracked, resolved by command\n- Spell slots, spell attack rolls, saving throws, equipped weapons, and worn\n  armor are owned by the engine, not by you. A character\'s known spells, its\n  remaining slots, and its equipped gear are listed for you under "Player\n  characters" \u2014 narrate them consistently (mention the armor a hit rings off,\n  don\'t grant a slot a caster has already spent).\n- When a player casts a spell or attacks with a weapon, resolve it through the\n  engine: `/dm cast <caster> <spell> at <target>` rolls the attack or forces the\n  save, spends the slot, and applies the damage/heal; `/dm attack` swings the\n  equipped weapon. Narrate the outcome the engine reports \u2014 never invent whether\n  a spell hit, how much a save mitigated, or how many slots remain.\n\n## Tone\n- Reward creative and bold play. Telegraph danger before it strikes.\n- Never decide a player character\'s thoughts, words, or actions for them.\n';
 
   // src/core/rules/registry.ts
   var BUNDLED_RULES = {
@@ -749,146 +749,6 @@ ${lines.join("\n")}`;
     return lines.join("\n");
   }
 
-  // src/core/narrator/fog.ts
-  var FOG_PROMPT = `## Fog of war (private narration)
-Fog of war is ON. After the shared narration, you MAY append private sections that only one character perceives (whispers, hidden details, secret perception results), using EXACTLY this format:
-[PRIVATE:CharacterName]text only that character learns[/PRIVATE]
-Use a character's exact name from the party roster. Everything outside these markers is public to the whole party. Never reveal one character's private information in the public text.`;
-  var TOKEN = /\[PRIVATE:([^\]]*)\]|\[\/PRIVATE\]/g;
-  function splitFog(narration) {
-    const privates = [];
-    const publicParts = [];
-    const stack = [];
-    let cursor = 0;
-    const flush = (end) => {
-      const segment = narration.slice(cursor, end);
-      const owner = stack.at(-1);
-      if (owner === void 0) publicParts.push(segment);
-      else if (owner && segment.trim()) privates.push({ characterName: owner, content: segment.trim() });
-    };
-    for (const match of narration.matchAll(TOKEN)) {
-      flush(match.index);
-      cursor = match.index + match[0].length;
-      if (match[1] !== void 0) stack.push(match[1].trim());
-      else stack.pop();
-    }
-    flush(narration.length);
-    const publicText = publicParts.join("").replace(/\n{3,}/g, "\n\n").trim();
-    return { publicText, privates };
-  }
-
-  // src/core/narrator/narrator.ts
-  var BASE_DM_PROMPT = `You are an expert tabletop RPG Dungeon Master running a game for multiple players in a shared chat channel. You are collaborative, vivid, and fair. You keep the spotlight moving between players and never railroad them. Stay in character as the narrator/DM at all times.`;
-  var MECHANICS_PROMPT = `## Mechanical state markers (optional, invisible to players)
-HP and conditions are tracked by the game engine, not by you. When your narration deals damage, heals someone, or imposes/lifts a condition (e.g. unconscious, prone, frightened, dead) on a REAL combatant \u2014 a party member OR a monster listed under "Combat" \u2014 end your reply with one machine marker per change, each ALONE on its own line, in exactly this form:
-<<hp CharacterName -7>>              (damage \u2014 a negative number)
-<<heal CharacterName 4>>             (healing \u2014 a positive number)
-<<condition CharacterName prone>>    (impose a condition, one lowercase word)
-<<uncondition CharacterName prone>>  (lift a condition the character had)
-Use the exact name as shown under "The party" or the combat order. The engine reads these markers, applies the mechanical change, and STRIPS them before players see your text \u2014 never mention the marker syntax in your prose, never fabricate a marker for someone who isn't a real combatant, and never emit one when nothing mechanical happened.`;
-  function characterSheet(p) {
-    const parts = [];
-    if (p.class) {
-      const cls = classPreset(p.class);
-      parts.push(`Class: ${cls.name} (${cls.flavor})`);
-    }
-    if (p.bio) {
-      const bio = p.bio.length > MAX_BIO_CHARS ? `${p.bio.slice(0, MAX_BIO_CHARS)}\u2026` : p.bio;
-      parts.push(`Bio: ${bio}`);
-    }
-    if (!parts.length) return "";
-    const name3 = p.characterName || p.userName;
-    return `- ${name3} (played by ${p.userName}) \u2014 ${parts.join(". ")}`;
-  }
-  var Narrator = class {
-    /**
-     * @param provider the LLM backend
-     * @param rules where the per-session system module (rules markdown) comes
-     *   from. Defaults to the bundled, dependency-free registry so the narrator
-     *   never touches node:fs and can run in a browser; a Node host may inject a
-     *   filesystem-backed provider to restore the "drop a markdown file" flow.
-     */
-    constructor(provider, rules = bundledRulesProvider) {
-      __publicField(this, "provider", provider);
-      __publicField(this, "rules", rules);
-    }
-    buildMessages(session, actions, rolls, pastEvents, checks = []) {
-      const roster = Object.values(session.players).map((p) => {
-        const conds = p.conditions?.length ? ` [${p.conditions.join(", ")}]` : "";
-        return `- ${p.characterName || p.userName} (HP ${p.hp}/${p.maxHp})${conds}`;
-      }).join("\n") || "- (no characters yet)";
-      const combatText = summarizeCombat(session);
-      const activeConditions = [
-        ...Object.values(session.players).flatMap((p) => p.conditions ?? []),
-        ...(session.encounter?.order ?? []).flatMap((c) => c.conditions ?? [])
-      ];
-      const conditionGlossary = describeConditions(activeConditions);
-      const sheets = Object.values(session.players).map((p) => characterSheet(p)).filter(Boolean);
-      const cards = [
-        ...Object.values(session.players).filter((p) => p.card).map((p) => renderCard(p.card, `player character (played by ${p.userName})`)),
-        ...(session.npcs ?? []).map((c) => renderCard(c, "NPC (portrayed by you, the DM)"))
-      ];
-      const rulesText = session.customRules?.id === session.systemId ? session.customRules.markdown : this.rules.system(session.systemId);
-      const system = [
-        BASE_DM_PROMPT,
-        MECHANICS_PROMPT,
-        rulesText,
-        `## The party
-${roster}`,
-        combatText,
-        conditionGlossary ? `## Active conditions (play these by their rules)
-${conditionGlossary}` : "",
-        sheets.length ? `## Player characters (play each true to their class and bio)
-${sheets.join("\n")}` : "",
-        cards.length ? `## Imported characters (portray each consistently with their card)
-${cards.join("\n\n")}` : "",
-        session.fogOfWar ? FOG_PROMPT : "",
-        session.summary ? `## Story so far
-${session.summary}` : ""
-      ].filter(Boolean).join("\n\n");
-      const historyText = session.history.slice(-HISTORY_WINDOW).map((t) => {
-        const acts = t.actions.map((a) => `${a.name}: ${a.text}`).join("\n");
-        return `${acts}
-DM: ${t.narration}`;
-      }).join("\n\n");
-      const rollText = rolls.length ? rolls.map((r) => `${r.by} rolled ${r.notation} \u2192 ${r.total} [${r.rolls.join(", ")}]${r.note ? ` (${r.note})` : ""}`).join("\n") : "(no dice this turn)";
-      const checkText = checks.length ? checks.map((c) => {
-        const mod = c.modifier ? c.modifier > 0 ? `+${c.modifier}` : `${c.modifier}` : "";
-        return `${c.by} attempted a ${c.ability} check (DC ${c.dc}): rolled ${c.roll}${mod} = ${c.total} \u2192 ${c.pass ? "PASS" : "FAIL"}${c.note ? ` (${c.note})` : ""}`;
-      }).join("\n") : "";
-      const actionText = actions.map((a) => `${a.name}: ${a.text}`).join("\n");
-      const scanTexts = [
-        actions.map((a) => a.text).join("\n"),
-        ...session.history.slice(-HISTORY_WINDOW).reverse().map((t) => [...t.actions.map((a) => a.text), t.narration].join("\n"))
-      ];
-      const worldInfo = buildWorldInfo(session.lorebook ?? [], scanTexts);
-      const pastText = pastEvents.map((m) => `- ${m.text}`).join("\n");
-      const user = [
-        worldInfo ? `WORLD INFO (established lore \u2014 keep your narration consistent with it):
-${worldInfo}` : "",
-        pastText ? `RELEVANT PAST EVENTS (recalled from earlier in the campaign \u2014 stay consistent with them):
-${pastText}` : "",
-        historyText ? `RECENT HISTORY:
-${historyText}` : "",
-        `RESOLVED ROLLS (narrate these exact outcomes; do not change them):
-${rollText}`,
-        checkText ? `RESOLVED CHECKS (state each result as PASS or FAIL exactly as given; do not change it):
-${checkText}` : "",
-        `THE PLAYERS' ACTIONS THIS TURN:
-${actionText}`,
-        `As the DM, narrate what happens next.`
-      ].filter(Boolean).join("\n\n");
-      return [
-        { role: "system", content: system },
-        { role: "user", content: user }
-      ];
-    }
-    async narrate(session, actions, rolls, pastEvents = [], checks = []) {
-      const messages = this.buildMessages(session, actions, rolls, pastEvents, checks);
-      return this.provider.complete({ model: session.model, messages });
-    }
-  };
-
   // src/core/rules/mechanics.ts
   function clamp(n, lo, hi) {
     return Math.max(lo, Math.min(hi, n));
@@ -978,6 +838,353 @@ ${actionText}`,
     const cleaned = text.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
     return { text: cleaned, changes };
   }
+
+  // src/core/rules/spells.ts
+  var DEFAULT_SPELL_DC = 13;
+  var DEFAULT_SPELL_ATTACK = 5;
+  var SPELLBOOK = {
+    "fire-bolt": { id: "fire-bolt", name: "Fire Bolt", level: 0, school: "evocation", resolution: "attack", damage: "1d10", damageType: "fire", desc: "A mote of fire hurled at a creature or object; a ranged spell attack." },
+    "ray-of-frost": { id: "ray-of-frost", name: "Ray of Frost", level: 0, school: "evocation", resolution: "attack", damage: "1d8", damageType: "cold", desc: "A frigid beam; a hit also slows the target (narrated)." },
+    "sacred-flame": { id: "sacred-flame", name: "Sacred Flame", level: 0, school: "evocation", resolution: "save", save: "DEX", damage: "1d8", damageType: "radiant", desc: "Radiance descends; the target makes a DEX save for no damage." },
+    "magic-missile": { id: "magic-missile", name: "Magic Missile", level: 1, school: "evocation", resolution: "auto", damage: "3d4+3", damageType: "force", desc: "Three darts strike unerringly \u2014 no attack roll, no save." },
+    "cure-wounds": { id: "cure-wounds", name: "Cure Wounds", level: 1, school: "evocation", resolution: "auto", heal: "1d8+3", desc: "A touch mends a wounded ally." },
+    "healing-word": { id: "healing-word", name: "Healing Word", level: 1, school: "evocation", resolution: "auto", heal: "1d4+3", desc: "A word of power heals an ally at range." },
+    "burning-hands": { id: "burning-hands", name: "Burning Hands", level: 1, school: "evocation", resolution: "save", save: "DEX", halfOnSave: true, damage: "3d6", damageType: "fire", desc: "A cone of flame; DEX save for half." },
+    "guiding-bolt": { id: "guiding-bolt", name: "Guiding Bolt", level: 1, school: "evocation", resolution: "attack", damage: "4d6", damageType: "radiant", desc: "A flash of light; a ranged spell attack that lights the target up." },
+    "thunderwave": { id: "thunderwave", name: "Thunderwave", level: 1, school: "evocation", resolution: "save", save: "CON", halfOnSave: true, damage: "2d8", damageType: "thunder", desc: "A wave of force; CON save for half, a failure pushes the target back." },
+    "scorching-ray": { id: "scorching-ray", name: "Scorching Ray", level: 2, school: "evocation", resolution: "attack", damage: "2d6", damageType: "fire", desc: "A ray of fire; a ranged spell attack (one ray resolved)." },
+    "hold-person": { id: "hold-person", name: "Hold Person", level: 2, school: "enchantment", resolution: "save", save: "WIS", condition: "paralyzed", desc: "A humanoid must make a WIS save or be paralyzed." },
+    "shatter": { id: "shatter", name: "Shatter", level: 3, school: "evocation", resolution: "save", save: "CON", halfOnSave: true, damage: "3d8", damageType: "thunder", desc: "A ringing burst; CON save for half." },
+    "fireball": { id: "fireball", name: "Fireball", level: 3, school: "evocation", resolution: "save", save: "DEX", halfOnSave: true, damage: "8d6", damageType: "fire", desc: "A roaring blast of flame; DEX save for half." },
+    "lightning-bolt": { id: "lightning-bolt", name: "Lightning Bolt", level: 3, school: "evocation", resolution: "save", save: "DEX", halfOnSave: true, damage: "8d6", damageType: "lightning", desc: "A stroke of lightning in a line; DEX save for half." }
+  };
+  function findSpell(input) {
+    const slug = input.trim().toLowerCase().replace(/\s+/g, "-");
+    return SPELLBOOK[slug];
+  }
+  function listSpellbook() {
+    return Object.values(SPELLBOOK).sort((a, b) => a.level - b.level || a.name.localeCompare(b.name));
+  }
+  function spellSummary(s) {
+    const lvl = s.level === 0 ? "cantrip" : `L${s.level}`;
+    const bits = [];
+    if (s.resolution === "attack") bits.push("spell attack");
+    if (s.resolution === "save" && s.save) bits.push(`save ${s.save}${s.halfOnSave ? " (half)" : ""}`);
+    if (s.damage) bits.push(`${s.damage}${s.damageType ? ` ${s.damageType}` : ""}`);
+    if (s.heal) bits.push(`heal ${s.heal}`);
+    if (s.condition) bits.push(s.condition);
+    return `${s.name} \u2014 ${lvl} ${s.school}${bits.length ? `, ${bits.join(", ")}` : ""}`;
+  }
+  function knowsSpell(player, spellId) {
+    return (player.spells ?? []).includes(spellId);
+  }
+  function learnSpell(player, spellId) {
+    const known = new Set(player.spells ?? []);
+    known.add(spellId);
+    player.spells = [...known];
+  }
+  function setSlots(player, maxByLevel) {
+    const prev = player.spellSlots ?? {};
+    const slots = {};
+    maxByLevel.forEach((max, i) => {
+      if (max <= 0) return;
+      const level = i + 1;
+      const used = Math.min(prev[level]?.used ?? 0, max);
+      slots[level] = { max, used };
+    });
+    player.spellSlots = slots;
+  }
+  function lowestAvailableSlot(player, minLevel) {
+    if (minLevel <= 0) return 0;
+    const slots = player.spellSlots ?? {};
+    for (let level = minLevel; level <= 9; level++) {
+      const s = slots[level];
+      if (s && s.used < s.max) return level;
+    }
+    return void 0;
+  }
+  function expendSlot(player, level) {
+    if (level <= 0) return;
+    const slots = player.spellSlots ?? (player.spellSlots = {});
+    const s = slots[level];
+    if (s && s.used < s.max) s.used++;
+  }
+  function restoreSlots(player) {
+    for (const s of Object.values(player.spellSlots ?? {})) s.used = 0;
+  }
+  function slotSummary(player) {
+    const slots = player.spellSlots ?? {};
+    const levels = Object.keys(slots).map(Number).sort((a, b) => a - b);
+    if (!levels.length) return "(no slots)";
+    return levels.map((l) => `L${l} ${slots[l].max - slots[l].used}/${slots[l].max}`).join("  ");
+  }
+  function resolveCast(spell, caster, target, slotLevel, opts = {}) {
+    const r = {
+      caster: caster.name,
+      spell: spell.name,
+      spellId: spell.id,
+      level: spell.level,
+      slotLevel,
+      resolution: spell.resolution ?? "utility",
+      target: target?.name,
+      damageType: spell.damageType
+    };
+    if (!spell.resolution || !target) return r;
+    if (spell.heal) {
+      const h = roll(spell.heal, caster.name, opts.seed);
+      const change = applyHpDelta(target.vitals, target.name, Math.abs(h.total), "heal");
+      r.healed = Math.abs(h.total);
+      r.targetHp = change.hp;
+      r.targetMaxHp = change.maxHp;
+      return r;
+    }
+    const rollDamage = () => {
+      if (!spell.damage) return { total: 0, rolls: [] };
+      const base = roll(spell.damage, caster.name, opts.seed);
+      return { total: base.total, rolls: base.rolls };
+    };
+    if (spell.resolution === "attack") {
+      const d20 = opts.d20 ?? roll("d20", caster.name, opts.seed).rolls[0];
+      r.d20 = d20;
+      r.crit = d20 === 20;
+      r.fumble = d20 === 1;
+      r.attackTotal = d20 + caster.spellAttack;
+      r.targetAC = target.ac;
+      r.hit = r.crit || !r.fumble && r.attackTotal >= target.ac;
+      if (r.hit) {
+        let { total: total2, rolls: rolls2 } = rollDamage();
+        if (r.crit && spell.damage) {
+          const p = parseNotation(spell.damage);
+          const extra = roll(`${p.numDice}d${p.dieSize}`, caster.name, opts.seed !== void 0 ? opts.seed + 1 : void 0);
+          total2 += extra.total;
+          rolls2 = [...rolls2, ...extra.rolls];
+        }
+        applyEffect(r, spell, target, total2, rolls2, true);
+      }
+      return r;
+    }
+    if (spell.resolution === "save") {
+      const die = opts.saveRoll ?? roll("d20", target.name, opts.seed).rolls[0];
+      const mod = opts.targetSaveMod ?? 0;
+      r.saveAbility = spell.save;
+      r.saveDC = caster.spellDc;
+      r.saveRoll = die;
+      r.saveTotal = die + mod;
+      r.saved = die === 20 ? true : die === 1 ? false : r.saveTotal >= caster.spellDc;
+      const { total: total2, rolls: rolls2 } = rollDamage();
+      if (r.saved) {
+        const dealt = spell.halfOnSave && spell.damage ? Math.floor(total2 / 2) : 0;
+        if (dealt > 0) applyEffect(r, spell, target, dealt, rolls2, false);
+        else {
+          r.damage = 0;
+          r.damageRolls = spell.damage ? rolls2 : void 0;
+        }
+      } else {
+        applyEffect(r, spell, target, total2, rolls2, true);
+      }
+      return r;
+    }
+    const { total, rolls } = rollDamage();
+    applyEffect(r, spell, target, total, rolls, true);
+    return r;
+  }
+  function applyEffect(r, spell, target, damage, rolls, effectLands) {
+    if (spell.damage) {
+      const change = applyHpDelta(target.vitals, target.name, -Math.abs(damage), "damage");
+      r.damage = Math.abs(damage);
+      r.damageRolls = rolls;
+      r.targetHp = change.hp;
+      r.targetMaxHp = change.maxHp;
+      r.targetDropped = (target.vitals.hp ?? 1) <= 0;
+    }
+    if (spell.condition && effectLands) {
+      setCondition(target.vitals, target.name, spell.condition);
+      r.condition = spell.condition;
+      r.conditionApplied = true;
+    } else if (spell.condition) {
+      r.condition = spell.condition;
+      r.conditionApplied = false;
+    }
+  }
+  function spellLine(r) {
+    const slot = r.slotLevel && r.slotLevel > 0 ? ` (L${r.slotLevel} slot)` : r.level === 0 ? " (cantrip)" : "";
+    const head = `\u2728 ${r.caster} casts ${r.spell}${slot}`;
+    if (r.resolution === "utility" || !r.target) return `${head}.`;
+    if (r.healed !== void 0) {
+      return `${head} on ${r.target}: heals ${r.healed} \u2014 HP ${r.targetHp}/${r.targetMaxHp}.`;
+    }
+    const dropped = r.targetDropped ? ` \u2014 ${r.target} drops!` : "";
+    const cond = r.conditionApplied ? ` ${r.target} is **${r.condition}**!` : "";
+    if (r.resolution === "attack") {
+      const rollTxt = `d20+${r.attackTotal - r.d20} = ${r.attackTotal} vs AC ${r.targetAC}`;
+      if (!r.hit) {
+        const why = r.fumble ? " (natural 1)" : "";
+        return `${head} at ${r.target}: ${rollTxt} \u2192 MISS${why}.`;
+      }
+      const critTag = r.crit ? " \u{1F4A5} CRIT (natural 20)" : "";
+      const dmg2 = r.damage ? ` ${r.damage} ${r.damageType ?? ""} damage \u2014 HP ${r.targetHp}/${r.targetMaxHp}.` : "";
+      return `${head} at ${r.target}: ${rollTxt} \u2192 HIT${critTag}!${dmg2}${cond}${dropped}`;
+    }
+    if (r.resolution === "save") {
+      const saveTxt = `${r.target} rolls a ${r.saveAbility} save: ${r.saveTotal} vs DC ${r.saveDC} \u2192 ${r.saved ? "SAVED" : "FAILED"}`;
+      const dmg2 = r.damage !== void 0 && r.damage > 0 ? ` ${r.damage} ${r.damageType ?? ""} damage \u2014 HP ${r.targetHp}/${r.targetMaxHp}.` : r.damage === 0 && r.damageType ? " No damage." : "";
+      return `${head} at ${r.target}: ${saveTxt}.${dmg2}${cond}${dropped}`;
+    }
+    const dmg = r.damage ? ` ${r.damage} ${r.damageType ?? ""} damage (auto-hit) \u2014 HP ${r.targetHp}/${r.targetMaxHp}.` : "";
+    return `${head} at ${r.target}:${dmg}${cond}${dropped}`;
+  }
+
+  // src/core/narrator/fog.ts
+  var FOG_PROMPT = `## Fog of war (private narration)
+Fog of war is ON. After the shared narration, you MAY append private sections that only one character perceives (whispers, hidden details, secret perception results), using EXACTLY this format:
+[PRIVATE:CharacterName]text only that character learns[/PRIVATE]
+Use a character's exact name from the party roster. Everything outside these markers is public to the whole party. Never reveal one character's private information in the public text.`;
+  var TOKEN = /\[PRIVATE:([^\]]*)\]|\[\/PRIVATE\]/g;
+  function splitFog(narration) {
+    const privates = [];
+    const publicParts = [];
+    const stack = [];
+    let cursor = 0;
+    const flush = (end) => {
+      const segment = narration.slice(cursor, end);
+      const owner = stack.at(-1);
+      if (owner === void 0) publicParts.push(segment);
+      else if (owner && segment.trim()) privates.push({ characterName: owner, content: segment.trim() });
+    };
+    for (const match of narration.matchAll(TOKEN)) {
+      flush(match.index);
+      cursor = match.index + match[0].length;
+      if (match[1] !== void 0) stack.push(match[1].trim());
+      else stack.pop();
+    }
+    flush(narration.length);
+    const publicText = publicParts.join("").replace(/\n{3,}/g, "\n\n").trim();
+    return { publicText, privates };
+  }
+
+  // src/core/narrator/narrator.ts
+  var BASE_DM_PROMPT = `You are an expert tabletop RPG Dungeon Master running a game for multiple players in a shared chat channel. You are collaborative, vivid, and fair. You keep the spotlight moving between players and never railroad them. Stay in character as the narrator/DM at all times.`;
+  var MECHANICS_PROMPT = `## Mechanical state markers (optional, invisible to players)
+HP and conditions are tracked by the game engine, not by you. When your narration deals damage, heals someone, or imposes/lifts a condition (e.g. unconscious, prone, frightened, dead) on a REAL combatant \u2014 a party member OR a monster listed under "Combat" \u2014 end your reply with one machine marker per change, each ALONE on its own line, in exactly this form:
+<<hp CharacterName -7>>              (damage \u2014 a negative number)
+<<heal CharacterName 4>>             (healing \u2014 a positive number)
+<<condition CharacterName prone>>    (impose a condition, one lowercase word)
+<<uncondition CharacterName prone>>  (lift a condition the character had)
+Use the exact name as shown under "The party" or the combat order. The engine reads these markers, applies the mechanical change, and STRIPS them before players see your text \u2014 never mention the marker syntax in your prose, never fabricate a marker for someone who isn't a real combatant, and never emit one when nothing mechanical happened.`;
+  function characterSheet(p) {
+    const parts = [];
+    if (p.class) {
+      const cls = classPreset(p.class);
+      parts.push(`Class: ${cls.name} (${cls.flavor})`);
+    }
+    if (p.bio) {
+      const bio = p.bio.length > MAX_BIO_CHARS ? `${p.bio.slice(0, MAX_BIO_CHARS)}\u2026` : p.bio;
+      parts.push(`Bio: ${bio}`);
+    }
+    const gear = [
+      p.equipped?.weapon ? `wielding ${itemName(p, p.equipped.weapon)}` : "",
+      p.equipped?.armor ? `wearing ${itemName(p, p.equipped.armor)}` : "",
+      p.equipped?.shield ? `with a ${itemName(p, p.equipped.shield)}` : ""
+    ].filter(Boolean);
+    if (gear.length) parts.push(`Equipped: ${gear.join(", ")}`);
+    if (p.spellSlots && Object.keys(p.spellSlots).length) parts.push(`Spell slots: ${slotSummary(p)}`);
+    const spells = (p.spells ?? []).map((id) => findSpell(id)?.name).filter(Boolean);
+    if (spells.length) parts.push(`Knows: ${spells.join(", ")}`);
+    if (!parts.length) return "";
+    const name3 = p.characterName || p.userName;
+    return `- ${name3} (played by ${p.userName}) \u2014 ${parts.join(". ")}`;
+  }
+  function itemName(p, id) {
+    return (p.inventory ?? []).find((it) => it.id === id)?.name ?? id;
+  }
+  var Narrator = class {
+    /**
+     * @param provider the LLM backend
+     * @param rules where the per-session system module (rules markdown) comes
+     *   from. Defaults to the bundled, dependency-free registry so the narrator
+     *   never touches node:fs and can run in a browser; a Node host may inject a
+     *   filesystem-backed provider to restore the "drop a markdown file" flow.
+     */
+    constructor(provider, rules = bundledRulesProvider) {
+      __publicField(this, "provider", provider);
+      __publicField(this, "rules", rules);
+    }
+    buildMessages(session, actions, rolls, pastEvents, checks = []) {
+      const roster = Object.values(session.players).map((p) => {
+        const conds = p.conditions?.length ? ` [${p.conditions.join(", ")}]` : "";
+        return `- ${p.characterName || p.userName} (HP ${p.hp}/${p.maxHp})${conds}`;
+      }).join("\n") || "- (no characters yet)";
+      const combatText = summarizeCombat(session);
+      const activeConditions = [
+        ...Object.values(session.players).flatMap((p) => p.conditions ?? []),
+        ...(session.encounter?.order ?? []).flatMap((c) => c.conditions ?? [])
+      ];
+      const conditionGlossary = describeConditions(activeConditions);
+      const sheets = Object.values(session.players).map((p) => characterSheet(p)).filter(Boolean);
+      const cards = [
+        ...Object.values(session.players).filter((p) => p.card).map((p) => renderCard(p.card, `player character (played by ${p.userName})`)),
+        ...(session.npcs ?? []).map((c) => renderCard(c, "NPC (portrayed by you, the DM)"))
+      ];
+      const rulesText = session.customRules?.id === session.systemId ? session.customRules.markdown : this.rules.system(session.systemId);
+      const system = [
+        BASE_DM_PROMPT,
+        MECHANICS_PROMPT,
+        rulesText,
+        `## The party
+${roster}`,
+        combatText,
+        conditionGlossary ? `## Active conditions (play these by their rules)
+${conditionGlossary}` : "",
+        sheets.length ? `## Player characters (play each true to their class and bio)
+${sheets.join("\n")}` : "",
+        cards.length ? `## Imported characters (portray each consistently with their card)
+${cards.join("\n\n")}` : "",
+        session.fogOfWar ? FOG_PROMPT : "",
+        session.summary ? `## Story so far
+${session.summary}` : ""
+      ].filter(Boolean).join("\n\n");
+      const historyText = session.history.slice(-HISTORY_WINDOW).map((t) => {
+        const acts = t.actions.map((a) => `${a.name}: ${a.text}`).join("\n");
+        return `${acts}
+DM: ${t.narration}`;
+      }).join("\n\n");
+      const rollText = rolls.length ? rolls.map((r) => `${r.by} rolled ${r.notation} \u2192 ${r.total} [${r.rolls.join(", ")}]${r.note ? ` (${r.note})` : ""}`).join("\n") : "(no dice this turn)";
+      const checkText = checks.length ? checks.map((c) => {
+        const mod = c.modifier ? c.modifier > 0 ? `+${c.modifier}` : `${c.modifier}` : "";
+        return `${c.by} attempted a ${c.ability} check (DC ${c.dc}): rolled ${c.roll}${mod} = ${c.total} \u2192 ${c.pass ? "PASS" : "FAIL"}${c.note ? ` (${c.note})` : ""}`;
+      }).join("\n") : "";
+      const actionText = actions.map((a) => `${a.name}: ${a.text}`).join("\n");
+      const scanTexts = [
+        actions.map((a) => a.text).join("\n"),
+        ...session.history.slice(-HISTORY_WINDOW).reverse().map((t) => [...t.actions.map((a) => a.text), t.narration].join("\n"))
+      ];
+      const worldInfo = buildWorldInfo(session.lorebook ?? [], scanTexts);
+      const pastText = pastEvents.map((m) => `- ${m.text}`).join("\n");
+      const user = [
+        worldInfo ? `WORLD INFO (established lore \u2014 keep your narration consistent with it):
+${worldInfo}` : "",
+        pastText ? `RELEVANT PAST EVENTS (recalled from earlier in the campaign \u2014 stay consistent with them):
+${pastText}` : "",
+        historyText ? `RECENT HISTORY:
+${historyText}` : "",
+        `RESOLVED ROLLS (narrate these exact outcomes; do not change them):
+${rollText}`,
+        checkText ? `RESOLVED CHECKS (state each result as PASS or FAIL exactly as given; do not change it):
+${checkText}` : "",
+        `THE PLAYERS' ACTIONS THIS TURN:
+${actionText}`,
+        `As the DM, narrate what happens next.`
+      ].filter(Boolean).join("\n\n");
+      return [
+        { role: "system", content: system },
+        { role: "user", content: user }
+      ];
+    }
+    async narrate(session, actions, rolls, pastEvents = [], checks = []) {
+      const messages = this.buildMessages(session, actions, rolls, pastEvents, checks);
+      return this.provider.complete({ model: session.model, messages });
+    }
+  };
 
   // src/core/engine/turn-pipeline.ts
   var ChannelLock = class {
@@ -1193,6 +1400,138 @@ Return the updated summary.`
     const critTag = r.crit ? " \u{1F4A5} CRITICAL HIT (natural 20)" : "";
     const dropped = r.targetDropped ? ` \u2014 ${r.target} drops!` : "";
     return `\u2694\uFE0F ${r.attacker} attacks ${r.target} (${r.attackName}): ${roll2} \u2192 HIT${critTag}! ${r.damage} damage (${r.damageNotation}${r.crit ? ", doubled dice" : ""}). ${r.target}: HP ${r.targetHp}/${r.targetMaxHp}.${dropped}`;
+  }
+
+  // src/core/rules/inventory.ts
+  var ARMORY = {
+    dagger: { id: "dagger", name: "Dagger", kind: "weapon", toHit: 4, damage: "1d4+2", desc: "A light, quick blade \u2014 also throwable." },
+    shortsword: { id: "shortsword", name: "Shortsword", kind: "weapon", toHit: 4, damage: "1d6+2", desc: "A finesse blade favored by rogues." },
+    longsword: { id: "longsword", name: "Longsword", kind: "weapon", toHit: 4, damage: "1d8+2", desc: "The versatile knightly standard." },
+    rapier: { id: "rapier", name: "Rapier", kind: "weapon", toHit: 5, damage: "1d8+3", desc: "A precise duelist's point." },
+    warhammer: { id: "warhammer", name: "Warhammer", kind: "weapon", toHit: 5, damage: "1d8+3", desc: "A heavy head that caves in armor." },
+    greataxe: { id: "greataxe", name: "Greataxe", kind: "weapon", toHit: 5, damage: "1d12+3", desc: "A brutal two-handed cleaver." },
+    greatsword: { id: "greatsword", name: "Greatsword", kind: "weapon", toHit: 5, damage: "2d6+3", desc: "A massive blade swung in wide arcs." },
+    shortbow: { id: "shortbow", name: "Shortbow", kind: "weapon", toHit: 4, damage: "1d6+2", desc: "A ranged option for skirmishers." },
+    longbow: { id: "longbow", name: "Longbow", kind: "weapon", toHit: 5, damage: "1d8+3", desc: "A long-range hunter's bow." },
+    "leather-armor": { id: "leather-armor", name: "Leather Armor", kind: "armor", ac: 11, desc: "Supple hide \u2014 light and quiet." },
+    "chain-shirt": { id: "chain-shirt", name: "Chain Shirt", kind: "armor", ac: 13, desc: "Interlocking rings under a coat." },
+    breastplate: { id: "breastplate", name: "Breastplate", kind: "armor", ac: 14, desc: "A fitted steel chest piece." },
+    "chain-mail": { id: "chain-mail", name: "Chain Mail", kind: "armor", ac: 16, desc: "A full hauberk of heavy rings." },
+    plate: { id: "plate", name: "Plate Armor", kind: "armor", ac: 18, desc: "Head-to-toe shaped steel \u2014 the best worn AC." },
+    shield: { id: "shield", name: "Shield", kind: "shield", acBonus: 2, desc: "A board strapped to the arm; +2 AC." },
+    "potion-of-healing": { id: "potion-of-healing", name: "Potion of Healing", kind: "potion", heal: "2d4+2", desc: "Quaff to regain hit points." },
+    "potion-of-greater-healing": { id: "potion-of-greater-healing", name: "Potion of Greater Healing", kind: "potion", heal: "4d4+4", desc: "A stronger draught." },
+    torch: { id: "torch", name: "Torch", kind: "misc", desc: "Sheds light; burns for about an hour." },
+    rope: { id: "rope", name: "Rope (50 ft)", kind: "misc", desc: "Hempen rope, for climbing or binding." },
+    rations: { id: "rations", name: "Rations (1 day)", kind: "misc", desc: "Dry travel food." },
+    "thieves-tools": { id: "thieves-tools", name: "Thieves' Tools", kind: "misc", desc: "Picks and probes for locks and traps." }
+  };
+  function findCatalogItem(input) {
+    const slug = input.trim().toLowerCase().replace(/\s+/g, "-");
+    return ARMORY[slug];
+  }
+  function listArmory() {
+    const order = ["weapon", "armor", "shield", "potion", "misc"];
+    return Object.values(ARMORY).sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind) || a.name.localeCompare(b.name));
+  }
+  function itemSummary(it) {
+    const bits = [it.kind];
+    if (it.kind === "weapon") bits.push(`${it.toHit >= 0 ? "+" : ""}${it.toHit}`, it.damage ?? "");
+    if (it.kind === "armor") bits.push(`AC ${it.ac}`);
+    if (it.kind === "shield") bits.push(`+${it.acBonus} AC`);
+    if (it.kind === "potion" && it.heal) bits.push(`heal ${it.heal}`);
+    return `${it.name} \u2014 ${bits.filter(Boolean).join(", ")}`;
+  }
+  function findCarried(player, input) {
+    const slug = input.trim().toLowerCase().replace(/\s+/g, "-");
+    return (player.inventory ?? []).find((it) => it.id === slug);
+  }
+  function giveItem(player, catalogId, qty = 1) {
+    const cat = findCatalogItem(catalogId);
+    if (!cat || qty <= 0) return void 0;
+    const inv = player.inventory ?? (player.inventory = []);
+    const existing = inv.find((it) => it.id === cat.id);
+    if (existing) {
+      existing.qty += qty;
+      return existing;
+    }
+    const item = { ...cat, qty };
+    inv.push(item);
+    return item;
+  }
+  function dropItem(player, catalogId, qty) {
+    const inv = player.inventory ?? [];
+    const item = findCarried(player, catalogId);
+    if (!item) return false;
+    const take = qty === void 0 ? item.qty : Math.min(qty, item.qty);
+    if (take <= 0) return false;
+    item.qty -= take;
+    if (item.qty <= 0) {
+      player.inventory = inv.filter((it) => it !== item);
+      for (const slot of ["weapon", "armor", "shield"]) {
+        if (player.equipped?.[slot] === item.id) unequip(player, slot);
+      }
+    }
+    return true;
+  }
+  var SLOT_KIND = { weapon: "weapon", armor: "armor", shield: "shield" };
+  function equip(player, catalogId) {
+    const item = findCarried(player, catalogId);
+    if (!item) return { error: "not-carried" };
+    const slot = Object.keys(SLOT_KIND).find((s) => SLOT_KIND[s] === item.kind);
+    if (!slot) return { error: "not-equippable" };
+    player.equipped = { ...player.equipped ?? {}, [slot]: item.id };
+    if (slot === "weapon") {
+      player.attack = { name: item.name, toHit: item.toHit ?? 0, damage: item.damage ?? "1d4" };
+    } else {
+      recomputeDefense(player);
+    }
+    return { slot };
+  }
+  function unequip(player, slot) {
+    const had = Boolean(player.equipped?.[slot]);
+    if (player.equipped) delete player.equipped[slot];
+    if (slot === "weapon") {
+      player.attack = void 0;
+    } else {
+      recomputeDefense(player);
+    }
+    return had;
+  }
+  function recomputeDefense(player) {
+    const inv = player.inventory ?? [];
+    const armorId = player.equipped?.armor;
+    const shieldId = player.equipped?.shield;
+    const armor = armorId ? inv.find((it) => it.id === armorId) : void 0;
+    const shield = shieldId ? inv.find((it) => it.id === shieldId) : void 0;
+    const base = armor?.ac ?? DEFAULT_AC;
+    player.ac = base + (shield?.acBonus ?? 0);
+  }
+  function useItem(player, catalogId, seed) {
+    const item = findCarried(player, catalogId);
+    if (!item) return { error: "not-carried" };
+    if (item.kind !== "potion" || !item.heal) return { error: "not-usable" };
+    const h = roll(item.heal, player.characterName || player.userName, seed);
+    const change = applyHpDelta(player, player.characterName || player.userName, Math.abs(h.total), "heal");
+    const name3 = item.name;
+    dropItem(player, item.id, 1);
+    return { healed: Math.abs(h.total), hp: change.hp, maxHp: change.maxHp, item: name3 };
+  }
+  function describeInventory(player) {
+    const inv = player.inventory ?? [];
+    const eq = player.equipped ?? {};
+    const equippedLine = ["weapon", "armor", "shield"].map((slot) => {
+      const id = eq[slot];
+      if (!id) return "";
+      const it = inv.find((i) => i.id === id);
+      return `  ${slot}: ${it?.name ?? id}`;
+    }).filter(Boolean).join("\n");
+    const packLine = inv.length ? inv.map((it) => `  \u2022 ${it.name}${it.qty > 1 ? ` \xD7${it.qty}` : ""} (${it.kind})`).join("\n") : "  (empty)";
+    const eqBlock = equippedLine ? `Equipped:
+${equippedLine}
+` : "";
+    return `${eqBlock}Carried:
+${packLine}`;
   }
 
   // src/core/content-packs/types.ts
@@ -2068,6 +2407,226 @@ Set yours with \`/dm portrait <id>\` (e.g. \`/dm portrait fighter\`), or upload 
           await this.sessions.end(msg);
           return reply("\u{1F3C1} Campaign ended and saved out. `/dm new` to start fresh.");
         }
+        case "spells": {
+          if (!rest) {
+            const byLevel = listSpellbook().map((s) => `\u2022 \`${s.id}\` \u2014 ${spellSummary(s)}`).join("\n");
+            return reply(`**Spellbook** (teach a character with \`/dm learn <character> <spell>\`):
+${byLevel}`);
+          }
+          const sp = findSpell(rest);
+          if (!sp) return reply(`No spell matches \`${rest}\` \u2014 see \`/dm spells\`.`);
+          return reply(`**${sp.name}** (\`${sp.id}\`)
+${spellSummary(sp)}
+${sp.desc}`);
+        }
+        case "learn": {
+          const session = await this.sessions.get(msg);
+          if (!session) return reply("No game here yet \u2014 `/dm new` first.");
+          const tokens = rest.split(/\s+/).filter(Boolean);
+          if (tokens.length < 2) return reply("Usage: `/dm learn <character> <spell>` \u2014 e.g. `/dm learn Elaria fireball`.");
+          const spellTok = tokens[tokens.length - 1];
+          const targetName = tokens.slice(0, -1).join(" ");
+          const member = findPartyMember(session, targetName);
+          if (!member) return reply(`No party member named "${targetName}" \u2014 see \`/dm who\`.`);
+          const sp = findSpell(spellTok);
+          if (!sp) return reply(`No spell matches \`${spellTok}\` \u2014 see \`/dm spells\`.`);
+          learnSpell(member, sp.id);
+          await this.sessions.save(session);
+          return reply(`\u{1F4D6} ${name2(member)} learns **${sp.name}** (${sp.level === 0 ? "cantrip" : `L${sp.level}`}).`);
+        }
+        case "slots": {
+          const session = await this.sessions.get(msg);
+          if (!session) return reply("No game here yet \u2014 `/dm new` first.");
+          const tokens = rest.split(/\s+/).filter(Boolean);
+          if (!tokens.length) return reply("Usage: `/dm slots <character> [L1 L2 \u2026]` \u2014 e.g. `/dm slots Elaria 4 3 2` sets 4 first-, 3 second-, 2 third-level slots. No numbers shows current slots.");
+          const firstNum = tokens.findIndex((t) => /^\d+$/.test(t));
+          const nameEnd = firstNum === -1 ? tokens.length : firstNum;
+          const targetName = tokens.slice(0, nameEnd).join(" ");
+          const member = targetName ? findPartyMember(session, targetName) : void 0;
+          if (!member) return reply(`No party member named "${targetName || "(none)"}" \u2014 see \`/dm who\`.`);
+          if (firstNum === -1) return reply(`\u{1F52E} ${name2(member)}'s slots: ${slotSummary(member)}.`);
+          const nums = tokens.slice(nameEnd).map((t) => parseInt(t, 10));
+          setSlots(member, nums);
+          await this.sessions.save(session);
+          return reply(`\u{1F52E} ${name2(member)}'s slots set: ${slotSummary(member)}.`);
+        }
+        case "castdc": {
+          const session = await this.sessions.get(msg);
+          if (!session) return reply("No game here yet \u2014 `/dm new` first.");
+          const m = rest.match(/^(.+?)\s+(\d+)(?:\s+([+-]?\d+))?$/);
+          if (!m) return reply("Usage: `/dm castdc <character> <saveDC> [spellAttackBonus]` \u2014 e.g. `/dm castdc Elaria 14 6`.");
+          const member = findPartyMember(session, m[1]);
+          if (!member) return reply(`No party member named "${m[1]}" \u2014 see \`/dm who\`.`);
+          member.spellDc = parseInt(m[2], 10);
+          if (m[3] !== void 0) member.spellAttack = parseInt(m[3], 10);
+          await this.sessions.save(session);
+          return reply(`\u{1F52E} ${name2(member)} \u2014 spell save DC ${member.spellDc}, spell attack ${(member.spellAttack ?? DEFAULT_SPELL_ATTACK) >= 0 ? "+" : ""}${member.spellAttack ?? DEFAULT_SPELL_ATTACK}.`);
+        }
+        case "spellbook": {
+          const session = await this.sessions.get(msg);
+          if (!session) return reply("No game here yet \u2014 `/dm new` first.");
+          const member = rest ? findPartyMember(session, rest) : this.sessions.isPlayer(session, msg.userId) ? session.players[msg.userId] : void 0;
+          if (!member) return reply(rest ? `No party member named "${rest}" \u2014 see \`/dm who\`.` : "Usage: `/dm spellbook <character>` \u2014 or join a game to see your own.");
+          const known = (member.spells ?? []).map((id) => findSpell(id)).filter(Boolean);
+          const knownList = known.length ? known.map((s) => `\u2022 ${spellSummary(s)}`).join("\n") : "  (none \u2014 teach with `/dm learn`)";
+          const dc = member.spellDc ?? DEFAULT_SPELL_DC;
+          const atk = member.spellAttack ?? DEFAULT_SPELL_ATTACK;
+          return reply(`**${name2(member)}'s spellbook** \u2014 save DC ${dc}, attack ${atk >= 0 ? "+" : ""}${atk}
+Slots: ${slotSummary(member)}
+Known:
+${knownList}`);
+        }
+        case "cast": {
+          const session = await this.sessions.get(msg);
+          if (!session) return reply("No game here yet \u2014 `/dm new` first.");
+          let head = rest;
+          let targetName;
+          const atM = rest.match(/^(.*?)\s+at\s+(.+)$/i);
+          if (atM) {
+            head = atM[1].trim();
+            targetName = atM[2].trim();
+          }
+          const headTokens = head.split(/\s+/).filter(Boolean);
+          if (headTokens.length < 2) return reply("Usage: `/dm cast <caster> <spell> [at <target>]` \u2014 e.g. `/dm cast Elaria fireball at Goblin`.");
+          const spellTok = headTokens[headTokens.length - 1];
+          const casterName = headTokens.slice(0, -1).join(" ");
+          const caster = findPartyMember(session, casterName);
+          if (!caster) return reply(`No party member named "${casterName}" \u2014 see \`/dm who\`.`);
+          const sp = findSpell(spellTok);
+          if (!sp) return reply(`No spell matches \`${spellTok}\` \u2014 see \`/dm spells\`.`);
+          if (!knowsSpell(caster, sp.id)) return reply(`${name2(caster)} hasn't learned **${sp.name}** \u2014 teach it with \`/dm learn ${name2(caster)} ${sp.id}\`.`);
+          const slotLevel = lowestAvailableSlot(caster, sp.level);
+          if (slotLevel === void 0) return reply(`${name2(caster)} has no level-${sp.level}-or-higher slot left \u2014 rest with \`/dm rest\`. (Slots: ${slotSummary(caster)})`);
+          let target;
+          if (sp.resolution) {
+            if (!targetName) return reply(`**${sp.name}** needs a target \u2014 cast it \`at <character>\` (\`/dm cast ${name2(caster)} ${sp.id} at <name>\`).`);
+            target = attackTarget(session, targetName);
+            if (!target) return reply(`No combatant named "${targetName}" \u2014 see \`/dm who\` (party) or \`/dm combat\` (monsters).`);
+          }
+          expendSlot(caster, slotLevel);
+          const profile = { name: name2(caster), spellAttack: caster.spellAttack ?? DEFAULT_SPELL_ATTACK, spellDc: caster.spellDc ?? DEFAULT_SPELL_DC };
+          const result = resolveCast(sp, profile, target, slotLevel);
+          await this.sessions.save(session);
+          const slotsNote = sp.level > 0 ? ` (slots: ${slotSummary(caster)})` : "";
+          return reply(`${spellLine(result)}${slotsNote}`);
+        }
+        case "rest": {
+          const session = await this.sessions.get(msg);
+          if (!session) return reply("No game here yet \u2014 `/dm new` first.");
+          const targets = rest ? (() => {
+            const m = findPartyMember(session, rest);
+            return m ? [m] : [];
+          })() : Object.values(session.players);
+          if (!targets.length) return reply(rest ? `No party member named "${rest}" \u2014 see \`/dm who\`.` : "The party is empty.");
+          for (const p of targets) {
+            restoreSlots(p);
+            if (p.maxHp !== void 0) applyHpDelta(p, name2(p), (p.maxHp ?? 10) - (p.hp ?? 0), "heal");
+            p.conditions = (p.conditions ?? []).filter((c) => c !== "unconscious");
+          }
+          await this.sessions.save(session);
+          return reply(rest ? `\u{1F634} ${name2(targets[0])} takes a long rest \u2014 HP and spell slots restored.` : `\u{1F634} The party takes a long rest \u2014 HP and spell slots restored.`);
+        }
+        case "items": {
+          if (!rest) {
+            const list = listArmory().map((it2) => `\u2022 \`${it2.id}\` \u2014 ${itemSummary(it2)}`).join("\n");
+            return reply(`**Armory** (hand one out with \`/dm give <character> <item>\`):
+${list}`);
+          }
+          const it = findCatalogItem(rest);
+          if (!it) return reply(`No item matches \`${rest}\` \u2014 see \`/dm items\`.`);
+          return reply(`**${it.name}** (\`${it.id}\`)
+${itemSummary(it)}${it.desc ? `
+${it.desc}` : ""}`);
+        }
+        case "inv":
+        case "inventory": {
+          const session = await this.sessions.get(msg);
+          if (!session) return reply("No game here yet \u2014 `/dm new` first.");
+          const member = rest ? findPartyMember(session, rest) : this.sessions.isPlayer(session, msg.userId) ? session.players[msg.userId] : void 0;
+          if (!member) return reply(rest ? `No party member named "${rest}" \u2014 see \`/dm who\`.` : "Usage: `/dm inventory <character>` \u2014 or join a game to see your own.");
+          return reply(`**${name2(member)}'s inventory**
+${describeInventory(member)}`);
+        }
+        case "give": {
+          const session = await this.sessions.get(msg);
+          if (!session) return reply("No game here yet \u2014 `/dm new` first.");
+          const tokens = rest.split(/\s+/).filter(Boolean);
+          if (tokens.length < 2) return reply("Usage: `/dm give <character> <item> [qty]` \u2014 e.g. `/dm give Thorin longsword`. See `/dm items`.");
+          let qty = 1;
+          if (/^\d+$/.test(tokens[tokens.length - 1]) && tokens.length >= 3) qty = parseInt(tokens.pop(), 10);
+          const itemTok = tokens[tokens.length - 1];
+          const targetName = tokens.slice(0, -1).join(" ");
+          const member = findPartyMember(session, targetName);
+          if (!member) return reply(`No party member named "${targetName}" \u2014 see \`/dm who\`.`);
+          const given = giveItem(member, itemTok, qty);
+          if (!given) return reply(`No item matches \`${itemTok}\` \u2014 see \`/dm items\`.`);
+          await this.sessions.save(session);
+          return reply(`\u{1F392} ${name2(member)} receives **${given.name}**${qty > 1 ? ` \xD7${qty}` : ""} (carrying ${given.qty}).`);
+        }
+        case "equip": {
+          const session = await this.sessions.get(msg);
+          if (!session) return reply("No game here yet \u2014 `/dm new` first.");
+          const tokens = rest.split(/\s+/).filter(Boolean);
+          if (tokens.length < 2) return reply("Usage: `/dm equip <character> <item>` \u2014 e.g. `/dm equip Thorin chain-mail`.");
+          const itemTok = tokens[tokens.length - 1];
+          const targetName = tokens.slice(0, -1).join(" ");
+          const member = findPartyMember(session, targetName);
+          if (!member) return reply(`No party member named "${targetName}" \u2014 see \`/dm who\`.`);
+          const res = equip(member, itemTok);
+          if ("error" in res) {
+            return reply(res.error === "not-carried" ? `${name2(member)} isn't carrying "${itemTok}" \u2014 hand it over with \`/dm give\`, or see \`/dm inventory ${name2(member)}\`.` : `\`${itemTok}\` can't be equipped (only weapons, armor, and shields).`);
+          }
+          await this.sessions.save(session);
+          const detail = res.slot === "weapon" ? `attack ${member.attack.toHit >= 0 ? "+" : ""}${member.attack.toHit}, ${member.attack.damage}` : `AC ${member.ac}`;
+          return reply(`\u{1F6E1}\uFE0F ${name2(member)} equips **${findCarried(member, itemTok)?.name ?? itemTok}** (${res.slot}) \u2014 ${detail}.`);
+        }
+        case "unequip": {
+          const session = await this.sessions.get(msg);
+          if (!session) return reply("No game here yet \u2014 `/dm new` first.");
+          const m = rest.match(/^(.+?)\s+(weapon|armor|shield)$/i);
+          if (!m) return reply("Usage: `/dm unequip <character> <weapon|armor|shield>`.");
+          const member = findPartyMember(session, m[1]);
+          if (!member) return reply(`No party member named "${m[1]}" \u2014 see \`/dm who\`.`);
+          const slot = m[2].toLowerCase();
+          const had = unequip(member, slot);
+          await this.sessions.save(session);
+          if (!had) return reply(`${name2(member)} had nothing equipped in the ${slot} slot.`);
+          const detail = slot === "weapon" ? "back to a basic weapon" : `AC ${member.ac}`;
+          return reply(`\u{1F3BD} ${name2(member)} unequips their ${slot} \u2014 ${detail}.`);
+        }
+        case "use": {
+          const session = await this.sessions.get(msg);
+          if (!session) return reply("No game here yet \u2014 `/dm new` first.");
+          const tokens = rest.split(/\s+/).filter(Boolean);
+          if (tokens.length < 2) return reply("Usage: `/dm use <character> <item>` \u2014 e.g. `/dm use Thorin potion-of-healing`.");
+          const itemTok = tokens[tokens.length - 1];
+          const targetName = tokens.slice(0, -1).join(" ");
+          const member = findPartyMember(session, targetName);
+          if (!member) return reply(`No party member named "${targetName}" \u2014 see \`/dm who\`.`);
+          const res = useItem(member, itemTok);
+          if ("error" in res) {
+            return reply(res.error === "not-carried" ? `${name2(member)} isn't carrying "${itemTok}" \u2014 see \`/dm inventory ${name2(member)}\`.` : `\`${itemTok}\` isn't something you can use (only potions, for now).`);
+          }
+          await this.sessions.save(session);
+          return reply(`\u{1F9EA} ${name2(member)} drinks a **${res.item}** \u2014 heals ${res.healed}, HP ${res.hp}/${res.maxHp}.`);
+        }
+        case "drop": {
+          const session = await this.sessions.get(msg);
+          if (!session) return reply("No game here yet \u2014 `/dm new` first.");
+          const tokens = rest.split(/\s+/).filter(Boolean);
+          if (tokens.length < 2) return reply("Usage: `/dm drop <character> <item> [qty]`.");
+          let qty;
+          if (/^\d+$/.test(tokens[tokens.length - 1]) && tokens.length >= 3) qty = parseInt(tokens.pop(), 10);
+          const itemTok = tokens[tokens.length - 1];
+          const targetName = tokens.slice(0, -1).join(" ");
+          const member = findPartyMember(session, targetName);
+          if (!member) return reply(`No party member named "${targetName}" \u2014 see \`/dm who\`.`);
+          const carried = findCarried(member, itemTok);
+          const dropped = dropItem(member, itemTok, qty);
+          if (!dropped) return reply(`${name2(member)} isn't carrying "${itemTok}" \u2014 see \`/dm inventory ${name2(member)}\`.`);
+          await this.sessions.save(session);
+          return reply(`\u{1F5D1}\uFE0F ${name2(member)} drops **${carried?.name ?? itemTok}**${qty ? ` \xD7${qty}` : ""}.`);
+        }
         default:
           return reply(`Unknown command \`${cmd}\`. Try \`/dm help\`.`);
       }
@@ -2115,6 +2674,13 @@ Set yours with \`/dm portrait <id>\` (e.g. \`/dm portrait fighter\`), or upload 
 \`/dm combat start|next|end\` \u2014 roll initiative, advance turns, end the fight; \`/dm init set <name> <mod>\` sets a modifier
 \`/dm attack <attacker> vs <target> [with <weapon>]\` \u2014 engine rolls to-hit vs AC + damage on a hit (crit doubles dice)
 \`/dm ac <name> <n>\` / \`/dm weapon <name> <toHit> <damage> [name]\` \u2014 set a character's Armor Class / weapon profile
+\`/dm spells [<id>]\` \u2014 list bundled spells (or show one); \`/dm learn <character> <spell>\` teaches one
+\`/dm slots <character> [L1 L2 \u2026]\` \u2014 set spell slots per level (\`/dm castdc <character> <DC> [atk]\` sets save DC / attack)
+\`/dm cast <caster> <spell> [at <target>]\` \u2014 engine resolves attack/save/auto + damage/heal, spends a slot; \`/dm rest\` restores
+\`/dm spellbook <character>\` \u2014 show a character's known spells + slots
+\`/dm items [<id>]\` \u2014 list the armory (or show one); \`/dm give <character> <item> [qty]\` hands it out
+\`/dm equip <character> <item>\` / \`/dm unequip <character> <weapon|armor|shield>\` \u2014 worn gear sets AC / weapon
+\`/dm use <character> <item>\` \u2014 drink a potion (engine heals); \`/dm inventory <character>\` shows the pack; \`/dm drop\` discards
 \`/dm end\` \u2014 end the campaign
 Otherwise, just type what your character does.`;
 

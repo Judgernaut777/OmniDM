@@ -171,9 +171,46 @@ export interface Player {
   /**
    * The character's weapon profile (`/dm weapon <name> <toHit> <damage>`) used
    * when they attack. Absent-safe — defaults to a basic martial weapon. Carried
-   * across a seat re-claim.
+   * across a seat re-claim. Also set (and cleared) by equipping a weapon from
+   * the character's inventory (`/dm equip`), so gear and the attack profile
+   * never disagree.
    */
   attack?: { name?: string; toHit: number; damage: string };
+  /**
+   * Engine-owned spell slots, keyed by spell level (1–9), each `{ max, used }`.
+   * A leveled spell expends one slot of at least its level; cantrips (level 0)
+   * need none. Set with `/dm slots`, spent by `/dm cast`, restored by
+   * `/dm rest`. Absent-safe — a non-caster simply has none. See
+   * `rules/spells.ts`, which owns every slot mutation the way `mechanics.ts`
+   * owns HP.
+   */
+  spellSlots?: Record<number, { max: number; used: number }>;
+  /**
+   * The spell save DC a target's saving throw must meet against this caster
+   * (`/dm castdc`). Absent-safe — defaults to {@link DEFAULT_SPELL_DC}.
+   */
+  spellDc?: number;
+  /**
+   * This caster's spell attack bonus, added to a d20 for attack-roll spells
+   * (`/dm castdc`). Absent-safe — defaults to {@link DEFAULT_SPELL_ATTACK}.
+   */
+  spellAttack?: number;
+  /**
+   * The ids of spells this character has learned/prepared (`/dm learn`) and may
+   * therefore cast. Absent-safe. See the bundled `SPELLBOOK` in `rules/spells.ts`.
+   */
+  spells?: string[];
+  /**
+   * The character's carried items (`/dm give`, `/dm use`, `/dm drop`). Each is a
+   * stackable {@link Item} instance. Absent-safe. See `rules/inventory.ts`.
+   */
+  inventory?: Item[];
+  /**
+   * The item ids currently equipped, by slot. Equipping a weapon sets
+   * {@link attack}; equipping armor/shield recomputes {@link ac}. Absent-safe —
+   * nothing equipped. See `rules/inventory.ts`.
+   */
+  equipped?: { weapon?: string; armor?: string; shield?: string };
   /** Imported Character Card persona (`/dm import`), if any. */
   card?: CharacterCard;
   /**
@@ -191,6 +228,35 @@ export interface Player {
    * not reclaimable-by-name at all (they reconnect by userId).
    */
   resumeToken?: string;
+}
+
+/**
+ * One carried item on a {@link Player.inventory}. Deliberately compact — the
+ * engine tracks only the numbers it acts on (a weapon's to-hit/damage, armor's
+ * AC, a potion's healing), the DM narrates the flavor. A stack of identical
+ * items collapses onto a single entry via `qty`. Items come from the bundled
+ * `ARMORY` catalog (`rules/inventory.ts`); `id` is that catalog id, so equipping
+ * and stacking can key on it.
+ */
+export interface Item {
+  /** Catalog slug (`longsword`, `chain-mail`, `potion-of-healing`). */
+  id: string;
+  name: string;
+  kind: 'weapon' | 'armor' | 'shield' | 'potion' | 'misc';
+  /** How many of this item the character carries (stacks collapse). */
+  qty: number;
+  /** Weapon: attack-roll bonus (modifier baked in, like `Player.attack`). */
+  toHit?: number;
+  /** Weapon: damage dice notation (`1d8+2`). */
+  damage?: string;
+  /** Armor: the base Armor Class it grants when worn (replaces unarmored 10). */
+  ac?: number;
+  /** Shield/trinket: a bonus ADDED to the worn armor's AC. */
+  acBonus?: number;
+  /** Potion: healing dice rolled when quaffed (`/dm use`). */
+  heal?: string;
+  /** One-line flavor for the catalog/inventory listing. */
+  desc?: string;
 }
 
 export interface RollResult {

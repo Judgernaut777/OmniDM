@@ -81,6 +81,7 @@ import {
 } from './harness.js';
 import type { SmokeCtx } from './context.js';
 import { registerRules } from './sections/rules.js';
+import { registerSpellsInventory } from './sections/spells-inventory.js';
 import { registerBilling } from './sections/billing.js';
 
 export function registerAll(suite: Suite): void {
@@ -2529,6 +2530,7 @@ export function registerAll(suite: Suite): void {
 
   });
   registerRules(suite, ctx);
+  registerSpellsInventory(suite, ctx);
   suite.section("Desktop shell: the Electron target bundles Chromium (builds w/o system webkit)", async () => {
   // ── Desktop shell: the Electron target bundles Chromium (builds w/o system webkit) ──
   // The pragmatic desktop path: unlike the Tauri scaffold this ships its own
