@@ -1,0 +1,45 @@
+# OmniDM multiplayer server — self-host with Docker Compose.
+#
+#   docker compose up -d          # start
+#   docker compose logs -f        # follow logs
+#   docker compose down           # stop (data persists in the named volume)
+#
+# Configure your model provider and (optionally) a room password via a .env file
+# next to this compose file (see .env.example). Nothing is gated for self-host.
+
+services:
+  omnidm:
+    build: .
+    image: omnidm:local
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    environment:
+      WEB_HOST: 0.0.0.0
+      WEB_PORT: 8787
+      DATA_DIR: /data
+      # Provide your model config via .env (see .env.example):
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://openrouter.ai/api/v1}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      # Optional: protect the room with a password.
+      WEB_PASSWORD: ${WEB_PASSWORD:-}
+    volumes:
+      - omnidm-data:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    # Hardening: no new privileges, read-only root FS with writable /data + /tmp.
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+
+volumes:
+  omnidm-data:
