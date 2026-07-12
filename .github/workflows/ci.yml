@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [main]
 
+# Cancel superseded runs on the same ref to keep the queue clean.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   gates:
     runs-on: ubuntu-latest
@@ -17,22 +22,25 @@ jobs:
           node-version: '22'
           cache: 'npm'
 
-      - name: Install chromium (for headless web-ui smoke checks)
-        # Best-effort: smoke.ts explicitly counts+reports a skip for its ~8
-        # headless web-ui checks when /usr/bin/chromium is missing, so a
-        # failure to install here must not fail the job — it degrades to a
-        # reported skip instead of silently or fatally losing coverage.
+      # Chromium is REQUIRED here: the headless web-ui smoke checks (crest, board,
+      # class-gallery, creator, local-turn, server-turn, error/help, key-storage,
+      # status-state, roster-overflow) must actually RUN in Linux CI — not skip.
+      # On a headless GitHub runner (no Wayland/X session) chromium's
+      # --headless=new --ozone-platform=headless path renders deterministically;
+      # xvfb is installed as a belt-and-suspenders for any check that still wants
+      # a display. If chromium cannot be installed the job FAILS (no silent skip).
+      - name: Install chromium + xvfb (required for browser checks)
         run: |
-          sudo apt-get update || true
-          sudo apt-get install -y chromium || sudo apt-get install -y chromium-browser || true
+          sudo apt-get update
+          sudo apt-get install -y xvfb chromium-browser || sudo apt-get install -y xvfb chromium
           CHROME_BIN=$(command -v chromium || command -v chromium-browser || true)
-          if [ -n "$CHROME_BIN" ]; then
-            sudo ln -sf "$CHROME_BIN" /usr/bin/chromium
-            echo "chromium available at /usr/bin/chromium -> $CHROME_BIN"
-          else
-            echo "::warning::no chromium binary found — headless web-ui smoke checks will report as skipped"
+          if [ -z "$CHROME_BIN" ]; then
+            echo "::error::chromium is required for browser smoke checks but was not installed"
+            exit 1
           fi
-        continue-on-error: true
+          sudo ln -sf "$CHROME_BIN" /usr/bin/chromium
+          echo "chromium at /usr/bin/chromium -> $CHROME_BIN"
+          /usr/bin/chromium --version || true
 
       - name: Install dependencies
         run: npm ci
@@ -50,5 +58,69 @@ jobs:
             exit 1;
           }
 
-      - name: Smoke
-        run: npm run smoke
+      - name: Verify bundled rules markdown is in sync
+        run: |
+          node scripts/bundle-rules.mjs
+          git diff --exit-code -- src/core/rules/dnd5e.system.ts || {
+            echo "::error::src/core/rules/dnd5e.system.ts is out of sync with src/rules/dnd5e/system.md — run 'node scripts/bundle-rules.mjs' and commit.";
+            exit 1;
+          }
+
+      # The counted smoke gate. Browser checks run for real under xvfb. The output
+      # is captured so the next step can assert none of them silently skipped.
+      - name: Smoke (counted gate, browser checks required)
+        run: xvfb-run -a npm run smoke | tee smoke-output.txt
+
+      # ACCEPTANCE (Workstream B): zero skipped checks in supported Linux CI. A
+      # skipped browser check here means chromium didn't render — surface it as a
+      # failure rather than letting coverage silently evaporate.
+      - name: Assert no skipped checks (browser E2E must run)
+        run: |
+          if ! grep -qE ', 0 skipped' smoke-output.txt; then
+            echo "::error::smoke reported skipped checks — browser E2E must run, not skip, in CI:";
+            grep -E '⏭|skipped' smoke-output.txt || true
+            exit 1
+          fi
+          echo "no skipped checks — browser E2E ran"
+
+      # Deterministic in-process node:test runner over the same section list.
+      - name: node:test runner
+        run: xvfb-run -a npm test
+
+      # Upload the probe HTML + captured output on failure so a broken browser
+      # render can be diagnosed from the run artifacts (browser diagnostics).
+      - name: Upload browser diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-diagnostics
+          path: |
+            smoke-output.txt
+            data/smoke/*.html
+          if-no-files-found: ignore
+          retention-days: 7
+
+  electron-linux-build:
+    runs-on: ubuntu-latest
+    # Non-blocking for now: proves the Electron Linux AppImage target still
+    # packages. Promoted to a required gate once the release pipeline lands.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - name: Build web bundle
+        run: npm run build:web
+      - name: Package Electron (Linux AppImage)
+        run: npx electron-builder --linux AppImage --publish never
+      - name: Upload AppImage
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: omnidm-linux-appimage
+          path: release/*.AppImage
+          if-no-files-found: warn
+          retention-days: 7

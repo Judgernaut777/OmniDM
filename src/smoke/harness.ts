@@ -264,6 +264,69 @@ export class WsClient {
 }
 
 /**
+ * Run headless chromium on a local HTML file and resolve its dumped DOM, or
+ * `null` when chromium is unavailable, errors, or times out.
+ *
+ * This replaces the fragile `spawnSync(chromium, …, { timeout })` the headless
+ * checks used to call directly. On a Wayland/desktop host, `chromium --dump-dom`
+ * forks gpu/zygote/renderer children that OUTLIVE a plain `spawnSync` timeout's
+ * SIGTERM and keep the stdout pipe open, so `spawnSync` blocks forever — wedging
+ * the whole suite and leaking the children (the root cause of the "browser
+ * checks hang / skip" problem). This helper instead:
+ *   - launches chromium DETACHED (its own process group) so the entire tree can
+ *     be signalled at once;
+ *   - on timeout SIGKILLs the WHOLE group (`-pid`), reaping any orphaned child
+ *     that would otherwise hold the pipe open;
+ *   - forces the modern headless + headless-ozone path and strips DISPLAY /
+ *     WAYLAND_DISPLAY from the child env, so on a proper (Xvfb/headless) CI host
+ *     no windowing children spawn in the first place and the checks run
+ *     deterministically instead of skipping.
+ * The suite can therefore never hang on chromium: it gets either the DOM or a
+ * bounded `null`, and always cleans up after itself.
+ */
+export async function chromiumDumpDom(htmlPath: string, extraArgs: string[] = [], timeoutMs = 25000): Promise<string | null> {
+  const chromium = '/usr/bin/chromium';
+  try {
+    await fs.access(chromium);
+  } catch {
+    return null;
+  }
+  const { spawn } = await import('node:child_process');
+  const env = { ...process.env };
+  delete env.DISPLAY;
+  delete env.WAYLAND_DISPLAY;
+  delete env.XDG_SESSION_TYPE;
+  const args = [
+    '--headless=new', '--no-sandbox', '--disable-gpu', '--no-zygote',
+    '--ozone-platform=headless', '--disable-dev-shm-usage', '--no-first-run',
+    '--disable-crash-reporter', '--disable-extensions',
+    ...extraArgs, '--dump-dom', `file://${path.resolve(htmlPath)}`,
+  ];
+  return await new Promise<string | null>((resolve) => {
+    const child = spawn(chromium, args, { stdio: ['ignore', 'pipe', 'ignore'], detached: true, env });
+    let out = '';
+    let settled = false;
+    const finish = (val: string | null): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      // Kill the whole process group so an orphaned renderer/gpu/zygote child
+      // can't linger holding the pipe open. ESRCH (already exited) is fine.
+      try {
+        if (child.pid) process.kill(-child.pid, 'SIGKILL');
+      } catch {
+        /* already gone */
+      }
+      resolve(val);
+    };
+    const timer = setTimeout(() => finish(null), timeoutMs);
+    child.stdout?.on('data', (d) => { out += String(d); });
+    child.on('error', () => finish(null));
+    child.on('close', () => finish(out));
+  });
+}
+
+/**
  * Best-effort offline sanity check: render a procedural crest inside headless
  * chromium to prove portraitSVG actually builds an SVG via createElementNS (not
  * just that the source parses) and is deterministic per seed. Skipped — never
@@ -298,14 +361,8 @@ try {
 }
 </script></body></html>`;
   await fs.writeFile(htmlPath, page, 'utf8');
-  const { spawnSync } = await import('node:child_process');
-  const res = spawnSync(
-    chromium,
-    ['--headless', '--no-sandbox', '--disable-gpu', '--dump-dom', `file://${path.resolve(htmlPath)}`],
-    { encoding: 'utf8', timeout: 25000 },
-  );
-  const dom = String(res.stdout ?? '');
-  if (res.error || !dom.includes('CREST_OK=')) {
+  const dom = await chromiumDumpDom(htmlPath, [], 25000);
+  if (dom === null || !dom.includes('CREST_OK=')) {
     skip('web-ui: headless crest check skipped (chromium did not produce output)');
     return;
   }
@@ -369,14 +426,8 @@ export async function headlessBoardCheck(html: string, portraitSrc: string, appS
 <script>${probe}</script>
 </body></html>`;
   await fs.writeFile(htmlPath, page, 'utf8');
-  const { spawnSync } = await import('node:child_process');
-  const res = spawnSync(
-    chromium,
-    ['--headless', '--no-sandbox', '--disable-gpu', '--dump-dom', `file://${path.resolve(htmlPath)}`],
-    { encoding: 'utf8', timeout: 25000 },
-  );
-  const dom = String(res.stdout ?? '');
-  if (res.error || !dom.includes('BOARD_OK=')) {
+  const dom = await chromiumDumpDom(htmlPath, [], 25000);
+  if (dom === null || !dom.includes('BOARD_OK=')) {
     skip('web-ui: headless board check skipped (chromium did not produce output)');
     return;
   }
@@ -428,14 +479,8 @@ try {
 }
 </script></body></html>`;
   await fs.writeFile(htmlPath, page, 'utf8');
-  const { spawnSync } = await import('node:child_process');
-  const res = spawnSync(
-    chromium,
-    ['--headless', '--no-sandbox', '--disable-gpu', '--dump-dom', `file://${path.resolve(htmlPath)}`],
-    { encoding: 'utf8', timeout: 25000 },
-  );
-  const dom = String(res.stdout ?? '');
-  if (res.error || !dom.includes('GALLERY_OK=')) {
+  const dom = await chromiumDumpDom(htmlPath, [], 25000);
+  if (dom === null || !dom.includes('GALLERY_OK=')) {
     skip('web-ui: headless class-gallery check skipped (chromium did not produce output)');
     return;
   }
@@ -502,14 +547,8 @@ export async function headlessCreatorCheck(html: string, portraitSrc: string, ap
 <script>${probe}</script>
 </body></html>`;
   await fs.writeFile(htmlPath, page, 'utf8');
-  const { spawnSync } = await import('node:child_process');
-  const res = spawnSync(
-    chromium,
-    ['--headless', '--no-sandbox', '--disable-gpu', '--dump-dom', `file://${path.resolve(htmlPath)}`],
-    { encoding: 'utf8', timeout: 25000 },
-  );
-  const dom = String(res.stdout ?? '');
-  if (res.error || !dom.includes('CREATOR_OK=')) {
+  const dom = await chromiumDumpDom(htmlPath, [], 25000);
+  if (dom === null || !dom.includes('CREATOR_OK=')) {
     skip('web-ui: headless creator check skipped (chromium did not produce output)');
     return;
   }
@@ -558,13 +597,7 @@ export async function runHeadlessClient(
 <script>${probe}</script>
 </body></html>`;
   await fs.writeFile(htmlPath, page, 'utf8');
-  const { spawnSync } = await import('node:child_process');
-  const res = spawnSync(
-    chromium,
-    ['--headless', '--no-sandbox', '--disable-gpu', '--virtual-time-budget=9000', '--dump-dom', `file://${path.resolve(htmlPath)}`],
-    { encoding: 'utf8', timeout: 35000 },
-  );
-  return res.error ? null : String(res.stdout ?? '');
+  return await chromiumDumpDom(htmlPath, ['--virtual-time-budget=9000'], 35000);
 }
 
 /**
@@ -927,13 +960,7 @@ export async function headlessRosterOverflowCheck(
   await fs.mkdir(tmpDir, { recursive: true });
   const htmlPath = path.join(tmpDir, 'roster-overflow-probe.html');
   await fs.writeFile(htmlPath, page, 'utf8');
-  const { spawnSync } = await import('node:child_process');
-  const res = spawnSync(
-    chromium,
-    ['--headless', '--no-sandbox', '--disable-gpu', '--window-size=390,900', '--virtual-time-budget=5000', '--dump-dom', `file://${path.resolve(htmlPath)}`],
-    { encoding: 'utf8', timeout: 35000 },
-  );
-  const dom = res.error ? null : String(res.stdout ?? '');
+  const dom = await chromiumDumpDom(htmlPath, ['--window-size=390,900', '--virtual-time-budget=5000'], 35000);
   if (dom === null || !dom.includes('ROSTEROVERFLOW_OK=')) {
     skip('web-ui: headless roster-overflow check skipped (chromium produced no output)');
     return;
