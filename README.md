@@ -17,6 +17,15 @@ Pick your preferred platform and play mode:
 | **Chat bots** (Discord/Slack/Matrix/Mattermost) | N/A — bots don't host single-player play. | `npm run discord` / `npm run slack` / `npm run matrix` / `npm run mattermost` <br/> Multiplayer only, everyone in the channel shares the session. |
 | **CLI** (terminal) | `npm run cli` <br/> Text-mode REPL; cheapest way to test the engine. No UI, just turns + rolls. | N/A — single-player only |
 
+> **Support status.** The supported surface is deliberately focused:
+> **Discord** is the supported chat integration; **Slack / Matrix / Mattermost
+> are experimental/archived** (present, but unmaintained and not in the default
+> install or CI). **Electron (Linux)** and the **container image** are the
+> supported deployment targets; **Tauri and Capacitor are frozen** (scaffold
+> only). See [docs/SUPPORT_MATRIX.md](docs/SUPPORT_MATRIX.md) for the
+> authoritative table and [docs/ARCHIVED_INTEGRATIONS.md](docs/ARCHIVED_INTEGRATIONS.md)
+> for what that means.
+
 **Key feature: both play modes use the same engine, same rules, same UI.** Your API key and model are your choice; everything is open, free to self-host, and runs offline (except the LLM call to your configured endpoint).
 
 ## Free, open, and extensible

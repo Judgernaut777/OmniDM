@@ -1,0 +1,69 @@
+name: Bug report
+description: Report a defect in OmniDM
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. **Do not report security issues here** — see
+        [SECURITY.md](../blob/main/SECURITY.md).
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: OmniDM version or git commit you are running.
+      placeholder: "0.1.0 or <commit sha>"
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where does it happen?
+      options:
+        - CLI
+        - Web / server (multiplayer)
+        - Play on this device (in-app engine)
+        - Electron desktop (Linux)
+        - Discord
+        - Container / Docker
+        - Content packs
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: provider
+    attributes:
+      label: Model provider / model
+      description: e.g. OpenRouter free model, Ollama local, Anthropic, OpenAI-compatible.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe the bug and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. /dm new
+        2. /dm cast Elaria fireball at Goblin
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs / output
+      description: Paste any errors. **Redact API keys.**
+      render: shell
+  - type: checkboxes
+    id: gates
+    attributes:
+      label: Checks
+      options:
+        - label: This is not a security vulnerability (those go through SECURITY.md).
+          required: true
+        - label: I searched existing issues.
+          required: true

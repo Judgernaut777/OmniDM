@@ -1,0 +1,44 @@
+name: Feature request
+description: Suggest an improvement to OmniDM
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What are you trying to do that OmniDM makes hard today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Rules engine (mechanics)
+        - Web / server multiplayer
+        - Discord
+        - Electron desktop (Linux)
+        - Container / deployment
+        - Content packs
+        - Providers / models
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - label: This targets the supported surface (not an archived Slack/Matrix/Mattermost or frozen Tauri/Capacitor target), or I explain why it should revive one.
+          required: true
