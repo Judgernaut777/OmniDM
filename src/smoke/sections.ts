@@ -55,6 +55,7 @@ import { base64ToBytes, bytesToBase64 } from '../core/cards/card-parse.js';
 import { loadCardFromBytes } from '../core/cards/card-browser.js';
 import { BrowserSessionStorage, webStorageKeyValue, type AsyncKeyValue, type WebStorageLike } from '../core/session/browser-storage.js';
 import { buildProvider } from '../providers/factory.js';
+import { CapacityError, ConcurrencyLimitedProvider } from '../providers/concurrency-limited.js';
 import { RoomEngine, type Frame as RoomFrame, type RoomConnection } from '../core/room/room-engine.js';
 import { createLocalEngine } from '../browser/local-engine.js';
 import { isCapacitorNative, getCapacitorHttp, makeNativeFetch, selectFetch, type CapacitorHttpLike } from '../browser/native-http.js';
@@ -94,7 +95,7 @@ export function registerAll(suite: Suite): void {
   });
 
   const config: Config = {
-    llm: { provider: '', baseUrl: 'http://mock', apiKey: 'x', model: 'mock/free-model', embeddingsModel: '' },
+    llm: { provider: '', baseUrl: 'http://mock', apiKey: 'x', model: 'mock/free-model', embeddingsModel: '', maxConcurrency: 8, maxQueue: 64 },
     discord: { token: '' },
     slack: { botToken: '', appToken: '' },
     matrix: { homeserverUrl: '', accessToken: '' },
@@ -131,6 +132,23 @@ export function registerAll(suite: Suite): void {
   // Shared context handed to topical section modules that were lifted out of
   // this file (rules, billing). They read only what they need from it.
   const ctx: SmokeCtx = { dataDir, config, provider, bot, out, send, from, fx: {} };
+
+  /**
+   * Resolve a session's on-disk path by its "platform:channelId" key, without
+   * hardcoding the exact filename: `NodeFileStorage.file()` derives the name
+   * as `session_<sanitized-label>_<hash>.json` (the hash suffix guards
+   * against two distinct keys sanitizing to the same label), so a literal
+   * `session_<label>.json` path would go stale the moment that scheme
+   * changes. Scans the data dir for the label prefix instead — same
+   * discipline as the "Persistence to disk" section's own `startsWith`.
+   */
+  const findSessionFilePath = async (key: string): Promise<string> => {
+    const label = key.replace(/[^a-z0-9_.-]/gi, '_').slice(0, 60);
+    const files = await fs.readdir(dataDir);
+    const f = files.find((n) => n.startsWith(`session_${label}_`) && n.endsWith('.json') && !n.endsWith('.bak'));
+    if (!f) throw new Error(`no session file found for key "${key}" under ${dataDir}`);
+    return path.join(dataDir, f);
+  };
 
   suite.section("Dice (pure / deterministic)", async () => {
   // ── Dice (pure / deterministic) ──
@@ -475,8 +493,15 @@ export function registerAll(suite: Suite): void {
   check('import: re-joining keeps the imported persona', (await store.load('cli:chan1'))?.players.u1?.card?.name === 'Zara');
 
   });
-  suite.section("Character Card import (V3 JSON from a spectator → NPC)", async () => {
-  // ── Character Card import (V3 JSON from a spectator → NPC) ──
+  suite.section("Character Card import (V3 JSON — the owner's own persona)", async () => {
+  // ── Character Card import (V3 JSON — the owner's own persona) ──
+  // `/dm import` is now gated: a caller who is neither the owner nor a joined
+  // player (a true spectator) is refused outright — see the "Authorization &
+  // ownership" section for that guard exercised directly. Alice (u1) is both
+  // the campaign owner AND already a joined player here, so her import takes
+  // the "isPlayer" (persona) branch, not the NPC branch — but the card's
+  // `character_book` is still imported into the session lorebook either way
+  // (see `Bot`'s `import` case), which the Lorebook section below depends on.
   const v3Path = path.join(dataDir, 'grim.card.json');
   await fs.writeFile(v3Path, JSON.stringify({
     spec: 'chara_card_v3',
@@ -484,10 +509,10 @@ export function registerAll(suite: Suite): void {
     data: { name: 'Grimble', description: 'A grumpy gnome shopkeeper.', personality: 'Irascible but fair', scenario: '', first_mes: '', mes_example: '', system_prompt: '', character_book: { entries: [{ content: 'Grimble secretly funds the thieves guild.' }] } },
   }), 'utf8');
   out.length = 0;
-  await bot.handle(from('u3', 'Carol', `/dm import ${v3Path}`), send);
-  check('import: non-player card becomes an NPC', out.at(-1)!.text.includes('Grimble') && out.at(-1)!.text.includes('NPC'));
+  await bot.handle(from('u1', 'Alice', `/dm import ${v3Path}`), send);
+  check('import: a joined owner\'s import updates their own persona (not an NPC)', out.at(-1)!.text.includes('Grimble') && out.at(-1)!.text.includes('persona'));
   await bot.handle(from('u1', 'Alice', 'I browse the shop'), send);
-  check('import: NPC card + lorebook entry reach the prompt',
+  check('import: persona card + its lorebook entry reach the prompt',
     provider.lastPrompt.includes('grumpy gnome shopkeeper') && provider.lastPrompt.includes('thieves guild'));
 
   });
@@ -509,8 +534,11 @@ export function registerAll(suite: Suite): void {
     pngChunk('IEND', Buffer.alloc(0)),
   ]));
   out.length = 0;
-  await bot.handle(from('u4', 'Dave', `/dm import ${pngPath}`), send);
-  check('import: PNG-embedded card extracted as NPC', out.at(-1)!.text.includes('Vex'));
+  // Alice (owner + joined player) imports it — same self-persona rationale as
+  // the V3 section above. A non-member's import is exercised (and refused)
+  // separately in "Authorization & ownership".
+  await bot.handle(from('u1', 'Alice', `/dm import ${pngPath}`), send);
+  check('import: PNG-embedded card extracted as the owner\'s persona', out.at(-1)!.text.includes('Vex'));
 
   });
   suite.section("Card injection stays bounded", async () => {
@@ -521,12 +549,20 @@ export function registerAll(suite: Suite): void {
   });
   suite.section("Cards persist in the session JSON", async () => {
   // ── Cards persist in the session JSON ──
+  // Alice's persona has been overwritten twice more since the V2 (Zara)
+  // import — V3 (Grimble), then the PNG (Vex) — since every import in this
+  // channel is now owner-gated and Alice (owner) is also the only joined
+  // player, so every one of her imports takes the persona branch. The last
+  // one wins.
   const savedSession = JSON.parse(await fs.readFile(path.join(dataDir, sessionFile!), 'utf8'));
-  check('persistence: persona card saved on the player', savedSession.players.u1?.card?.name === 'Zara');
-  check('persistence: NPC cards saved on the session', savedSession.npcs?.length === 2 && savedSession.npcs[0].name === 'Grimble');
-  check('portrait: PNG card import keeps the embedded image bytes as the card portrait',
-    savedSession.npcs?.some((n: { name: string; portrait?: { kind: string; mime: string; data: string } }) =>
-      n.name === 'Vex' && n.portrait?.kind === 'image' && n.portrait?.mime === 'image/png' && typeof n.portrait?.data === 'string' && n.portrait.data.length > 0));
+  check('persistence: persona card saved on the player (last import wins)', savedSession.players.u1?.card?.name === 'Vex');
+  check('persistence: no NPCs were created — the owner is also the only joined player, so every import is self-persona',
+    Array.isArray(savedSession.npcs) && savedSession.npcs.length === 0);
+  check('portrait: PNG card import keeps the embedded image bytes as the persona card\'s portrait',
+    savedSession.players.u1?.card?.portrait?.kind === 'image' &&
+    savedSession.players.u1?.card?.portrait?.mime === 'image/png' &&
+    typeof savedSession.players.u1?.card?.portrait?.data === 'string' &&
+    savedSession.players.u1.card.portrait.data.length > 0);
 
   });
   suite.section("Lorebook / world info", async () => {
@@ -566,15 +602,19 @@ export function registerAll(suite: Suite): void {
   });
   suite.section("Card import hardening: /dm import sources are untrusted channel input", async () => {
   // ── Card import hardening: /dm import sources are untrusted channel input ──
+  // Alice (owner + joined player) is the actor here — she passes the
+  // authorization gate, so these exercise the actual parsing/SSRF hardening
+  // below it, not the gate itself (see "Authorization & ownership" for a
+  // spectator being refused `/dm import` outright).
   out.length = 0;
-  await bot.handle(from('u3', 'Carol', '/dm import /etc/hostname'), send);
+  await bot.handle(from('u1', 'Alice', '/dm import /etc/hostname'), send);
   check('import: local paths outside the data dir are refused',
     out.at(-1)!.text.includes('Could not import') && out.at(-1)!.text.includes('must live under'));
 
   const notesPath = path.join(dataDir, 'notes.txt');
   await fs.writeFile(notesPath, 'root:x:0:0:secret-token-abc123', 'utf8');
   out.length = 0;
-  await bot.handle(from('u3', 'Carol', `/dm import ${notesPath}`), send);
+  await bot.handle(from('u1', 'Alice', `/dm import ${notesPath}`), send);
   check('import: parse failure never echoes file contents back to the channel',
     out.at(-1)!.text.includes('Could not import') && !out.at(-1)!.text.includes('root:x') && !out.at(-1)!.text.includes('secret-token'));
 
@@ -614,7 +654,9 @@ export function registerAll(suite: Suite): void {
     check('portrait: unknown preset id is rejected', out.at(-1)!.text.includes('Unknown preset'));
     out.length = 0;
     await bot.handle(pFrom('u2', 'Bob', '/dm portrait fighter'), send);
-    check('portrait: a spectator (non-player) cannot set a portrait', out.at(-1)!.text.includes('Join first'));
+    // The global authorization gate (PLAYER_ONLY) now blocks this before the
+    // case body's own (now-redundant) isPlayer check ever runs.
+    check('portrait: a spectator (non-player) cannot set a portrait', out.at(-1)!.text.includes('Join the game'));
     out.length = 0;
     await bot.handle(pFrom('u1', 'Alice', '/dm portrait fighter'), send);
     check('portrait: preset command confirms it is set', out.at(-1)!.text.toLowerCase().includes('fighter'));
@@ -644,7 +686,9 @@ export function registerAll(suite: Suite): void {
     check('class: an unknown class name is rejected', out.at(-1)!.text.includes('Unknown class'));
     out.length = 0;
     await cbBot.handle(cbFrom('u2', 'Bob', '/dm class fighter'), send);
-    check('class: a spectator (non-player) cannot set a class', out.at(-1)!.text.includes('Join first'));
+    // The global authorization gate (PLAYER_ONLY) now blocks this before the
+    // case body's own (now-redundant) isPlayer check ever runs.
+    check('class: a spectator (non-player) cannot set a class', out.at(-1)!.text.includes('Join the game'));
     out.length = 0;
     await cbBot.handle(cbFrom('u1', 'Alice', '/dm class Wizard'), send); // case-insensitive; name == id
     check('class: setting a class confirms it', out.at(-1)!.text.toLowerCase().includes('wizard'));
@@ -793,7 +837,7 @@ export function registerAll(suite: Suite): void {
   check('memory: turns already in RECENT HISTORY are not duplicated as past events',
     !pastBlock.includes('sharpen my blade') && !pastBlock.includes('wolf tracks'));
 
-  const memSession = JSON.parse(await fs.readFile(path.join(dataDir, 'session_cli_chan3.json'), 'utf8'));
+  const memSession = JSON.parse(await fs.readFile(await findSessionFilePath('cli:chan3'), 'utf8'));
   check('memory: one record persisted per resolved turn', memSession.memories?.length === 9);
   check('memory: record captures who did what plus a narration snippet',
     memSession.memories?.[1]?.text.includes('Thorin: I pocket the obsidian raven amulet') &&
@@ -864,7 +908,7 @@ export function registerAll(suite: Suite): void {
       turnMode: 'immediate', turnIndex: 0, fogOfWar: false, createdAt: 1,
     };
     await vecStore.save('cli:vec', vecSession);
-    const rawVec = await fs.readFile(path.join(dataDir, 'session_cli_vec.json'), 'utf8');
+    const rawVec = await fs.readFile(await findSessionFilePath('cli:vec'), 'utf8');
     check('persistence: embedding vectors serialize on one line, not one element per line',
       /"vector": \[[^\n]*\]/.test(rawVec) && rawVec.split('\n').length < 40);
     const roundTrip = await new NodeFileStorage(dataDir).load('cli:vec');
@@ -1634,19 +1678,19 @@ export function registerAll(suite: Suite): void {
       p2.close();
     }
 
-    // An NPC import (by a spectator, so it lands as an NPC) adds an npc token.
+    // A spectator (never joined room1, not the owner) attempting `/dm import`
+    // must be refused outright — this exact hole (any connection, including
+    // one that never joined, could inject an arbitrary NPC into the shared
+    // world) is what the campaign-authorization gate closes. No npc token
+    // reaches the board.
     const sp = new WsClient(url);
     await sp.open();
     sp.send({ type: 'hello', userName: 'Watcher', channelId: 'room1', password: 'hunter2' });
     await sp.next((f) => f.type === 'welcome');
     await new Promise((r) => setTimeout(r, 1100)); // drain the rate-limit window before a say
     sp.send({ type: 'say', text: `/dm import ${pngPath}` });
-    await sp.next((f) => f.type === 'msg' && String(f.text).includes('as an NPC'));
-    const npcScene = await sp.next((f) => f.type === 'scene' && (f.tokens as SToken[]).some((t) => t.kind === 'npc'));
-    const npcTok = (npcScene!.tokens as SToken[]).find((t) => t.kind === 'npc');
-    check('web: importing an NPC adds an npc token to the shared board',
-      Boolean(npcTok) && npcTok!.who === 'Vex' && npcTok!.id.startsWith('npc:') &&
-      npcTok!.x >= 0 && npcTok!.x <= 1 && npcTok!.y >= 0 && npcTok!.y <= 1);
+    const spBlocked = await sp.next((f) => f.type === 'msg' && /owner/i.test(String(f.text)));
+    check('web: a spectator (never joined, not the owner) cannot `/dm import` an NPC into the world', Boolean(spBlocked));
 
     // The actor field reflects the round-robin turn pointer once round-robin is on.
     await new Promise((r) => setTimeout(r, 1100));
@@ -2777,6 +2821,180 @@ export function registerAll(suite: Suite): void {
       narration === 'native narration' && provCall?.url === 'https://api.anthropic.com/v1/messages' && provCall?.method === 'POST');
     staticCheck('capacitor: the user API key is sent only in the request headers to the configured endpoint',
       (provCall?.headers?.['x-api-key']) === 'sk-native-secret');
+  }
+
+  });
+  suite.section("Authorization & ownership: a campaign owner gate protects GM-power commands", async () => {
+  // ── Authorization & ownership: a campaign owner gate protects GM-power commands ──
+  // Previously almost every mutating command had NO caller check at all —
+  // any channel member (or, over the web adapter, any connection that never
+  // even joined) could run `/dm damage`/`/dm heal`/`/dm end`/`/dm model`/etc.
+  // Only narrative play was gated (a spectator got "You're spectating"), GM
+  // powers were wide open. This section proves the fix on a dedicated
+  // channel/bot so it can't disturb any other section's state: OWNER_ONLY
+  // commands require the campaign owner; PLAYER_ONLY commands require a
+  // joined seat; a spectator (or a joined non-owner) is refused with a clear
+  // message; and ownership is transferable via `/dm gm`.
+  {
+    const azStorage = new MemoryStorage();
+    const azBot = new Bot(config, provider, azStorage);
+    const azOut: OutgoingMessage[] = [];
+    const azSend = async (m: OutgoingMessage) => void azOut.push(m);
+    const az = (userId: string, userName: string, text: string): IncomingMessage =>
+      ({ platform: 'cli', channelId: 'authz', userId, userName, text });
+
+    // u1 (Alice) runs `/dm new` — becomes the campaign owner (and auto-joins as herself).
+    await azBot.handle(az('u1', 'Alice', '/dm new'), azSend);
+
+    // 1) A pure spectator (u2, never joined) is blocked from a PLAYER_ONLY
+    //    mechanical command — exactly the hole the fix closes.
+    azOut.length = 0;
+    await azBot.handle(az('u2', 'Bob', '/dm damage Alice 5'), azSend);
+    check('authz: a spectator (never joined) is blocked from a PLAYER_ONLY command (damage)',
+      azOut.at(-1)!.text.includes('Join the game'));
+
+    // ...and from `/dm import` (a spectator's import would create an NPC — a GM power).
+    azOut.length = 0;
+    await azBot.handle(az('u2', 'Bob', '/dm import /etc/hostname'), azSend);
+    check('authz: a spectator (never joined) is blocked from `/dm import` too', azOut.at(-1)!.text.includes('owner'));
+
+    // 2) The same spectator is blocked from an OWNER_ONLY command (`/dm end`).
+    azOut.length = 0;
+    await azBot.handle(az('u2', 'Bob', '/dm end'), azSend);
+    check('authz: a spectator cannot end the campaign — OWNER_ONLY gate blocks it', azOut.at(-1)!.text.includes('owner'));
+
+    // 3) u2 joins — now a PLAYER, but still NOT the owner.
+    await azBot.handle(az('u2', 'Bob', '/dm join Bob'), azSend);
+    azOut.length = 0;
+    await azBot.handle(az('u2', 'Bob', '/dm model some-model-id'), azSend);
+    check('authz: a joined NON-owner is blocked from an OWNER_ONLY command (model)', azOut.at(-1)!.text.includes('owner'));
+    azOut.length = 0;
+    await azBot.handle(az('u2', 'Bob', '/dm heal Bob 3'), azSend);
+    check('authz: a joined NON-owner IS allowed a PLAYER_ONLY command (heal)',
+      !azOut.at(-1)!.text.includes('🚫') && !azOut.at(-1)!.text.includes('Join the game'));
+
+    // 4) Ownership transfer: the owner (Alice) hands GM authority to Bob via `/dm gm`.
+    azOut.length = 0;
+    await azBot.handle(az('u1', 'Alice', '/dm gm Bob'), azSend);
+    check('authz: `/dm gm <character>` transfers campaign ownership', azOut.at(-1)!.text.includes('Bob'));
+    // The FORMER owner (Alice) is no longer authorized for an OWNER_ONLY command...
+    azOut.length = 0;
+    await azBot.handle(az('u1', 'Alice', '/dm end'), azSend);
+    check('authz: the former owner is blocked from `/dm end` after transferring ownership away',
+      azOut.at(-1)!.text.includes('owner'));
+    // ...while the NEW owner (post-transfer) can end the campaign.
+    azOut.length = 0;
+    await azBot.handle(az('u2', 'Bob', '/dm end'), azSend);
+    check('authz: the new owner (post-transfer) can end the campaign', azOut.at(-1)!.text.includes('ended'));
+  }
+
+  // 5) Anti-resurrection: a stale in-flight turn holding the session object
+  //    (grabbed BEFORE `/dm end`) must not resurrect a campaign already
+  //    deleted — exercised directly against SessionManager/MemoryStorage.
+  {
+    const resStore = new MemoryStorage();
+    const mgr = new SessionManager(resStore, 'mock/free-model');
+    const rm = (userId: string, userName: string): IncomingMessage =>
+      ({ platform: 'cli', channelId: 'resurrect', userId, userName, text: '' });
+    const session = await mgr.create(rm('u1', 'Alice'));
+    await mgr.join(session, rm('u1', 'Alice'), 'Thorin');
+    const staleSession = session; // the reference a stale in-flight turn/command would hold
+
+    await mgr.end(rm('u1', 'Alice'));
+    check('authz: /dm end deletes the campaign', (await resStore.load('cli:resurrect')) === null);
+
+    // The stale reference tries to save AFTER the delete — must be refused,
+    // not silently resurrect the ended campaign.
+    await mgr.save(staleSession);
+    check('authz: a stale save() after /dm end does not resurrect the campaign',
+      (await resStore.load('cli:resurrect')) === null);
+    check('authz: SessionManager.get() also sees no campaign after the stale save attempt',
+      (await mgr.get(rm('u1', 'Alice'))) === null);
+
+    // A fresh `/dm new` in the SAME channel afterward is the legitimate
+    // "start over" path — the tombstone must not permanently block it.
+    const reborn = await mgr.create(rm('u1', 'Alice'));
+    check('authz: /dm new in the same channel after /dm end starts a fresh campaign (tombstone cleared)',
+      reborn.id !== session.id && (await resStore.load('cli:resurrect'))?.id === reborn.id);
+  }
+
+  });
+  suite.section("Provider concurrency cap", async () => {
+  // ── Provider concurrency cap ─────────────────────────────────────────────
+  // A per-channel ChannelLock only serializes turns WITHIN a channel — many
+  // attacker-controlled channelIds still fan out into unbounded PARALLEL
+  // provider calls. ConcurrencyLimitedProvider is the orthogonal global
+  // ceiling that closes that cost/quota DoS (see providers/concurrency-limited.ts).
+  {
+    // A controllable fake: complete() blocks on a manually-resolved deferred
+    // (stored by call index) instead of a real timer, so the test stays
+    // deterministic — we release exactly when we want to observe the effect.
+    class DeferredCompleteProvider implements LLMProvider {
+      readonly id = 'fake-concurrency-test';
+      inFlight = 0;
+      maxObservedInFlight = 0;
+      startedCalls = 0;
+      private readonly resolvers: Array<() => void> = [];
+      async listModels(): Promise<ModelInfo[]> { return []; }
+      async complete(_req: CompletionRequest): Promise<string> {
+        this.inFlight++;
+        this.maxObservedInFlight = Math.max(this.maxObservedInFlight, this.inFlight);
+        const callIdx = this.startedCalls++;
+        await new Promise<void>((resolve) => { this.resolvers[callIdx] = resolve; });
+        this.inFlight--;
+        return `reply-${callIdx}`;
+      }
+      release(callIdx: number): void {
+        this.resolvers[callIdx]?.();
+      }
+    }
+    // Flushes a bounded number of microtask ticks — no real timers — giving
+    // chained `await`s (acquire → fn() → release → next waiter) room to settle.
+    const flush = async (ticks = 8) => { for (let i = 0; i < ticks; i++) await Promise.resolve(); };
+
+    const fake = new DeferredCompleteProvider();
+    const wrapped = new ConcurrencyLimitedProvider(fake, { maxConcurrent: 2, maxQueue: 2 });
+
+    check('concurrency: embed is undefined on the wrapper when the inner has none (feature-detection preserved)',
+      wrapped.embed === undefined);
+    check('concurrency: id/passthrough fields are forwarded from the inner provider', wrapped.id === 'fake-concurrency-test');
+
+    const ccReq: CompletionRequest = { model: 'x', messages: [{ role: 'user', content: 'hi' }] };
+
+    // Fire exactly maxConcurrent + maxQueue (2 + 2 = 4) calls — all must be accepted.
+    const accepted: Array<Promise<string>> = [];
+    for (let i = 0; i < 4; i++) accepted.push(wrapped.complete(ccReq));
+
+    // The 5th call has nowhere to go (2 running + 2 queued already fills capacity)
+    // and must fast-fail immediately rather than queue forever.
+    let overflow: unknown;
+    try {
+      await wrapped.complete(ccReq);
+    } catch (e) {
+      overflow = e;
+    }
+    check('concurrency: a call beyond maxConcurrent+maxQueue is rejected with the capacity error, not queued forever',
+      overflow instanceof CapacityError && (overflow as Error).message.includes('capacity'));
+
+    await flush();
+    check('concurrency: at most maxConcurrent (2) inner calls are ever in flight at once',
+      fake.inFlight === 2 && fake.maxObservedInFlight === 2 && fake.startedCalls === 2);
+
+    // Release the two running calls — the two QUEUED calls must then proceed
+    // (still capped at 2 concurrently in the fake).
+    fake.release(0);
+    fake.release(1);
+    await flush();
+    check('concurrency: releasing in-flight calls lets queued calls proceed, still capped at maxConcurrent',
+      fake.inFlight === 2 && fake.maxObservedInFlight === 2 && fake.startedCalls === 4);
+
+    fake.release(2);
+    fake.release(3);
+    const settled = await Promise.all(accepted);
+    check('concurrency: all 4 accepted calls eventually complete with their own replies',
+      settled.join(',') === 'reply-0,reply-1,reply-2,reply-3');
+    check('concurrency: every in-flight call was released and none is left running',
+      fake.inFlight === 0);
   }
 
   });

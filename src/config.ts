@@ -10,6 +10,22 @@ export interface Config {
     model: string;
     /** Embeddings model for vector memory; '' (default) = lexical fallback. */
     embeddingsModel: string;
+    /**
+     * Global cap on concurrent in-flight provider calls (`complete`/`embed`),
+     * server-wide — NOT per channel. Closes a cost/quota DoS: the per-channel
+     * `ChannelLock` only serializes turns WITHIN one channel, so an attacker
+     * opening many WebSocket connections under distinct channelIds could
+     * otherwise drive unbounded parallel provider calls. See
+     * `providers/concurrency-limited.ts`. `<= 0` disables the cap (unlimited).
+     * Optional (rather than required) so the handful of other call sites that
+     * build a minimal `Config` shape for a non-server context (e.g. the in-app
+     * engine's `browser/local-engine.ts`, which never wraps its provider with
+     * the limiter) aren't forced to plumb a field they don't use;
+     * `loadConfig()` below always populates both from the environment.
+     */
+    maxConcurrency?: number;
+    /** Max callers queued waiting for a slot before further calls fast-fail with a "server busy" error. */
+    maxQueue?: number;
   };
   discord: {
     token: string;
@@ -91,6 +107,12 @@ export function loadConfig(): Config {
       apiKey: process.env.LLM_API_KEY || process.env.ANTHROPIC_API_KEY || '',
       model: process.env.LLM_MODEL || 'meta-llama/llama-3.3-70b-instruct:free',
       embeddingsModel: process.env.EMBEDDINGS_MODEL || '',
+      // NOT the `Number(x) || default` pattern used elsewhere in this file (e.g.
+      // WEB_PORT) — that treats an explicit "0" as "unset", but here 0 (and any
+      // <= 0 value) is a meaningful, deliberate "disable the cap" setting that
+      // must survive parsing rather than being silently overridden.
+      maxConcurrency: parseIntEnv(process.env.LLM_MAX_CONCURRENCY, 8),
+      maxQueue: parseIntEnv(process.env.LLM_MAX_QUEUE, 64),
     },
     discord: {
       token: process.env.DISCORD_TOKEN || '',
@@ -132,6 +154,19 @@ export function loadConfig(): Config {
       storeFile: process.env.STRIPE_STORE_FILE || `${process.env.DATA_DIR || './data'}/purchases.json`,
     },
   };
+}
+
+/**
+ * Parses an integer env var, falling back to `def` only when the var is unset,
+ * empty, or not a finite number — unlike the `Number(x) || def` shorthand used
+ * elsewhere in this file, this does NOT treat an explicitly-set `"0"` (or a
+ * negative value) as "unset", since callers here rely on 0/negative being a
+ * meaningful sentinel (see `llm.maxConcurrency`/`llm.maxQueue` above).
+ */
+function parseIntEnv(raw: string | undefined, def: number): number {
+  if (raw === undefined || raw.trim() === '') return def;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : def;
 }
 
 /** Parse `STRIPE_PRICES` — a JSON object mapping pack id → Stripe Price id. Malformed = no prices. */

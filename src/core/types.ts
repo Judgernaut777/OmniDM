@@ -384,6 +384,15 @@ export interface GameSession {
   fogOfWar: boolean;                 // per-player private narration (`/dm fog on|off`)
   createdAt: number;
   /**
+   * The userId of the campaign owner — the GM-authority holder who may run
+   * destructive/campaign-config commands (`/dm end`, `/dm model`, `/dm mode`,
+   * `/dm fog`, ...). Set to the creator's userId by `SessionManager.create`;
+   * transferable via `/dm gm <character>`. Absent-safe: a session saved
+   * before this field existed has none, and `SessionManager.get`/`isOwner`
+   * fall back to the first joined player (join order) for such legacy saves.
+   */
+  ownerId?: string;
+  /**
    * A content pack's homebrew rules module, scoped to THIS session only (see
    * `content-packs/loader.ts`). Kept on the session itself — never in a
    * process-wide registry — so two sessions in the same process can each load

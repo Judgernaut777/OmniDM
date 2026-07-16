@@ -34,6 +34,16 @@ export class SeatTakenError extends Error {
 }
 
 export class SessionManager {
+  /**
+   * Anti-resurrection tombstone: channel keys `/dm end` has deleted. A turn
+   * that was already in flight (holding the session object) when `/dm end`
+   * ran would otherwise call `save()` afterward and re-create the file/cache
+   * entry the delete just removed — resurrecting a campaign the owner ended.
+   * `save()` refuses to write for any key in this set; `create()` clears the
+   * key first, so a fresh `/dm new` in the same channel is unaffected.
+   */
+  private ended = new Set<string>();
+
   constructor(
     private store: SessionStorage,
     private defaultModel: string,
@@ -56,8 +66,36 @@ export class SessionManager {
         console.warn(`[session] model '${session.model}' is not servable by provider '${this.provider?.id}' — falling back to '${resolved}'`);
         session.model = resolved;
       }
+      // Migration: a session created before `ownerId` existed has no recorded
+      // campaign owner. Adopt the first joined player (join order) as a
+      // stand-in GM-authority holder — lazy, persists on the session's next
+      // save(). Only applies when there IS a player to adopt; an empty,
+      // ownerless legacy session stays ownerless until someone joins.
+      if (!session.ownerId && Object.keys(session.players).length > 0) {
+        session.ownerId = Object.keys(session.players)[0];
+      }
     }
     return session;
+  }
+
+  /** Reload a session straight from storage for a platform/channel — bypasses
+   * any caller-held (possibly stale) reference, e.g. to re-check the current
+   * truth after a concurrent `/dm end`. Unlike `get()`, this does not run the
+   * model/ownerId migrations (no `IncomingMessage` to derive them from). */
+  async reload(platform: string, channelId: string): Promise<GameSession | null> {
+    return this.store.load(this.key({ platform, channelId }));
+  }
+
+  /**
+   * Whether `userId` holds GM authority over `session`. Prefers the recorded
+   * `ownerId` (set at creation, transferable via `/dm gm`); falls back to the
+   * first joined player for a legacy session that predates `ownerId` and
+   * hasn't been reloaded through `get()` (which would have migrated it).
+   */
+  isOwner(session: GameSession, userId: string): boolean {
+    if (session.ownerId) return session.ownerId === userId;
+    const first = Object.keys(session.players)[0];
+    return first ? first === userId : false;
   }
 
   /** A model id the active provider can serve; providers without a `supportsModel` accept anything. */
@@ -85,18 +123,34 @@ export class SessionManager {
       turnIndex: 0,
       fogOfWar: false,
       createdAt: Date.now(),
+      ownerId: msg.userId, // the creator holds GM authority until transferred (`/dm gm`)
     };
+    // A fresh `/dm new` in a channel that was previously `/dm end`ed is the
+    // legitimate "start over" path, not a stale in-flight turn racing the
+    // delete — clear the tombstone first so this save() (and every later one
+    // for this channel) isn't refused by the anti-resurrection guard below.
+    this.ended.delete(this.key(msg));
     await this.store.save(this.key(msg), session);
     return session;
   }
 
   async save(session: GameSession): Promise<void> {
-    await this.store.save(`${session.platform}:${session.channelId}`, session);
+    const key = `${session.platform}:${session.channelId}`;
+    if (this.ended.has(key)) {
+      // A turn/command that was already holding this session object when
+      // `/dm end` ran is trying to write it back out — refuse, or the delete
+      // above would be silently undone (a resurrected "ended" campaign).
+      console.warn('[session] refusing to resurrect ended campaign', key);
+      return;
+    }
+    await this.store.save(key, session);
   }
 
   /** End the campaign in a channel — must go through the shared store so its live cache is evicted too. */
   async end(msg: { platform: string; channelId: string }): Promise<void> {
-    await this.store.delete(this.key(msg));
+    const key = this.key(msg);
+    this.ended.add(key);
+    await this.store.delete(key);
   }
 
   /**

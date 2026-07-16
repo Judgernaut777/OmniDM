@@ -14,6 +14,7 @@
  * pack to the tenant in the {@link PurchaseStore}, which the entitlements gate
  * then reads live — no redeploy, no static allowlist edit.
  */
+import { timingSafeEqual } from 'node:crypto';
 import { tenantKey, type EntitlementScope } from '../entitlements/entitlements.js';
 import { listBundledContentPacks } from '../content-packs/registry.js';
 import type { PurchaseStore } from './purchase-store.js';
@@ -24,6 +25,34 @@ import {
   type FetchLike,
   type StripeCheckoutEvent,
 } from './stripe.js';
+
+/**
+ * The shared room password, if configured. GET /billing/status is otherwise
+ * unauthenticated (a client convenience probe, called before anyone has
+ * necessarily joined a room) and would let any caller enumerate which
+ * (platform, channelId) tenants own which packs by guessing channelIds — an
+ * information-disclosure hole. Read directly from the environment (this
+ * handler is transport-agnostic and isn't wired through `src/config.ts`;
+ * `src/adapters/web.ts` reads `WEB_ALLOWED_ORIGINS`/`WEB_ALLOWED_HOSTS` the
+ * same direct way) rather than threading a new dependency through the
+ * composition root.
+ */
+const WEB_PASSWORD = process.env.WEB_PASSWORD || '';
+
+/** Constant-time string compare so checking the password can't leak it via timing. */
+function safeEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a, 'utf8');
+  const bufB = Buffer.from(b, 'utf8');
+  if (bufA.length !== bufB.length) return false;
+  return timingSafeEqual(bufA, bufB);
+}
+
+/** Does this GET /billing/status request present the configured WEB_PASSWORD (header or query)? */
+function presentsWebPassword(req: BillingHttpRequest): boolean {
+  if (!WEB_PASSWORD) return false; // nothing configured to gate on — see the caller for the fallback
+  const supplied = req.headers['x-web-password'] ?? req.query?.password;
+  return typeof supplied === 'string' && supplied.length > 0 && safeEqual(supplied, WEB_PASSWORD);
+}
 
 export interface BillingHttpRequest {
   method: string;
@@ -137,13 +166,27 @@ export function createBillingHandler(deps: BillingHandlerDeps): (req: BillingHtt
       const platform = req.query?.platform;
       const channelId = req.query?.channelId;
       if (!platform || !channelId) return json(400, { error: 'platform and channelId query params are required' });
+      const catalog = listBundledContentPacks().filter((p) => p.premium && isSellable(p.id));
+      // Per-tenant ownership (which channelId owns which pack) is gated ONLY
+      // when a WEB_PASSWORD is configured — i.e. a hosted/shared deployment,
+      // the case where enumerating tenants by guessing channelIds is a real
+      // information-disclosure hole. A caller must then present the password to
+      // see ownership; everyone else gets the generic catalog with no ownership
+      // signal. When no password is configured (the self-host default) there is
+      // nothing to protect — self-host unlocks everything and has no paying
+      // tenants — so the full ownership view is returned as before, keeping the
+      // local status UI working.
+      if (WEB_PASSWORD && !presentsWebPassword(req)) {
+        return json(200, {
+          enabled: true,
+          purchasable: catalog.map((p) => ({ id: p.id, name: p.name, description: p.description ?? '' })),
+        });
+      }
       const unlocked = deps.store.list(tenantKey({ platform, channelId }));
       const owns = (id: string): boolean => unlocked.includes('*') || unlocked.includes(id);
       // The shop catalog the client renders: bundled premium packs that have a
       // configured Stripe price, each flagged as owned-by-this-tenant or not.
-      const purchasable = listBundledContentPacks()
-        .filter((p) => p.premium && isSellable(p.id))
-        .map((p) => ({ id: p.id, name: p.name, description: p.description ?? '', unlocked: owns(p.id) }));
+      const purchasable = catalog.map((p) => ({ id: p.id, name: p.name, description: p.description ?? '', unlocked: owns(p.id) }));
       return json(200, { unlocked, purchasable });
     }
 

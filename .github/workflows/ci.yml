@@ -102,9 +102,9 @@ jobs:
 
   electron-linux-build:
     runs-on: ubuntu-latest
-    # Non-blocking for now: proves the Electron Linux AppImage target still
-    # packages. Promoted to a required gate once the release pipeline lands.
-    continue-on-error: true
+    # Required gate: Electron (Linux) is a SUPPORTED deployment target (see
+    # docs/SUPPORT_MATRIX.md), so a broken AppImage package must fail CI rather
+    # than pass silently. (Windows/macOS signing stays out of Linux CI.)
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -124,3 +124,35 @@ jobs:
           path: release/*.AppImage
           if-no-files-found: warn
           retention-days: 7
+
+  container-build-boot:
+    runs-on: ubuntu-latest
+    # Required gate: the container image is a SUPPORTED deployment target
+    # (docs/SUPPORT_MATRIX.md). Build it AND boot it — a web adapter that serves
+    # the client at / is what "up" means (mirrors the Dockerfile HEALTHCHECK).
+    # No LLM key is needed to boot: the UI serves before any provider call.
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t omnidm:ci .
+      - name: Boot container and probe the web UI
+        run: |
+          docker run -d --name omnidm-ci -p 8787:8787 \
+            -e WEB_HOST=0.0.0.0 -e WEB_PORT=8787 omnidm:ci
+          # Poll / for up to ~60s; a 200 means the web adapter is serving.
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8787/ || true)
+            if [ "$code" = "200" ]; then echo "web UI up (HTTP 200) after ${i} tries"; break; fi
+            sleep 2
+          done
+          if [ "$code" != "200" ]; then
+            echo "::error::container did not serve the web UI (last HTTP code: ${code:-none})"
+            docker logs omnidm-ci || true
+            exit 1
+          fi
+      - name: Container logs (diagnostics)
+        if: always()
+        run: docker logs omnidm-ci || true
+      - name: Tear down
+        if: always()
+        run: docker rm -f omnidm-ci || true

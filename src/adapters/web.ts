@@ -8,9 +8,11 @@
  * This file is only the Node plumbing the engine can't own: a node:http server
  * serving the static client from web/, a `ws` WebSocket server, the raw-socket
  * abuse defenses (frame size cap, pre-hello flood, connection cap, hello
- * deadline), and the HTTP portrait upload/serve endpoints (bytes travel over
- * HTTP, never a WS frame). Each socket is wrapped in a `RoomConnection`; the
- * engine does the rest.
+ * deadline), cross-site defenses on the upgrade itself (Origin allowlist via
+ * `verifyClient` — see `isOriginAllowed` — and an opt-in Host-header allowlist
+ * against DNS rebinding — see `isHostAllowed`), and the HTTP portrait
+ * upload/serve endpoints (bytes travel over HTTP, never a WS frame). Each
+ * socket is wrapped in a `RoomConnection`; the engine does the rest.
  *
  * Protocol (unchanged):
  *   client → { type:'hello', userName, channelId, password? } | { type:'say', text } | { type:'move', id, x, y }
@@ -95,9 +97,39 @@ export class WebAdapter implements PlatformAdapter {
      * reads the raw body and forwards it.
      */
     private readonly billing?: (req: BillingHttpRequest) => Promise<BillingHttpResponse>,
+    /**
+     * Origins allowed to open a `/ws` connection (CSWSH defense). Defaults to
+     * `WEB_ALLOWED_ORIGINS` (comma-separated exact origins, e.g.
+     * `https://dm.example.com,https://app.example.com`). When empty (the
+     * default), same-origin behavior applies instead — see `isOriginAllowed`.
+     */
+    private readonly allowedOrigins: string[] = (process.env.WEB_ALLOWED_ORIGINS ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
   ) {
+    // NOTE: room-engine.ts compares the join password with `!==` (not
+    // constant-time). That file is out of scope here; flagging it so it isn't
+    // lost — a timing side-channel on a shared room password is low severity
+    // but cheap to fix with crypto.timingSafeEqual if that file is ever touched.
     this.room = new RoomEngine({ storage, password, platform: 'web' });
+    // DNS-rebinding defense for the HTTP server: OFF by default (undefined) so
+    // reverse-proxy deployments that rewrite the Host header to a public
+    // domain aren't broken by a hardening feature this adapter can't verify
+    // is safe for their topology. Operators who want it opt in by setting
+    // WEB_ALLOWED_HOSTS (comma-separated hostnames, no ports); localhost /
+    // 127.0.0.1 / ::1 / the configured bind host are always included. The
+    // WS Origin check below (verifyClient) is the primary CSWSH defense and
+    // IS on by default regardless of this setting.
+    const rawHosts = process.env.WEB_ALLOWED_HOSTS;
+    if (rawHosts) {
+      this.allowedHosts = new Set(['localhost', '127.0.0.1', '::1', this.host.toLowerCase()]);
+      for (const h of rawHosts.split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)) this.allowedHosts.add(h);
+    }
   }
+
+  /** Set only when `WEB_ALLOWED_HOSTS` is configured — see the constructor comment. */
+  private allowedHosts?: Set<string>;
 
   /** The actual bound port — differs from the configured one when it was 0 (ephemeral). */
   get port(): number {
@@ -111,7 +143,17 @@ export class WebAdapter implements PlatformAdapter {
 
   async start(): Promise<void> {
     this.http = createServer((req, res) => this.route(req, res).catch(() => res.destroy()));
-    this.wss = new WebSocketServer({ server: this.http, path: '/ws', maxPayload: MAX_FRAME_BYTES });
+    this.wss = new WebSocketServer({
+      server: this.http,
+      path: '/ws',
+      maxPayload: MAX_FRAME_BYTES,
+      // CSWSH + DNS-rebinding defense: reject the upgrade before a socket is
+      // ever handed to the room. `ws` responds 401 for a `false` verdict.
+      verifyClient: ({ origin, req }, callback) => {
+        if (this.isOriginAllowed(origin, req)) return callback(true);
+        callback(false, 401, 'Unauthorized origin');
+      },
+    });
     this.wss.on('connection', (ws) => {
       if (this.wss!.clients.size > this.maxConnections) {
         this.rawError(ws, 'Server full — try again later.');
@@ -180,8 +222,45 @@ export class WebAdapter implements PlatformAdapter {
     ws.send(JSON.stringify({ type: 'error', error }));
   }
 
+  /**
+   * CSWSH defense for the `/ws` upgrade. Any web page a victim's browser
+   * visits can attempt `new WebSocket('ws://127.0.0.1:8787/ws')` — the
+   * browser sends that page's Origin on the upgrade request, which is the
+   * only signal distinguishing "this server's own UI" from "some other site
+   * quietly riding the victim's browser into the room." Policy:
+   *   - No Origin header at all → allow. Non-browser clients (Electron, the
+   *     CLI, curl, native `ws` clients) don't send one and aren't a CSWSH
+   *     vector; browsers always send one for a cross-origin WS handshake.
+   *   - `WEB_ALLOWED_ORIGINS` configured → only an exact match passes.
+   *   - Otherwise (default) → same-origin only: the Origin's host must equal
+   *     this request's own Host header, so the legitimate same-origin web UI
+   *     keeps working while an arbitrary third-party page is rejected.
+   */
+  private isOriginAllowed(origin: string | undefined, req: HttpRequest): boolean {
+    if (!origin) return true;
+    if (this.allowedOrigins.length > 0) return this.allowedOrigins.includes(origin);
+    const hostHeader = req.headers.host;
+    if (!hostHeader) return false; // nothing to compare against — refuse to guess
+    try {
+      return new URL(origin).host.toLowerCase() === hostHeader.toLowerCase();
+    } catch {
+      return false; // malformed Origin header
+    }
+  }
+
+  /** DNS-rebinding defense for plain HTTP requests — see the constructor comment for the opt-in policy. */
+  private isHostAllowed(hostHeader: string | undefined): boolean {
+    if (!this.allowedHosts) return true; // opt-in feature, not configured
+    if (!hostHeader) return false;
+    const host = hostHeader.split(':')[0].toLowerCase();
+    return this.allowedHosts.has(host);
+  }
+
   /** Route an HTTP request: /portrait/* endpoints, else the static client. */
   private async route(req: HttpRequest, res: ServerResponse): Promise<void> {
+    if (!this.isHostAllowed(req.headers.host)) {
+      return void res.writeHead(403, { 'Content-Type': 'text/plain' }).end('Forbidden — Host header not allowed');
+    }
     let pathname: string;
     try {
       pathname = new URL(req.url ?? '/', 'http://x').pathname;

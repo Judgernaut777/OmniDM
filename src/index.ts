@@ -13,6 +13,7 @@
 import path from 'node:path';
 import { loadConfig } from './config.js';
 import { createProvider } from './providers/index.js';
+import { ConcurrencyLimitedProvider } from './providers/concurrency-limited.js';
 import { Bot } from './core/bot.js';
 import { NodeFileStorage } from './core/session/store.js';
 import { FilePurchaseStore } from './core/billing/store-node.js';
@@ -92,7 +93,19 @@ async function main() {
     );
   }
 
-  const provider = createProvider(config);
+  let provider = createProvider(config);
+  // Global cross-channel concurrency ceiling (server mode only — this file is
+  // the Node composition root for every adapter it wires; the in-app/browser
+  // engine builds its own provider directly via providers/factory.ts and never
+  // goes through here). Closes a cost/quota DoS where an attacker opening many
+  // WebSocket connections under distinct channelIds could otherwise drive
+  // unbounded parallel provider calls — see providers/concurrency-limited.ts.
+  const maxConcurrency = config.llm.maxConcurrency ?? 8;
+  const maxQueue = config.llm.maxQueue ?? 64;
+  if (maxConcurrency > 0) {
+    provider = new ConcurrencyLimitedProvider(provider, { maxConcurrent: maxConcurrency, maxQueue });
+    console.log(`🧵 LLM concurrency capped at ${maxConcurrency} (queue ${maxQueue}).`);
+  }
   const storage = new NodeFileStorage(config.dataDir);
 
   // Hosted billing (opt-in): a persistent purchase store feeds the entitlements

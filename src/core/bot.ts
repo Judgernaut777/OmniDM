@@ -37,6 +37,29 @@ import { selectEntitlements, type Entitlements, type UnlockSource } from './enti
 type Send = (msg: OutgoingMessage) => Promise<void>;
 
 /**
+ * Destructive / campaign-config commands: only the campaign owner (whoever
+ * ran `/dm new`, or a `/dm gm` transferee) may invoke these. `pack`/`lore` are
+ * handled separately (only their mutating subcommand is owner-gated) and
+ * `import` is handled separately too (see the gate in `handleCommand`) — both
+ * are deliberately NOT in this set.
+ */
+const OWNER_ONLY = new Set(['end', 'model', 'mode', 'fog', 'gm']);
+
+/**
+ * Cooperative table actions that require a joined seat, but not ownership —
+ * any party member may invoke these against any party member or encounter
+ * monster. Everything not listed here (and not in {@link OWNER_ONLY}) is
+ * PUBLIC: mostly read/reference commands, plus `new`/`join` which must stay
+ * open for bootstrapping a channel with no game yet.
+ */
+const PLAYER_ONLY = new Set([
+  'damage', 'heal', 'condition', 'ac', 'weapon', 'attack', 'monster',
+  'combat', 'initiative', 'init', 'roll', 'check', 'pass', 'class', 'bio',
+  'portrait', 'learn', 'slots', 'castdc', 'cast', 'rest', 'give', 'equip',
+  'unequip', 'use', 'drop',
+]);
+
+/**
  * Strip API-key-shaped substrings out of arbitrary text before it is logged or
  * sent to players. Provider error bodies are attacker/misconfiguration-controlled
  * (a self-hosted OpenAI-compatible gateway can echo the submitted key in a 401
@@ -123,7 +146,14 @@ export class Bot {
 
     try {
       if (text.startsWith('/dm') || text === '/help') {
-        return await this.handleCommand(msg, text, send);
+        // Commands run under the SAME per-channel lock as turns — the single
+        // mutation boundary. Previously every command did get → mutate → save
+        // OUTSIDE any lock, so a command could race an in-flight turn (or
+        // another command) for the same session. Commands are fast,
+        // synchronous engine ops (none call the LLM), so holding the lock
+        // across one is cheap. The plain-text play path below still locks
+        // internally via `processTurn`/`pass` — do NOT double-wrap it here.
+        return await this.pipeline.withLock(msg.platform, msg.channelId, () => this.handleCommand(msg, text, send));
       }
 
       // Plain text → a play action, if this user is in the game.
@@ -159,10 +189,18 @@ export class Bot {
    * A player takes an action. Round-robin order is checked (and advanced) by
    * the pipeline inside the channel lock, so a double-send from the current
    * player can't race the in-flight turn and consume someone else's.
+   *
+   * `fromCommand`: true when called from within `handleCommand` (`/dm roll`),
+   * which `Bot.handle` already runs inside `TurnPipeline.withLock` — uses the
+   * pipeline's unlocked entry point so this doesn't re-acquire (and deadlock
+   * on) the same channel's lock. False (the default) is the plain-text play
+   * path in `handle`, which is NOT otherwise inside any lock.
    */
-  private async playAction(session: GameSession, msg: IncomingMessage, text: string, send: Send): Promise<void> {
+  private async playAction(session: GameSession, msg: IncomingMessage, text: string, send: Send, fromCommand = false): Promise<void> {
     const player = session.players[msg.userId];
-    const result = await this.pipeline.processTurn(session, { actorName: name(player), text }, msg.userId);
+    const result = fromCommand
+      ? await this.pipeline.processTurnUnlocked(session, { actorName: name(player), text }, msg.userId)
+      : await this.pipeline.processTurn(session, { actorName: name(player), text }, msg.userId);
     if (result.notYourTurn) {
       return await send({ channelId: msg.channelId, text: `⏳ It's ${name(result.notYourTurn)}'s turn — yours is coming up.` });
     }
@@ -210,6 +248,51 @@ export class Bot {
     const cmd = (parts.shift() || 'help').toLowerCase();
     const rest = parts.join(' ');
     const reply = (t: string) => send({ channelId: msg.channelId, text: t });
+
+    // ── Authorization gate ──────────────────────────────────────────────
+    // Previously almost every mutating command below had NO caller check at
+    // all: any channel member — or, over the web adapter, any connection
+    // that never even joined — could `/dm damage`/`/dm end`/`/dm model`/etc.
+    // Narrative play was gated (spectators get "You're spectating" — see
+    // `handle` above) but GM-power commands were wide open. This gate closes
+    // that: OWNER_ONLY commands need the campaign owner (whoever ran
+    // `/dm new`, or a `/dm gm` transferee); PLAYER_ONLY ones need any joined
+    // seat.
+    //
+    // `pack`/`lore` have both a read subcommand (`list`) and mutating ones
+    // (`load` / `add`, `remove`) — gating the whole command would also block
+    // a spectator from just reading the pack catalog or the lorebook, so
+    // only the mutating subcommand is owner-gated.
+    //
+    // `import` sets the CALLER's own persona when they're already a joined
+    // player (self-scoped, exactly like `/dm class`/`/dm bio`) but creates a
+    // campaign-wide NPC when the caller is not a player. Only the latter is
+    // a GM power, so `import` is refused only for a caller who is NEITHER
+    // the owner NOR a joined player — a true spectator who never joined.
+    let ownerGated = OWNER_ONLY.has(cmd);
+    const playerGated = PLAYER_ONLY.has(cmd);
+    let importGated = false;
+    if (cmd === 'pack') {
+      const sub = (parts[0] || 'list').toLowerCase();
+      ownerGated = sub === 'load';
+    } else if (cmd === 'lore') {
+      const sub = (parts[0] || 'list').toLowerCase();
+      ownerGated = sub === 'add' || sub === 'remove';
+    } else if (cmd === 'import') {
+      importGated = true;
+    }
+    if (ownerGated || playerGated || importGated) {
+      const session = await this.sessions.get(msg);
+      if (!session) return reply('🎲 No game in this channel yet. `/dm new` to start one.');
+      const isOwner = this.sessions.isOwner(session, msg.userId);
+      const isPlayerCaller = this.sessions.isPlayer(session, msg.userId);
+      if (ownerGated && !isOwner)
+        return reply('🚫 Only the campaign owner can use that command. (The owner is whoever ran `/dm new`.)');
+      if (playerGated && !isPlayerCaller)
+        return reply('🚫 Join the game first with `/dm join <name>` to do that.');
+      if (importGated && !isOwner && !isPlayerCaller)
+        return reply('🚫 Only the campaign owner can use that command. (The owner is whoever ran `/dm new`.)');
+    }
 
     switch (cmd) {
       case 'help':
@@ -594,7 +677,7 @@ export class Bot {
         const session = await this.sessions.get(msg);
         if (!session || !this.sessions.isPlayer(session, msg.userId))
           return reply('Join a game first with `/dm new` or `/dm join <name>`.');
-        return await this.playAction(session, msg, rest || 'd20', send);
+        return await this.playAction(session, msg, rest || 'd20', send, true);
       }
 
       case 'check': {
@@ -613,7 +696,9 @@ export class Bot {
         // narrate" pattern as dice — so the model states PASS/FAIL, never decides it.
         const checkResult = rollCheck(ability, dc, modifier, name(target));
         const text = `attempts a ${ability} check (DC ${dc})`;
-        const result = await this.pipeline.processTurn(session, { actorName: name(target), text, checks: [checkResult] }, msg.userId);
+        // Unlocked: `handleCommand` already runs inside `TurnPipeline.withLock`
+        // (see `Bot.handle`) — calling the locked `processTurn` here would deadlock.
+        const result = await this.pipeline.processTurnUnlocked(session, { actorName: name(target), text, checks: [checkResult] }, msg.userId);
         if (result.notYourTurn) {
           return await send({ channelId: msg.channelId, text: `⏳ It's ${name(result.notYourTurn)}'s turn — yours is coming up.` });
         }
@@ -726,10 +811,23 @@ export class Bot {
           return reply('Join a game first with `/dm new` or `/dm join <name>`.');
         if (session.turnMode !== 'round-robin') return reply('Nothing to pass — turn mode is `immediate`.');
         // Check-and-advance runs in the pipeline's channel lock so a pass can't
-        // double-advance the pointer while a turn is resolving.
-        const result = await this.pipeline.pass(session, msg.userId);
+        // double-advance the pointer while a turn is resolving. Unlocked:
+        // `handleCommand` already runs inside `TurnPipeline.withLock` (see
+        // `Bot.handle`) — calling the locked `pass` here would deadlock.
+        const result = await this.pipeline.passUnlocked(session, msg.userId);
         if (result.notYourTurn) return reply(`⏳ It's ${name(result.notYourTurn)}'s turn, not yours.`);
         return reply(`⏭️ ${name(session.players[msg.userId])} passes.${result.next ? ` Next up: ${name(result.next)}.` : ''}`);
+      }
+
+      case 'gm': {
+        const session = await this.sessions.get(msg);
+        if (!session) return reply('No game here yet — `/dm new` first.');
+        if (!rest) return reply('Usage: `/dm gm <character name>` — transfers campaign ownership (GM authority) to that party member.');
+        const target = findPartyMember(session, rest);
+        if (!target) return reply(`No party member named "${rest}" — see \`/dm who\`.`);
+        session.ownerId = target.userId;
+        await this.sessions.save(session);
+        return reply(`👑 ${name(target)} is now the campaign owner — GM authority transferred.`);
       }
 
       case 'end': {
@@ -1052,5 +1150,6 @@ const HELP = `**OmniDM — commands**
 \`/dm items [<id>]\` — list the armory (or show one); \`/dm give <character> <item> [qty]\` hands it out
 \`/dm equip <character> <item>\` / \`/dm unequip <character> <weapon|armor|shield>\` — worn gear sets AC / weapon
 \`/dm use <character> <item>\` — drink a potion (engine heals); \`/dm inventory <character>\` shows the pack; \`/dm drop\` discards
-\`/dm end\` — end the campaign
+\`/dm gm <character>\` — transfer campaign ownership (GM authority) to that party member (owner only)
+\`/dm end\` — end the campaign (owner only)
 Otherwise, just type what your character does.`;

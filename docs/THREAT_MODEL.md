@@ -41,10 +41,23 @@ accepts.
 ### Tampering (mechanics via narration)
 - **Threat:** the model narrates outcomes it shouldn't decide (fudged damage,
   invented saves, phantom spell slots).
-- **Mitigation:** the **engine owns all mechanical numbers** (HP, dice, slots,
-  AC, damage, conditions). The model only narrates already-resolved results;
-  `<<…>>` markers it emits are parsed, applied, and stripped by the engine and
-  are ignored for non-combatants.
+- **Mitigation (command path):** when a player uses explicit engine commands
+  (`/dm attack`, `/dm cast`, `/dm check`, `/dm roll`), the **engine fully owns
+  mechanical resolution** — rolls dice, computes damage, validates targets, and
+  persists the result. The model does not participate in these outcomes.
+- **Mitigation (narration path):** when a player simply narrates an action
+  (freeform text, no slash command), the engine instructs the model to propose
+  mechanical outcomes (damage, healing, spell slot cost) in `<<…>>` markers.
+  The engine then **validates, bounds, and persists** these values: HP changes
+  are clamped to `[0, maxHp]`, markers for unknown targets or non-combatants
+  are silently ignored, and the magnitude is stored as-is. The model's proposed
+  number is not dice-rolled or validated for realism — it is only bounds-checked
+  by the engine before persisting.
+- **Residual risk:** on the narration path, the model chooses the magnitude of
+  each mechanical change within the `[0, maxHp]` range; a model could propose an
+  instant kill (e.g., `<<hp Goblin -9999>>` is clamped to 0 hp). Use explicit
+  `/dm attack`/`/dm cast`/`/dm roll` commands to resolve mechanics fully via the
+  engine's dice rolls and damage formulas.
 
 ### Information disclosure (secrets)
 - **Threat 1:** a misconfigured OpenAI-compatible gateway echoes the submitted

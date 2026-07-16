@@ -21,16 +21,26 @@ import { applyMarkers } from '../rules/mechanics.js';
 import { SessionManager } from '../session/session-manager.js';
 import { extractRolls, roll } from './dice.js';
 
-/** Minimal in-process async mutex keyed by channel. */
+/**
+ * Minimal in-process async mutex keyed by channel. Once a chain settles and
+ * no newer work has been queued for that key in the meantime, the entry is
+ * evicted — otherwise `chains` grows by one entry per channel EVER used, for
+ * the lifetime of the process (every command now runs through this lock too,
+ * see `Bot.handle`/`TurnPipeline.withLock`, so a long-lived server with many
+ * transient channels would otherwise leak unboundedly).
+ */
 class ChannelLock {
   private chains = new Map<string, Promise<unknown>>();
   run<T>(key: string, fn: () => Promise<T>): Promise<T> {
     const prev = this.chains.get(key) ?? Promise.resolve();
     const next = prev.then(fn, fn);
-    this.chains.set(
-      key,
-      next.catch(() => {}),
-    );
+    const tracked = next.catch(() => {}); // never let a rejection kill the chain for the next caller
+    this.chains.set(key, tracked);
+    // Evict only if we're still the current entry — a newer call may have
+    // already replaced us in the map by the time this settles.
+    tracked.finally(() => {
+      if (this.chains.get(key) === tracked) this.chains.delete(key);
+    });
     return next;
   }
 }
@@ -77,49 +87,84 @@ export class TurnPipeline {
     return `${session.platform}:${session.channelId}`;
   }
 
-  async processTurn(session: GameSession, input: TurnInput, actorUserId?: string): Promise<TurnResult> {
-    return this.locks.run(this.lockKey(session), async () => {
-      // 0. SEQUENCING (inside the lock — a queued duplicate from the same
-      // player must see the pointer already advanced by the turn before it)
-      if (session.turnMode === 'round-robin' && actorUserId) {
-        const current = this.sessions.currentPlayer(session);
-        if (current && current.userId !== actorUserId) return { notYourTurn: current };
-      }
-
-      // 1. INTENT + 2. RESOLUTION (pure, deterministic dice + any pre-resolved checks)
-      const rolls: RollResult[] = extractRolls(input.text).map((n) => roll(n, input.actorName));
-      const checks = input.checks ?? [];
-
-      // 3. NARRATION (LLM narrates the resolved turn, with long-term recall of
-      // relevant older turns from outside the prompt's recent-history window)
-      const actions = [{ name: input.actorName, text: input.text }];
-      const pastEvents = await this.memory.retrieve(session, input.text);
-      const rawNarration = await this.narrator.narrate(session, actions, rolls, pastEvents, checks);
-
-      // 3b. MECHANICS (deterministic): parse+apply any <<hp/heal/condition ...>>
-      // markers the DM ended its narration with, against the real party, and
-      // strip them — players never see the marker syntax, only its effect.
-      const { text: narration, changes } = applyMarkers(session, rawNarration);
-
-      // 4. PERSISTENCE (history + a vector-memory record of the resolved turn)
-      const record: TurnRecord = { actions, rolls, ...(checks.length ? { checks } : {}), narration, ts: Date.now() };
-      session.history.push(record);
-      await this.memory.remember(session, record);
-      await this.maybeCompact(session);
-      await this.sessions.save(session);
-
-      const next = session.turnMode === 'round-robin' ? await this.sessions.advanceTurn(session) : undefined;
-      return { record, next, changes };
-    });
+  /**
+   * Run `fn` inside the SAME per-channel critical section `processTurn`/`pass`
+   * use. This is the single mutation boundary for `/dm` commands: previously
+   * every command did get → mutate → save OUTSIDE any lock, racing turns and
+   * each other. Commands are fast, synchronous engine ops (none call the
+   * LLM) — EXCEPT `/dm roll`/`/dm check`/`/dm pass`, which route into this
+   * very pipeline; `Bot` calls the `*Unlocked` methods below for those (see
+   * their docs) rather than re-entering this lock, which would deadlock.
+   */
+  withLock<T>(platform: string, channelId: string, fn: () => Promise<T>): Promise<T> {
+    return this.locks.run(`${platform}:${channelId}`, fn);
   }
 
-  /** Skip the current player's round-robin turn — same critical section as turns. */
-  async pass(session: GameSession, userId: string): Promise<TurnResult> {
-    return this.locks.run(this.lockKey(session), async () => {
+  /** Locked entry point — acquires this channel's critical section itself.
+   * Used by the plain-text play path (`Bot.playAction`, called from
+   * `Bot.handle`'s UNLOCKED branch), which isn't otherwise inside any lock. */
+  async processTurn(session: GameSession, input: TurnInput, actorUserId?: string): Promise<TurnResult> {
+    return this.locks.run(this.lockKey(session), () => this.processTurnUnlocked(session, input, actorUserId));
+  }
+
+  /**
+   * Same resolution as {@link processTurn}, but assumes the CALLER already
+   * holds this channel's lock — used by `Bot`'s command dispatch (`/dm roll`,
+   * `/dm check`), which `Bot.handle` already runs inside
+   * `TurnPipeline.withLock`. Calling the locked `processTurn` from there
+   * instead would self-deadlock: the outer lock can't release until the
+   * command finishes, but the command would be stuck waiting to re-acquire
+   * that same (non-reentrant) lock.
+   */
+  async processTurnUnlocked(session: GameSession, input: TurnInput, actorUserId?: string): Promise<TurnResult> {
+    // 0. SEQUENCING (inside the lock — a queued duplicate from the same
+    // player must see the pointer already advanced by the turn before it)
+    if (session.turnMode === 'round-robin' && actorUserId) {
       const current = this.sessions.currentPlayer(session);
-      if (current && current.userId !== userId) return { notYourTurn: current };
-      return { next: await this.sessions.advanceTurn(session) };
-    });
+      if (current && current.userId !== actorUserId) return { notYourTurn: current };
+    }
+
+    // 1. INTENT + 2. RESOLUTION (pure, deterministic dice + any pre-resolved checks)
+    const rolls: RollResult[] = extractRolls(input.text).map((n) => roll(n, input.actorName));
+    const checks = input.checks ?? [];
+
+    // 3. NARRATION (LLM narrates the resolved turn, with long-term recall of
+    // relevant older turns from outside the prompt's recent-history window)
+    const actions = [{ name: input.actorName, text: input.text }];
+    const pastEvents = await this.memory.retrieve(session, input.text);
+    const rawNarration = await this.narrator.narrate(session, actions, rolls, pastEvents, checks);
+
+    // 3b. MECHANICS (deterministic): parse+apply any <<hp/heal/condition ...>>
+    // markers the DM ended its narration with, against the real party, and
+    // strip them — players never see the marker syntax, only its effect.
+    const { text: narration, changes } = applyMarkers(session, rawNarration);
+
+    // 4. PERSISTENCE (history + a vector-memory record of the resolved turn)
+    const record: TurnRecord = { actions, rolls, ...(checks.length ? { checks } : {}), narration, ts: Date.now() };
+    session.history.push(record);
+    await this.memory.remember(session, record);
+    await this.maybeCompact(session);
+    await this.sessions.save(session);
+
+    const next = session.turnMode === 'round-robin' ? await this.sessions.advanceTurn(session) : undefined;
+    return { record, next, changes };
+  }
+
+  /** Skip the current player's round-robin turn — same critical section as
+   * turns. LOCKED — see {@link processTurn}; currently unused by `Bot` (which
+   * calls {@link passUnlocked} from inside its already-locked command
+   * dispatch) but kept as the safe-to-call-from-anywhere public entry point. */
+  async pass(session: GameSession, userId: string): Promise<TurnResult> {
+    return this.locks.run(this.lockKey(session), () => this.passUnlocked(session, userId));
+  }
+
+  /** Same as {@link pass}, but assumes the caller already holds this
+   * channel's lock — see {@link processTurnUnlocked} for why. Used by `/dm
+   * pass` in `Bot`. */
+  async passUnlocked(session: GameSession, userId: string): Promise<TurnResult> {
+    const current = this.sessions.currentPlayer(session);
+    if (current && current.userId !== userId) return { notYourTurn: current };
+    return { next: await this.sessions.advanceTurn(session) };
   }
 
   /**
